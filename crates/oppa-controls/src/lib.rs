@@ -332,9 +332,7 @@ impl Props for UncontrolledCheckboxProps {}
 
 pub fn UncontrolledCheckbox(ctx: &Ctx, props: &UncontrolledCheckboxProps) -> VNode {
     let checked = ctx.signal(props.initial);
-    ctx.child(
-        "oppa::Checkbox",
-        1,
+    ctx.child_auto(
         &CheckboxProps {
             label: props.label.clone(),
             checked,
@@ -466,9 +464,7 @@ impl Props for UncontrolledToggleProps {}
 
 pub fn UncontrolledToggle(ctx: &Ctx, props: &UncontrolledToggleProps) -> VNode {
     let on = ctx.signal(props.initial);
-    ctx.child(
-        "oppa::Toggle",
-        1,
+    ctx.child_auto(
         &ToggleProps {
             label: props.label.clone(),
             on,
@@ -637,8 +633,8 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
         move || apply_slider_value(&value, &notify, value.get() + dir * step, min, max, step)
     };
     let kids = [
-        ctx.child("oppa::SliderDec", 1, &dec_props, Button),
-        ctx.child("oppa::SliderInc", 2, &inc_props, Button),
+        ctx.child_auto(&dec_props, Button),
+        ctx.child_auto(&inc_props, Button),
     ];
     // Visible rail + fill + knob (Round 7.10 — the track used to be
     // an unfilled box; Round 7.15 reflows the steppers to flank the
@@ -753,9 +749,7 @@ impl Props for UncontrolledSliderProps {}
 
 pub fn UncontrolledSlider(ctx: &Ctx, props: &UncontrolledSliderProps) -> VNode {
     let value = ctx.signal(props.initial);
-    ctx.child(
-        "oppa::Slider",
-        1,
+    ctx.child_auto(
         &SliderProps {
             label: props.label.clone(),
             value,
@@ -1058,9 +1052,7 @@ impl UncontrolledTextInputProps {
 
 pub fn UncontrolledTextInput(ctx: &Ctx, props: &UncontrolledTextInputProps) -> VNode {
     let value = ctx.signal(props.initial.clone());
-    ctx.child(
-        "oppa::TextInput",
-        1,
+    ctx.child_auto(
         &TextInputProps {
             label: props.label.clone(),
             value,
@@ -1240,9 +1232,7 @@ impl Props for UncontrolledTextAreaProps {}
 
 pub fn UncontrolledTextArea(ctx: &Ctx, props: &UncontrolledTextAreaProps) -> VNode {
     let value = ctx.signal(props.initial.clone());
-    ctx.child(
-        "oppa::TextArea",
-        1,
+    ctx.child_auto(
         &TextAreaProps {
             label: props.label.clone(),
             value,
@@ -1413,8 +1403,8 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
             Row("modal-actions")
                 .style(Style::new().gap(8).justify_content(JustifyContent::End))
                 .children([
-                    ctx.child("oppa::ModalCancel", 1, &cancel_props, Button),
-                    ctx.child("oppa::ModalConfirm", 2, &confirm_props, Button),
+                    ctx.child_auto(&cancel_props, Button),
+                    ctx.child_auto(&confirm_props, Button),
                 ]),
         ]);
     let backdrop = Div("modal-backdrop").style(
@@ -1558,7 +1548,7 @@ pub fn Toast(ctx: &Ctx, props: &ToastProps) -> VNode {
                         style: Text::body_secondary,
                     }),
                 ]),
-            ctx.child("oppa::ToastDismiss", 1, &dismiss_props, Button),
+            ctx.child_auto(&dismiss_props, Button),
         ]);
     let anchor = Div("toast-anchor").style(
         Style::new()
@@ -1685,7 +1675,7 @@ pub fn RadioGroup<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &RadioGroupP
                 enabled: props.enabled,
                 on_select: action(move || selected.set(value.clone())),
             };
-            ctx.child("oppa::Radio", i as u64, &rp, Radio)
+            ctx.child_keyed(i as u64, &rp, Radio)
         })
         .collect::<Vec<_>>();
     Column::new().children(children)
@@ -1805,7 +1795,7 @@ pub fn Tabs<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &TabsProps<T>) -> 
                 enabled: props.enabled,
                 on_select: action(move || active.set(value.clone())),
             };
-            ctx.child("oppa::TabsTab", i as u64, &bp, TabButton)
+            ctx.child_keyed(i as u64, &bp, TabButton)
         })
         .collect::<Vec<_>>();
     let bar = Row("tab-bar")
@@ -2004,7 +1994,7 @@ pub fn Select<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &SelectProps<T>)
                         open.set(false);
                     }),
                 };
-                ctx.child("oppa::SelectOption", i as u64, &op, SelectOption)
+                ctx.child_keyed(i as u64, &op, SelectOption)
             })
             .collect::<Vec<_>>();
         // No explicit size: the list sizes to its rows (the
@@ -2896,7 +2886,7 @@ pub fn VirtualList<T: Clone + 'static>(ctx: &Ctx, props: &VirtualListProps<T>) -
             Div("vlist-slot")
                 .style(Style::new().absolute_y(tops[idx] - y).h(h).w(width).build())
                 .key(slot as u64)
-                .child(ctx.child("oppa::VListRow", slot as u64, &row_props, props.render_row))
+                .child(ctx.child_keyed(slot as u64, &row_props, props.render_row))
         })
         .collect::<Vec<_>>();
     let area = oppa::ScrollArea(&props.debug)
@@ -2918,9 +2908,7 @@ pub fn VirtualList<T: Clone + 'static>(ctx: &Ctx, props: &VirtualListProps<T>) -
     // `content_size` above — no second source. The overlay is a
     // portal (out-of-flow), so the wrapper sizes exactly to the
     // area and committed boxes move nowhere.
-    let bar = ctx.child(
-        "oppa::VListBar",
-        1,
+    let bar = ctx.child_auto(
         &ScrollbarProps {
             target: props.debug.clone(),
             offset: offset.clone(),
@@ -3201,9 +3189,7 @@ pub fn DataGrid<T: Clone + 'static>(ctx: &Ctx, props: &DataGridProps<T>) -> VNod
     }
     // Attached overlay (Round 21.2, decision 329): same contract as
     // VirtualList — the grid's instance offset drives the thumb.
-    let bar = ctx.child(
-        "oppa::DGridBar",
-        1,
+    let bar = ctx.child_auto(
         &ScrollbarProps {
             target: props.debug.clone(),
             offset: offset.clone(),
@@ -3478,7 +3464,7 @@ pub fn ErrorBoundary(ctx: &Ctx, props: &ErrorBoundaryProps) -> VNode {
                 let r = reset_action.clone();
                 let btn_props =
                     ButtonProps::new("Retry", move || r()).debug("error-boundary-retry");
-                let retry_btn = ctx.child("oppa::ErrorBoundaryRetry", 0, &btn_props, Button);
+                let retry_btn = ctx.child_auto(&btn_props, Button);
                 let card = Div("error-boundary-card")
                     .style(
                         Style::new()

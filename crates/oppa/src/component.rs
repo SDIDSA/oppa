@@ -4641,6 +4641,10 @@ impl Ctx {
     /// `name` is the component's symbol (hot-reload identity); `key`
     /// disambiguates siblings (slot keys, §4.2).
     ///
+    /// Zero-boilerplate twins are [`Ctx::child_auto`] (static children)
+    /// and [`Ctx::child_keyed`] (keyed siblings) — same instances,
+    /// same state, no manual strings or ordinals.
+    ///
     /// M8 (finding F6): the child's run is tagged with the CHILD
     /// instance for handler-owner attribution (the M5 router resolves
     /// per-instance flags through the handler's owning instance, so a
@@ -4683,6 +4687,49 @@ impl Ctx {
         // already stamped theirs — only `None`s are filled).
         crate::vnode::stamp_handler_owner(&vnode, id);
         vnode
+    }
+
+    /// Zero-boilerplate static child (Phase 37a, decision 360): the
+    /// instance is keyed on `(Location::caller(), ordinal)` — stable
+    /// for stable bodies (the §5.1 re-seed rule covers body edits),
+    /// with the call site as the hot-reload symbol. Static children
+    /// drop manual string/ordinal args (`ctx.child_auto(&p, Comp)`
+    /// replaces `ctx.child("path::Comp", 1, &p, Comp)`).
+    ///
+    /// No `TypeId` anywhere in the keying (different `TypeId`s across
+    /// the rlib↔dylib boundary would fork reload state — the symbol
+    /// stays a source string, stable across the boundary). Keyed
+    /// siblings (loops, slots) take [`Ctx::child_keyed`]; the manual
+    /// [`Ctx::child`] form stays for hand-rolled symbols.
+    #[track_caller]
+    pub fn child_auto<P: Props>(&self, props: &P, render: fn(&Ctx, &P) -> VNode) -> VNode {
+        let base = call_site_hash!();
+        let site = self.next_site(base);
+        let loc = std::panic::Location::caller();
+        let name = format!("auto:{}:{}#{}", loc.file(), loc.line(), site.ordinal);
+        let key = site
+            .hash
+            .wrapping_add((site.ordinal as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        self.child(&name, key, props, render)
+    }
+
+    /// Zero-boilerplate keyed child (Phase 37a, decision 360): the
+    /// explicit `key` disambiguates siblings (loop indices, slot ids —
+    /// same contract as [`Ctx::child`]'s key), the call site names the
+    /// hot-reload symbol. `ctx.child_keyed(i, &p, Row)` replaces
+    /// `ctx.child("Row", i, &p, Row)`. Same-site duplicate keys share
+    /// one instance (keys must be unique per site — the React rule,
+    /// stated).
+    #[track_caller]
+    pub fn child_keyed<P: Props>(
+        &self,
+        key: u64,
+        props: &P,
+        render: fn(&Ctx, &P) -> VNode,
+    ) -> VNode {
+        let loc = std::panic::Location::caller();
+        let name = format!("keyed:{}:{}", loc.file(), loc.line());
+        self.child(&name, key, props, render)
     }
 
     /// Executes a render closure, catching unwinding panics.
@@ -5654,5 +5701,73 @@ mod tests {
     #[should_panic(expected = "zero size")]
     fn image_cache_zero_size_refuses_loudly() {
         crate::ImageCache::new().insert_pixels("zero", 0, 2, vec![]);
+    }
+
+    #[derive(Clone)]
+    struct KidProps {
+        seed: u32,
+    }
+    impl Props for KidProps {}
+
+    fn kid_comp(ctx: &Ctx, props: &KidProps) -> VNode {
+        let s = ctx.signal(props.seed);
+        // Publish the instance signal value into the debug label so
+        // the test reads state identity off the retained tree.
+        crate::vnode::Div(format!("kid-{}", s.get()).as_str()).build()
+    }
+
+    #[derive(Clone)]
+    struct AutoRootProps;
+    impl Props for AutoRootProps {}
+
+    fn auto_root_comp(ctx: &Ctx, _: &AutoRootProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        crate::vnode::Div("auto-root").children([
+            ctx.child_auto(&KidProps { seed: 1 }, kid_comp),
+            ctx.child_auto(&KidProps { seed: 2 }, kid_comp),
+            ctx.child_keyed(7, &KidProps { seed: 3 }, kid_comp),
+            ctx.child_keyed(8, &KidProps { seed: 4 }, kid_comp),
+        ])
+    }
+
+    /// Phase 37a (decision 360): `child_auto` siblings hold distinct
+    /// instances with isolated state (no manual strings/ordinals),
+    /// and `child_keyed` siblings key by the explicit key.
+    #[test]
+    fn child_auto_and_keyed_hold_distinct_state() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        host.mount("AutoRoot", AutoRootProps, auto_root_comp);
+        host.run_until_idle();
+        for want in ["kid-1", "kid-2", "kid-3", "kid-4"] {
+            assert_eq!(
+                crate::find_retained_by_debug(&host, want).len(),
+                1,
+                "one live {want}"
+            );
+        }
+    }
+
+    /// Phase 37a: auto/keyed instances survive re-renders (stable
+    /// call-site keying — same body, same instances, no re-seed).
+    #[test]
+    fn child_auto_instances_survive_reruns() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let handle = host.mount("AutoRoot", AutoRootProps, auto_root_comp);
+        host.run_until_idle();
+        let before: Vec<crate::arena::NodeId> = ["kid-1", "kid-2", "kid-3", "kid-4"]
+            .iter()
+            .flat_map(|d| crate::find_retained_by_debug(&host, d))
+            .collect();
+        assert_eq!(before.len(), 4);
+        // Re-run the root (props unchanged — force via set_props).
+        handle.set_props(AutoRootProps);
+        host.run_until_idle();
+        let after: Vec<crate::arena::NodeId> = ["kid-1", "kid-2", "kid-3", "kid-4"]
+            .iter()
+            .flat_map(|d| crate::find_retained_by_debug(&host, d))
+            .collect();
+        assert_eq!(before, after, "stable bodies re-key identically");
     }
 }

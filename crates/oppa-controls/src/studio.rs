@@ -252,8 +252,7 @@ fn task_status_cell(ctx: &Ctx, p: &GridCellProps<Task>) -> VNode {
             coll.update_row(id, t);
         }
     });
-    ctx.child(
-        "oppa::TaskDone",
+    ctx.child_keyed(
         id.0,
         &ButtonProps {
             label: SharedString::from(if done { "Done" } else { "Todo" }),
@@ -304,8 +303,7 @@ fn task_title_cell(ctx: &Ctx, p: &GridCellProps<Task>) -> VNode {
     };
     let (coll, id) = (p.rows.clone(), row.id);
     let sel_open = p.selected.clone();
-    ctx.child(
-        "oppa::TaskTitleMenu",
+    ctx.child_keyed(
         row.id.0,
         &ContextMenuProps {
             items: vec![
@@ -449,17 +447,10 @@ fn inspector(ctx: &Ctx, p: &InspectorProps) -> VNode {
         },
     ];
     Column::new().gap(8).children([
-        ctx.child("oppa::InspTitle", 1, &title_props, TextInput),
-        ctx.child("oppa::InspNotes", 2, &notes_props, TextArea),
-        ctx.child(
-            "oppa::InspPri",
-            3,
-            &SelectProps::new(pri_items, pri_v, open_v),
-            Select,
-        ),
-        ctx.child(
-            "oppa::InspDone",
-            4,
+        ctx.child_auto(&title_props, TextInput),
+        ctx.child_auto(&notes_props, TextArea),
+        ctx.child_auto(&SelectProps::new(pri_items, pri_v, open_v), Select),
+        ctx.child_auto(
             &ToggleProps {
                 label: SharedString::from("Done"),
                 on: done_v,
@@ -660,12 +651,7 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
                     inspector,
                 )
             };
-            ctx.child(
-                "oppa::StudioInspector",
-                7,
-                &ErrorBoundaryProps::new(child),
-                ErrorBoundary,
-            )
+            ctx.child_auto(&ErrorBoundaryProps::new(child), ErrorBoundary)
         }
         None => Div("insp-empty").child(VNode::from(Text::new(SharedString::from(
             "Select a task to inspect",
@@ -675,9 +661,7 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
     let search_value = search.clone();
     let search_commit: Change<SharedString> = Rc::new(move |v| search_value.set(v));
     let toolbar = Row("studio-toolbar").gap(8).children([
-        ctx.child(
-            "oppa::StudioSearch",
-            1,
+        ctx.child_auto(
             &UncontrolledTextInputProps {
                 label: SharedString::from("Search"),
                 initial: SharedString::from(""),
@@ -695,9 +679,7 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
         sort_button(ctx, &sort_mode, 0, "Title", "studio-sort-title"),
         sort_button(ctx, &sort_mode, 1, "Priority", "studio-sort-priority"),
         sort_button(ctx, &sort_mode, 2, "Status", "studio-sort-status"),
-        ctx.child(
-            "oppa::StudioTheme",
-            5,
+        ctx.child_auto(
             &ButtonProps {
                 label: SharedString::from(if dark { "Theme: Dark" } else { "Theme: Light" }),
                 enabled: true,
@@ -722,9 +704,7 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
             "Download tasks as CSV",
             export_csv,
         ),
-        ctx.child(
-            "oppa::StudioAdd",
-            8,
+        ctx.child_auto(
             &ButtonProps {
                 label: SharedString::from("+ Add task"),
                 enabled: true,
@@ -745,13 +725,13 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
     Div("studio").children([
         toolbar,
         Row("studio-body").gap(16).children([
-            ctx.child("oppa::StudioGrid", 9, &grid_props, DataGrid),
+            ctx.child_auto(&grid_props, DataGrid),
             Div("studio-inspector")
                 .style(Style::new().w(380.0))
                 .child(inspector_pane),
         ]),
         status,
-        ctx.child("oppa::StudioSave", 10, &save_props, Modal),
+        ctx.child_auto(&save_props, Modal),
     ])
 }
 
@@ -760,8 +740,7 @@ fn sort_button(ctx: &Ctx, mode: &Signal<u8>, value: u8, label: &str, debug: &str
     let active = mode.get() == value;
     let (mode, value) = (mode.clone(), value);
     let press: Action = Rc::new(move || mode.set(value));
-    ctx.child(
-        "oppa::StudioSort",
+    ctx.child_keyed(
         value as u64,
         &ButtonProps {
             label: SharedString::from(if active {
@@ -792,9 +771,7 @@ struct ExportContentProps {
 impl Props for ExportContentProps {}
 
 fn export_content(ctx: &Ctx, p: &ExportContentProps) -> VNode {
-    ctx.child(
-        "oppa::StudioExportBtn",
-        1,
+    ctx.child_auto(
         &ButtonProps {
             label: p.label.clone(),
             enabled: true,

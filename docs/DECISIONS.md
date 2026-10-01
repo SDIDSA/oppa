@@ -29,6 +29,8 @@ this table in place and never rewrite history. All ADRs are Accepted.
 | [0010](10-decisions/ADR-0010-scheduler-threading.md) | Multi-stop keyframe tracks (decision 357) | Style-attached stops + per-segment ease + once/loop/ping-pong over bg+opacity (lock stays); keyframes win over tweens; target closes the final leg; stamp cancels+snaps; DOM steps inline per frame |
 | [0004](10-decisions/ADR-0004-framework-owned-layout.md) | Retained Canvas primitive (decision 358) | `Tag::Canvas` + spec payload (childless leaf, explicit-or-zero box); lowers to Rect/RRect/Path/Text ops (no new DrawOp); text shapes into box lines; restart boundary for dirty walks |
 | [0014](10-decisions/ADR-0014-app-storage.md) | Static pre-decoded images via cache (decision 359) | `ImageCache` carries RGBA8 (`insert_pixels`/`pixels_of`); CPU/Vello `insert_cached`, DOM PNG data-URI; bare URL keys unchanged; video stays out |
+| [0013](10-decisions/ADR-0013-state-residence.md) | Zero-boilerplate children (decision 360) | `child_auto`/`child_keyed` key on `(caller, ordinal)` — no `TypeId` (rlib↔dylib boundary would fork reload state); load-bearing manual keys stay for cross-instance addressing |
+| [0008](10-decisions/ADR-0008-hot-reload.md) | Generic manifests (decision 361) | `component_manifest!` spells `Name::<A>(P<A>)` per monomorphization (canonical `Name<A>` symbol); bare type params and the props-less shorthand refuse loudly with the explicit form named |
 
 Superseded decisions: none currently. If a decision is replaced, replace its row
 here (1 line) — the old ADR file stays frozen in git, not in this table.

@@ -42,12 +42,19 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   static images via one cache deposit (CPU/Vello `insert_cached`, DOM
   PNG data-URI; URL keys unchanged); retained `Canvas` (`Tag::Canvas`
   + spec; lowers to Rect/RRect/Path/Text; childless leaf).
+- Phase 37a (decisions 360–361, gate green 2026-10-01): Ergonomics —
+  `ctx.child_auto`/`child_keyed` on `(caller, ordinal)` (no `TypeId`);
+  53 control call-sites migrated (load-bearing manual keys stay);
+  `component_manifest!` monomorphized generics (`Name::<A>(P<A>)`,
+  canonical symbols; bare/shorthand forms refuse loudly, proven
+  end-to-end in a new reload binary).
 
 ## Now (in progress)
 
-- Phase 37 (Ergonomics, Generic Manifests, App Services, `cargo-oppa`):
-  zero-boilerplate child call-sites + generic manifests; fetch/log/
-  persistence; `cargo-oppa new` + reload recipe (G8, G9, G16, G17).
+- Phase 37b (App Services): `TaskId` cancellation + pluggable
+  `Fetcher` trait (scripted + native/web hooks, G16); zero-stdout
+  ring-buffer diagnostic log sink (G17); signal-backed write-through
+  persistence over `KvStore`/`Collection`.
 
 ## Next (accepted, not started)
 

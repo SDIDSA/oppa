@@ -398,7 +398,7 @@ pub fn Menu(ctx: &Ctx, props: &MenuProps) -> VNode {
                 debug: SharedString::from(format!("menu-item-{inst}-{i}").as_str()),
                 ..item.clone()
             };
-            ctx.child("oppa::MenuItem", i as u64, &row, MenuItem)
+            ctx.child_keyed(i as u64, &row, MenuItem)
         })
         .collect::<Vec<_>>();
     // The list owns presses (hit-test activation) and arrow keys
@@ -581,12 +581,7 @@ pub fn ContextMenu<C: Props>(ctx: &Ctx, props: &ContextMenuProps<C>) -> VNode {
     let (host_tap, items_tap, open_tap) = (host.clone(), items_press.clone(), open_press.clone());
     let (host_drag, items_drag, open_drag) =
         (host.clone(), items_press.clone(), open_press.clone());
-    let content = ctx.child(
-        "oppa::ContextMenuContent",
-        1,
-        &props.content_props,
-        props.content,
-    );
+    let content = ctx.child_auto(&props.content_props, props.content);
     // Cursor-minus-wrapper-origin into portal-local coords (both
     // device px; wrapper layout is settled by open time). The menu
     // portal mounts INSIDE the wrapper (not beside it) so the
@@ -607,6 +602,9 @@ pub fn ContextMenu<C: Props>(ctx: &Ctx, props: &ContextMenuProps<C>) -> VNode {
         highlight: Some(highlight.clone()),
         anchor_focus: Some(ctx.focused()),
     };
+    // Manual key 2 (not `child_auto`): the wrapper's press/drag
+    // handlers address this child via `lookup_child(inst, 2)` —
+    // load-bearing keys stay manual (decision 360).
     let menu = ctx.child("oppa::ContextMenuMenu", 2, &menu_props, Menu);
     Div(anchor_label.as_str())
         .on_context_menu(move || {

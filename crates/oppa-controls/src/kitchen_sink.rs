@@ -161,23 +161,17 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
             // theme, and every themed surface re-derives in place.
             let theme_host = ctx.host().clone();
             Column::new().gap(12).children([
-                ctx.child(
-                    "sink::Form::Name",
-                    1,
+                ctx.child_auto(
                     &TextInputProps::new("Name", name.clone()).placeholder("Type your name..."),
                     TextInput,
                 ),
-                ctx.child(
-                    "sink::Form::Bio",
-                    2,
+                ctx.child_auto(
                     &TextAreaProps::new("Bio", bio.clone())
                         .placeholder("Multi-line bio...")
                         .width(280.0),
                     TextArea,
                 ),
-                ctx.child(
-                    "sink::Form::Volume",
-                    3,
+                ctx.child_auto(
                     &SliderProps {
                         label: SharedString::from("Volume"),
                         value: volume.clone(),
@@ -189,9 +183,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     },
                     Slider,
                 ),
-                ctx.child(
-                    "sink::Form::Dark",
-                    4,
+                ctx.child_auto(
                     &ToggleProps {
                         label: SharedString::from("Dark mode"),
                         on: dark.clone(),
@@ -206,9 +198,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     },
                     Toggle,
                 ),
-                ctx.child(
-                    "sink::Form::Accept",
-                    5,
+                ctx.child_auto(
                     &CheckboxProps {
                         label: SharedString::from("Accept terms"),
                         checked: accept.clone(),
@@ -217,9 +207,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     },
                     Checkbox,
                 ),
-                ctx.child(
-                    "sink::Form::Flavor",
-                    6,
+                ctx.child_auto(
                     &SelectProps::new(
                         vec![
                             SelectItem {
@@ -240,9 +228,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     ),
                     Select::<Flavor>,
                 ),
-                ctx.child(
-                    "sink::Form::Size",
-                    7,
+                ctx.child_auto(
                     &RadioGroupProps {
                         options: vec![
                             RadioOption {
@@ -355,27 +341,21 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
             let dialog_state = dialog_open.clone();
             let dialog_confirmed = confirmed.clone();
             Column::new().gap(12).children([
-                ctx.child(
-                    "sink::Overlays::Open",
-                    8,
+                ctx.child_auto(
                     &ButtonProps {
                         debug: SharedString::from("sink::Overlays::Open"),
                         ..ButtonProps::new("Open dialog", move || open_button.set(true))
                     },
                     Button,
                 ),
-                ctx.child(
-                    "sink::Overlays::Dialog",
-                    9,
+                ctx.child_auto(
                     &ModalProps::new("Confirm settings?", dialog_state)
                         .on_confirm(move || dialog_confirmed.set(true)),
                     Modal,
                 ),
                 // Live progress: the slider drives the meter
                 // (determinate — value text announces the percent).
-                ctx.child(
-                    "sink::Overlays::Drive",
-                    11,
+                ctx.child_auto(
                     &SliderProps {
                         label: SharedString::from("Download control"),
                         value: download.clone(),
@@ -387,9 +367,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     },
                     Slider,
                 ),
-                ctx.child(
-                    "sink::Overlays::Progress",
-                    10,
+                ctx.child_auto(
                     &ProgressBarProps {
                         label: Some(SharedString::from("Download")),
                         ..ProgressBarProps::new(download.get() / 100.0)
@@ -399,24 +377,15 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                 Row("sink::Overlays::Badges")
                     .style(Style::new().gap(8))
                     .children([
-                        ctx.child(
-                            "sink::Overlays::BadgePrimary",
-                            12,
+                        ctx.child_auto(
                             &BadgeProps::new("Primary").variant(BadgeVariant::Primary),
                             Badge,
                         ),
-                        ctx.child(
-                            "sink::Overlays::BadgeSuccess",
-                            13,
+                        ctx.child_auto(
                             &BadgeProps::new("Success").variant(BadgeVariant::Success),
                             Badge,
                         ),
-                        ctx.child(
-                            "sink::Overlays::BadgeDim",
-                            14,
-                            &BadgeProps::new("Dim").variant(BadgeVariant::Dim),
-                            Badge,
-                        ),
+                        ctx.child_auto(&BadgeProps::new("Dim").variant(BadgeVariant::Dim), Badge),
                     ]),
                 VNode::from(Text {
                     text: SharedString::from(format!("confirmed: {}", confirmed.get())),
@@ -487,9 +456,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
             let ok_host = host.clone();
             let err_host = host.clone();
             Column::new().gap(12).children([
-                ctx.child(
-                    "sink::Platform::Pick",
-                    15,
+                ctx.child_auto(
                     &ButtonProps {
                         debug: SharedString::from("sink::Platform::Pick"),
                         ..ButtonProps::new("Pick a file", move || pick())
@@ -500,9 +467,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     text: SharedString::from(format!("file: {}", file_status.get())),
                     style: Text::body_secondary,
                 }),
-                ctx.child(
-                    "sink::Platform::Count",
-                    16,
+                ctx.child_auto(
                     &ButtonProps {
                         debug: SharedString::from("sink::Platform::Count"),
                         ..ButtonProps::new("Count++", move || bump())
@@ -516,9 +481,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                 Row("sink::Platform::FetchRow")
                     .style(Style::new().gap(8))
                     .children([
-                        ctx.child(
-                            "sink::Platform::FetchOk",
-                            17,
+                        ctx.child_auto(
                             &ButtonProps {
                                 debug: SharedString::from("sink::Platform::FetchOk"),
                                 ..ButtonProps::new("Fetch quote", move || {
@@ -532,9 +495,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                             },
                             Button,
                         ),
-                        ctx.child(
-                            "sink::Platform::FetchErr",
-                            18,
+                        ctx.child_auto(
                             &ButtonProps {
                                 debug: SharedString::from("sink::Platform::FetchErr"),
                                 ..ButtonProps::new("Fetch fails", move || {
@@ -574,9 +535,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                 )),
                 style: Text::body_secondary,
             }),
-            ctx.child(
-                "sink::Tabs",
-                19,
+            ctx.child_auto(
                 &TabsProps {
                     tabs: vec![
                         TabItem {

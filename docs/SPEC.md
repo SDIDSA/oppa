@@ -14,7 +14,7 @@ contract test suite — not prose — defines sameness.
 
 - Old + new VNode diff to `TreeDiff`. Keyed children diff in place; unkeyed by order; incompatible types replace.
 - Fixed pass-mask map: structure → `STRUCTURE|LAYOUT|PAINT`; style-id subset; text → `TEXT|PAINT`; semantics → `SEMANTICS`; handler kind-set → `PAINT`.
-- Handler identity is `(NodeId, kind)`; component state key is call-site hash + ordinal (type change panics).
+- Handler identity is `(NodeId, kind)`; component state key is call-site hash + ordinal (type change panics). Static children key the same way via `ctx.child_auto` (call-site + ordinal, no `TypeId`); keyed siblings via `ctx.child_keyed` (explicit key); load-bearing manual keys (cross-instance addressing) keep `ctx.child`.
 - Hot reload swaps code, never types; the retained tree is never referenced by user code, only by id.
 
 ## Layout

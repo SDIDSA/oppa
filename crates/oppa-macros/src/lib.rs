@@ -436,10 +436,23 @@ fn is_word_at_bytes(haystack: &[u8], at: usize, word: &[u8]) -> bool {
 /// oppa_macros::component_manifest![export, Toggle(ToggleProps)];
 /// ```
 ///
+/// Monomorphized generics (Phase 37a, decision 360): name the concrete
+/// args on both sides —
+///
+/// ```ignore
+/// oppa_macros::component_manifest![List::<i32>(ListProps::<i32>)];
+/// ```
+///
+/// — and the macro emits one entry per monomorphization (mangled
+/// wrapper fns, canonical `Name<Args>` symbol). Bare type parameters
+/// (`List<T>`, `List<T>(ListProps<T>)`, single-letter args) refuse
+/// loudly at macro expansion: monomorphize with concrete args, never
+/// a silent unbound expansion (rustc would fail pages later).
+///
 /// Each entry's `render` wrapper calls the same-named component function in
 /// scope; `drain_props`/`adopt_props` move the concrete props value across
 /// the unload boundary as a thin pointer with a type-name check (see
-/// `oppa::reload`). Duplicate component names are a compile error.
+/// `oppa::reload`). Duplicate components are a compile error.
 #[proc_macro]
 pub fn component_manifest(input: TokenStream) -> TokenStream {
     let src = input.to_string();
@@ -457,23 +470,32 @@ pub fn component_manifest(input: TokenStream) -> TokenStream {
     }
 }
 
-fn parse_manifest(src: &str) -> Result<(bool, Vec<(String, String)>), String> {
-    // Split top-level commas (props paths never nest in M2b scope).
+fn parse_manifest(src: &str) -> Result<(bool, Vec<ManifestEntry>), String> {
+    // Split top-level commas (paren AND angle depth tracked — generic
+    // args carry commas inside `<>`).
     let mut parts = Vec::new();
-    let mut depth = 0usize;
+    let mut paren = 0usize;
+    let mut angle = 0usize;
     let mut start = 0usize;
     let bytes = src.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
         match bytes[i] {
-            b'(' => depth += 1,
+            b'(' => paren += 1,
             b')' => {
-                if depth == 0 {
+                if paren == 0 {
                     return Err("unbalanced `)` in component_manifest![...]".to_string());
                 }
-                depth -= 1;
+                paren -= 1;
             }
-            b',' if depth == 0 => {
+            b'<' => angle += 1,
+            b'>' => {
+                if angle == 0 {
+                    return Err("unbalanced `>` in component_manifest![...]".to_string());
+                }
+                angle -= 1;
+            }
+            b',' if paren == 0 && angle == 0 => {
                 parts.push(src[start..i].trim().to_string());
                 start = i + 1;
             }
@@ -481,8 +503,11 @@ fn parse_manifest(src: &str) -> Result<(bool, Vec<(String, String)>), String> {
         }
         i += 1;
     }
-    if depth != 0 {
+    if paren != 0 {
         return Err("unbalanced `(` in component_manifest![...]".to_string());
+    }
+    if angle != 0 {
+        return Err("unbalanced `<` in component_manifest![...]".to_string());
     }
     let tail = src[start..].trim().to_string();
     if !tail.is_empty() {
@@ -502,37 +527,188 @@ fn parse_manifest(src: &str) -> Result<(bool, Vec<(String, String)>), String> {
             export = true;
             continue;
         }
-        let open = part
-            .find('(')
-            .ok_or_else(|| format!("entry `{part}` is not `Name(Props)`"))?;
-        let name = part[..open].trim().to_string();
-        if !is_component_ident(&name) {
-            return Err(format!(
-                "component name `{name}` must be an Uppercase identifier"
-            ));
-        }
-        let rest = part[open + 1..].trim();
-        let props = rest
-            .strip_suffix(')')
-            .ok_or_else(|| format!("entry `{part}` is missing its closing `)`"))?
-            .trim()
-            .to_string();
-        if !is_type_path(&props) {
-            return Err(format!(
-                "props `{props}` must be a plain type path (no generics in M2b)"
-            ));
-        }
-        if entries.iter().any(|(n, _): &(String, String)| n == &name) {
-            return Err(format!(
-                "duplicate component `{name}` in component_manifest![...]"
-            ));
-        }
-        entries.push((name, props));
+        entries.push(parse_entry(part)?);
     }
     if entries.is_empty() {
         return Err("component_manifest![...] needs at least one `Name(Props)` entry".to_string());
     }
+    // Duplicate components (same canonical symbol) are a compile error.
+    let mut seen = std::collections::HashSet::new();
+    for e in &entries {
+        if !seen.insert(e.canonical.clone()) {
+            return Err(format!(
+                "duplicate component `{}` in component_manifest![...]",
+                e.canonical
+            ));
+        }
+    }
     Ok((export, entries))
+}
+
+/// One manifest entry: the component path (possibly turbofished), the
+/// props path, the canonical `Name<Args>` symbol, and the mangled
+/// wrapper-fn tag.
+#[derive(Debug, PartialEq)]
+struct ManifestEntry {
+    component: String,
+    props: String,
+    canonical: String,
+    tag: String,
+}
+
+/// Splits one entry into `Name(::<>Args)(Props)` — the trailing
+/// top-level `(...)` group is the props; everything before it is the
+/// component path (plain ident or `Ident::<Args>`).
+fn parse_entry(part: &str) -> Result<ManifestEntry, String> {
+    // Find the trailing top-level paren group (parens inside `<>`,
+    // e.g. fn-pointer args, never open a top-level group).
+    let bytes = part.as_bytes();
+    if !part.trim_end().ends_with(')') {
+        return Err(format!(
+            "entry `{part}` is not `Name(Props)` — monomorphized generics spell `Name::<A>(P<A>)`"
+        ));
+    }
+    let mut paren = 0usize;
+    let mut angle = 0usize;
+    let mut open_at: Option<usize> = None;
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'(' if angle == 0 => {
+                if paren == 0 {
+                    open_at = Some(i);
+                }
+                paren += 1;
+            }
+            b')' if angle == 0 => {
+                paren = paren.saturating_sub(1);
+            }
+            b'<' => angle += 1,
+            b'>' => angle = angle.saturating_sub(1),
+            _ => {}
+        }
+    }
+    let open = open_at.ok_or_else(|| format!("entry `{part}` is not `Name(Props)`"))?;
+    let name = part[..open].trim().to_string();
+    let props = part[open + 1..part.len() - 1].trim().to_string();
+    if props.is_empty() {
+        return Err(format!(
+            "entry `{part}` names no props — spell `Name(Props)`"
+        ));
+    }
+    let (base, args) = split_turbofish(&name).ok_or_else(|| {
+        format!("component name `{name}` must be an Uppercase identifier or `Name::<Args>`")
+    })?;
+    if !is_component_ident(&base) {
+        return Err(format!(
+            "component name `{base}` must be an Uppercase identifier"
+        ));
+    }
+    // Bare type parameters refuse loudly (Phase 37a): single-letter
+    // Uppercase args are params by universal convention (`T`, `P`);
+    // concrete single-idents (`String`) and compound args pass (a
+    // truly-bare multi-char param still fails loudly at rustc).
+    for arg in &args {
+        let arg = arg.trim();
+        if arg.len() == 1 && arg.chars().all(|c| c.is_uppercase()) {
+            return Err(format!(
+                "component `{name}` takes bare type parameter `{arg}` — monomorphize with concrete args (`Name::<i32>(P<i32>)`), never a silent unbound expansion"
+            ));
+        }
+    }
+    if !args.is_empty() && !is_type_path_generic(&props) {
+        return Err(format!(
+            "props `{props}` must be a type path (generic components spell `Name::<A>(P<A>)`)"
+        ));
+    }
+    if args.is_empty() && !is_type_path(&props) {
+        return Err(format!(
+            "props `{props}` must be a plain type path (no generics in M2b)"
+        ));
+    }
+    let canonical = if args.is_empty() {
+        base.clone()
+    } else {
+        format!("{}<{}>", base, args.join(","))
+    };
+    let tag = if args.is_empty() {
+        base.clone()
+    } else {
+        format!(
+            "{}__{}",
+            base,
+            args.iter()
+                .map(|a| mangle_arg(a))
+                .collect::<Vec<_>>()
+                .join("__")
+        )
+    };
+    if !tag.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Err(format!(
+            "component `{name}` mangles to non-identifier `{tag}` — simplify the turbofish args"
+        ));
+    }
+    let component = if args.is_empty() {
+        base.clone()
+    } else {
+        format!("{}::<{}>", base, args.join(","))
+    };
+    Ok(ManifestEntry {
+        component,
+        props,
+        canonical,
+        tag,
+    })
+}
+
+/// Splits `Name` or `Name::<A, B>` into base + args (`None` when the
+/// turbofish is malformed).
+fn split_turbofish(name: &str) -> Option<(String, Vec<String>)> {
+    let Some(turbo) = name.find("::") else {
+        return Some((name.to_string(), Vec::new()));
+    };
+    let (base, rest) = name.split_at(turbo);
+    let args = rest.strip_prefix("::")?.trim();
+    let inner = args.strip_prefix('<')?.strip_suffix('>')?.trim();
+    if inner.is_empty() {
+        return None;
+    }
+    // Top-level comma split (nested turbos nest).
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim().to_string());
+    if out.iter().any(|a| a.is_empty()) {
+        return None;
+    }
+    Some((base.to_string(), out))
+}
+
+/// Mangles one turbofish arg into identifier characters
+/// (`i32` → `i32`, `Vec<u8>` → `Vec_u8`, `&str` → `str`).
+fn mangle_arg(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len());
+    let mut prev_underscore = true;
+    for c in arg.chars() {
+        if c.is_alphanumeric() {
+            out.push(c);
+            prev_underscore = false;
+        } else if !prev_underscore {
+            out.push('_');
+            prev_underscore = true;
+        }
+    }
+    out.trim_matches('_').to_string()
 }
 
 fn is_component_ident(name: &str) -> bool {
@@ -562,15 +738,115 @@ fn is_type_path(path: &str) -> bool {
     })
 }
 
-fn expand_manifest(export: bool, entries: &[(String, String)]) -> String {
+/// Generic-aware type path (Phase 37a): plain segments plus balanced
+/// `<>` groups (nested turbos nest); parens/brackets/braces/quotes
+/// stay out everywhere.
+fn is_type_path_generic(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    if path.contains(['(', ')', '[', ']', '{', '}', ';', '"']) {
+        return false;
+    }
+    // Top-level `::` split (angle depth tracked — `A::<B>` keeps its
+    // turbofish with the segment; the `::` introducing `<` never
+    // splits).
+    let mut segments = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let bytes = path.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'<' => depth += 1,
+            b'>' => depth = depth.saturating_sub(1),
+            b':' if depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == b':' => {
+                if i + 2 < bytes.len() && bytes[i + 2] == b'<' {
+                    i += 2;
+                } else {
+                    segments.push(path[start..i].trim());
+                    start = i + 2;
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    segments.push(path[start..].trim());
+    if segments.iter().any(|s| s.is_empty()) {
+        return false;
+    }
+    segments.iter().all(|seg| {
+        // Plain ident, or `Ident[::<]args>` with balanced, non-empty,
+        // recursively-valid args.
+        if let Some(turbo) = seg.find('<') {
+            if !seg.ends_with('>') {
+                return false;
+            }
+            let base = seg[..turbo].trim().trim_end_matches(':');
+            if base.is_empty() || !is_bare_ident(base) {
+                return false;
+            }
+            let inner = seg[turbo + 1..seg.len() - 1].trim();
+            if inner.is_empty() {
+                return false;
+            }
+            split_top_commas(inner)
+                .map(|args| !args.is_empty() && args.iter().all(|a| is_type_path_generic(a)))
+                .unwrap_or(false)
+        } else {
+            is_bare_ident(seg)
+        }
+    })
+}
+
+/// One identifier segment (letters/`_` start, alphanumerics/`_` rest).
+fn is_bare_ident(seg: &str) -> bool {
+    let mut chars = seg.chars();
+    match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Top-level comma split (`None` on unbalanced `<>`).
+fn split_top_commas(inner: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim().to_string());
+    Some(out)
+}
+
+fn expand_manifest(export: bool, entries: &[ManifestEntry]) -> String {
     let mut out = String::new();
-    for (name, props) in entries {
+    for entry in entries {
+        let (component, props, tag) = (&entry.component, &entry.props, &entry.tag);
         out.push_str(&format!(
-            r##"fn __oppa_render_{name}(ctx: &::oppa::component::Ctx, props: &::oppa::component::OpaqueProps) -> ::oppa::vnode::VNode {{ {name}(ctx, props.get::<{props}>()) }}
-unsafe extern "C" fn __oppa_drain_{name}(props: *const ::oppa::component::OpaqueProps) -> ::oppa::reload::DrainedProps {{ let value: Option<{props}> = (*props).try_get::<{props}>().cloned(); match value {{ Some(value) => {{ let boxed: Box<{props}> = Box::new(value); ::oppa::reload::DrainedProps {{ ptr: Box::into_raw(boxed) as *mut ::std::ffi::c_void }} }}, None => ::oppa::reload::DrainedProps {{ ptr: ::std::ptr::null_mut() }} }} }}
-unsafe extern "C" fn __oppa_adopt_{name}(drained: ::oppa::reload::DrainedProps, into: ::oppa::worker::HotGeneration, expected: *const ::std::ffi::c_char) -> *mut ::oppa::component::OpaqueProps {{ let want = ::std::ffi::CStr::from_ptr(expected).to_string_lossy(); if want != ::std::any::type_name::<{props}>() {{ return ::std::ptr::null_mut(); }} let boxed: Box<{props}> = Box::from_raw(drained.ptr as *mut {props}); let owned: {props} = *boxed; let opaque = ::oppa::component::OpaqueProps::new(owned, into); Box::into_raw(Box::new(opaque)) }}
+            r##"fn __oppa_render_{tag}(ctx: &::oppa::component::Ctx, props: &::oppa::component::OpaqueProps) -> ::oppa::vnode::VNode {{ {component}(ctx, props.get::<{props}>()) }}
+unsafe extern "C" fn __oppa_drain_{tag}(props: *const ::oppa::component::OpaqueProps) -> ::oppa::reload::DrainedProps {{ let value: Option<{props}> = (*props).try_get::<{props}>().cloned(); match value {{ Some(value) => {{ let boxed: Box<{props}> = Box::new(value); ::oppa::reload::DrainedProps {{ ptr: Box::into_raw(boxed) as *mut ::std::ffi::c_void }} }}, None => ::oppa::reload::DrainedProps {{ ptr: ::std::ptr::null_mut() }} }} }}
+unsafe extern "C" fn __oppa_adopt_{tag}(drained: ::oppa::reload::DrainedProps, into: ::oppa::worker::HotGeneration, expected: *const ::std::ffi::c_char) -> *mut ::oppa::component::OpaqueProps {{ let want = ::std::ffi::CStr::from_ptr(expected).to_string_lossy(); if want != ::std::any::type_name::<{props}>() {{ return ::std::ptr::null_mut(); }} let boxed: Box<{props}> = Box::from_raw(drained.ptr as *mut {props}); let owned: {props} = *boxed; let opaque = ::oppa::component::OpaqueProps::new(owned, into); Box::into_raw(Box::new(opaque)) }}
 "##,
-            name = name,
+            tag = tag,
+            component = component,
             props = props
         ));
     }
@@ -578,11 +854,10 @@ unsafe extern "C" fn __oppa_adopt_{name}(drained: ::oppa::reload::DrainedProps, 
     // use behind an `OnceLock` (never mutated after — the exported
     // pointer stays valid for the provider's lifetime).
     out.push_str("pub fn __oppa_manifest_descs() -> &'static [::oppa::reload::ComponentDesc] {\n    static CELL: ::std::sync::OnceLock<Vec<::oppa::reload::ComponentDesc>> = ::std::sync::OnceLock::new();\n    CELL.get_or_init(|| vec![\n");
-    for (name, props) in entries {
+    for entry in entries {
         out.push_str(&format!(
-            "        ::oppa::reload::ComponentDesc {{ symbol: ::oppa::hash::SymbolHash::of(\"{name}\"), props_type: ::std::any::type_name::<{props}>(), render: __oppa_render_{name}, drain_props: __oppa_drain_{name}, adopt_props: __oppa_adopt_{name} }},\n",
-            name = name,
-            props = props
+            "        ::oppa::reload::ComponentDesc {{ symbol: ::oppa::hash::SymbolHash::of(\"{}\"), props_type: ::std::any::type_name::<{}>(), render: __oppa_render_{}, drain_props: __oppa_drain_{}, adopt_props: __oppa_adopt_{} }},\n",
+            entry.canonical, entry.props, entry.tag, entry.tag, entry.tag
         ));
     }
     out.push_str("    ])\n}\n");
@@ -1243,9 +1518,53 @@ mod tests {
         assert_eq!(
             entries,
             vec![
-                ("Toggle".to_string(), "ToggleProps".to_string()),
-                ("ContactRow".to_string(), "RowProps".to_string()),
+                ManifestEntry {
+                    component: "Toggle".to_string(),
+                    props: "ToggleProps".to_string(),
+                    canonical: "Toggle".to_string(),
+                    tag: "Toggle".to_string(),
+                },
+                ManifestEntry {
+                    component: "ContactRow".to_string(),
+                    props: "RowProps".to_string(),
+                    canonical: "ContactRow".to_string(),
+                    tag: "ContactRow".to_string(),
+                },
             ]
+        );
+    }
+
+    #[test]
+    fn manifest_parses_monomorphized_generics() {
+        let (export, entries) =
+            parse_manifest("List::<i32>(ListProps::<i32>), Map::<String, Vec<u8>>(MapProps)")
+                .unwrap();
+        assert!(!export);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].component, "List::<i32>");
+        assert_eq!(entries[0].props, "ListProps::<i32>");
+        assert_eq!(entries[0].canonical, "List<i32>");
+        assert_eq!(entries[0].tag, "List__i32");
+        assert_eq!(entries[1].tag, "Map__String__Vec_u8");
+        let expanded = expand_manifest(export, &entries);
+        assert!(expanded.contains("__oppa_render_List__i32"));
+        assert!(expanded.contains("__oppa_drain_List__i32"));
+        assert!(expanded.contains("__oppa_adopt_List__i32"));
+        assert!(expanded.contains("SymbolHash::of(\"List<i32>\")"));
+        assert!(expanded.contains("List::<i32>(ctx, props.get::<ListProps::<i32>>())"));
+    }
+
+    #[test]
+    fn manifest_rejects_bare_generics_loudly() {
+        // Bare type parameters refuse at macro expansion (never a
+        // silent unbound expansion failing pages later at rustc).
+        assert!(parse_manifest("List<T>(ListProps<T>)").is_err());
+        assert!(parse_manifest("List::<T>(ListProps::<T>)").is_err());
+        // The shorthand without props names the explicit form.
+        assert!(parse_manifest("List::<i32>").is_err());
+        // Distinct monomorphizations coexist (no duplicate).
+        assert!(
+            parse_manifest("List::<i32>(ListProps::<i32>), List::<u8>(ListProps::<u8>)").is_ok()
         );
     }
 
