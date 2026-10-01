@@ -197,3 +197,151 @@ fn cjk_without_coverage_fails_loud_never_tofu() {
     let msg = format!("{err}");
     assert!(msg.contains("U+65E5"), "names the uncovered char: {msg}");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 36 PR3 (decision 355): multi-span paragraphs — per-span
+// shaping joined across line breaks (shape-per-span, never
+// re-shape), cluster-accurate carets, span-ink attribution.
+// ---------------------------------------------------------------------------
+
+use oppa::layout::layout_text_with_breaks as lay_lines;
+use oppa::text::{join_shaped_runs, span_index_for_byte, FontWeight};
+
+/// Shape each span with its own weight, join, wrap once (the PR3
+/// pipeline — one shape call per span, zero re-shapes).
+fn lay_rich(
+    svc: &RustybuzzService,
+    spans: &[(&str, FontWeight)],
+    size: f32,
+    avail: f32,
+) -> (Vec<oppa::layout::LaidLine>, Vec<usize>, Vec<usize>) {
+    let mut runs = Vec::with_capacity(spans.len());
+    let mut joined_text = String::new();
+    let mut ends = Vec::with_capacity(spans.len());
+    for (text, weight) in spans {
+        // Empty spans are inert (the engine skips them pre-shape).
+        if text.is_empty() {
+            ends.push(joined_text.len());
+            continue;
+        }
+        let mut st = style(size);
+        st.weight = *weight;
+        runs.push(svc.shape(text, &st).expect("span shapes"));
+        joined_text.push_str(text);
+        ends.push(joined_text.len());
+    }
+    let joined = join_shaped_runs(&runs);
+    let breaks = UnicodeBreakSource::new().opportunities(&joined_text);
+    let m = svc.measure_line(&joined);
+    let lines = lay_lines(
+        &joined,
+        &joined_text,
+        avail,
+        None,
+        m.ascent,
+        m.descent,
+        m.line_gap,
+        &breaks,
+    );
+    (lines, ends, breaks)
+}
+
+/// Same-style spans join transparently: the joined run equals the
+/// whole-paragraph shape exactly (same bytes, same advances, same
+/// lines as the P1 corpus row).
+#[test]
+fn rich_same_style_join_is_transparent() {
+    let svc = service();
+    let whole = svc.shape(P1, &style(16.0)).expect("whole");
+    let mut runs = Vec::new();
+    for part in ["The quick ", "brown fox", " jumps"] {
+        runs.push(svc.shape(part, &style(16.0)).expect("part shapes"));
+    }
+    let joined = join_shaped_runs(&runs);
+    assert_eq!(joined.text_len_bytes, whole.text_len_bytes);
+    assert_eq!(joined.total_advance, whole.total_advance);
+    assert_eq!(joined.clusters, whole.clusters);
+    // Same wrap as the P1 corpus row (Title 16px, avail 100).
+    let breaks = UnicodeBreakSource::new().opportunities(P1);
+    let m = svc.measure_line(&whole);
+    let lines = lay_lines(
+        &joined, P1, 100.0, None, m.ascent, m.descent, m.line_gap, &breaks,
+    );
+    let got = spans(&lines);
+    assert_eq!(got.len(), 3);
+    assert_eq!(got[0], ((0, 9), 77.64844));
+    assert_eq!(got[1], ((10, 19), 78.88281));
+    assert_eq!(got[2], ((20, 25), 48.664063));
+}
+
+/// Mixed-weight spans: every wrapped line starts at an opportunity,
+/// span boundaries attribute ink, and per-byte carets hold across
+/// the wrapped rich lines (wrap-point affinity included).
+#[test]
+fn rich_bold_span_breaks_carets_and_inks() {
+    use oppa::text::FontWeight as W;
+    let svc = service();
+    let spans = [
+        ("The quick ", W::NORMAL),
+        ("brown fox", W::BOLD),
+        (" jumps", W::NORMAL),
+    ];
+    let (lines, ends, breaks) = lay_rich(&svc, &spans, 16.0, 100.0);
+    assert_eq!(ends, vec![10, 19, 25]);
+    assert_opportunity_only(&lines, &breaks, 25);
+    // Every laid run attributes to its span by leading byte.
+    for line in &lines {
+        for run in &line.runs {
+            if run.glyphs.is_empty() {
+                continue;
+            }
+            let si = span_index_for_byte(&ends, run.byte_range.0).expect("owner");
+            let (s, e) = (if si == 0 { 0 } else { ends[si - 1] }, ends[si]);
+            assert!(
+                run.byte_range.0 >= s && run.byte_range.1 <= e,
+                "run {run:?} stays inside span {si} [{s},{e})"
+            );
+        }
+    }
+    // Caret across the span boundary (byte 10 = 'b'): line 2's
+    // leading edge, and the trailing caret ends the paragraph.
+    let b = oppa::layout::LayoutBox {
+        lines,
+        ..Default::default()
+    };
+    let last_line = b.lines.len() - 1;
+    let (_, x10) = b.caret_position(10);
+    assert!(x10 >= 0.0, "boundary caret resolves, got {x10}");
+    let (li_end, _) = b.caret_position(25);
+    assert_eq!(li_end, last_line, "trailing caret on the last line");
+    let (li0, x0) = b.caret_position(0);
+    assert_eq!((li0, x0), (0, 0.0));
+}
+
+/// Empty spans are inert: identical lines with and without one.
+#[test]
+fn rich_empty_span_is_inert() {
+    use oppa::text::FontWeight as W;
+    let svc = service();
+    let (a, _, _) = lay_rich(
+        &svc,
+        &[
+            ("The quick ", W::NORMAL),
+            ("", W::BOLD),
+            ("brown fox jumps", W::NORMAL),
+        ],
+        16.0,
+        100.0,
+    );
+    let (b, _, _) = lay_rich(
+        &svc,
+        &[("The quick brown fox jumps", W::NORMAL)],
+        16.0,
+        100.0,
+    );
+    assert_eq!(a.len(), b.len());
+    for (la, lb) in a.iter().zip(b.iter()) {
+        assert_eq!(la.width, lb.width);
+        assert_eq!(la.clusters, lb.clusters);
+    }
+}

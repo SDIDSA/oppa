@@ -47,7 +47,7 @@ use crate::interner::Interner;
 use crate::pass_mask::PassMask;
 use crate::reactive::{untrack, Runtime, Signal};
 use crate::reconciler::Reconciler;
-use crate::style::{AlignItems, FlexWrap, GridTrack, JustifyContent, Style};
+use crate::style::{AlignItems, Color, FlexWrap, GridTrack, JustifyContent, Style};
 use crate::text::{
     round_to_device_px, BreakSource, FontId, ShapedRun, TextError, TextService, TextStyle,
 };
@@ -126,6 +126,12 @@ pub struct LaidRun {
     /// unit-test path, which owns no font table); always resolved on
     /// committed boxes.
     pub family: String,
+    /// Span paint ink (Phase 36 PR3, decision 355): `Some` exactly on
+    /// runs of a multi-span paragraph (resolved from the span table
+    /// post-pass — `None` on single-style text, and builders split
+    /// `DrawOp::Text` at ink boundaries so single-ink scenes keep
+    /// byte-identical op counts).
+    pub ink: Option<Color>,
 }
 
 /// One cluster positioned in visual order (hit-test/caret source).
@@ -430,6 +436,33 @@ fn measure_key(
     }
 }
 
+/// Rich cache key (Phase 36 PR3, decision 355): the joined bytes plus
+/// every span's weight and ink — a span re-style re-shapes exactly
+/// like a byte change (never a stale-span hit). Inks ride the key
+/// (they do not move layout, but the key owns cache identity — a
+/// cheaper miss than a second table).
+fn measure_key_rich(
+    joined: &str,
+    spans: &[crate::vnode::TextSpan],
+    size_px: f32,
+    cfg: &LayoutTextConfig,
+) -> TextMeasureKey {
+    let mut buf: Vec<u8> = Vec::with_capacity(joined.len() + spans.len() * 8);
+    buf.extend_from_slice(joined.as_bytes());
+    for s in spans {
+        buf.extend_from_slice(&s.weight.0.to_le_bytes());
+        buf.extend_from_slice(&s.ink.map(|c| c.0).unwrap_or(u32::MAX).to_le_bytes());
+        buf.push(0xFF);
+    }
+    TextMeasureKey {
+        bytes_hash: fnv1a64(&buf),
+        size_bits: size_px.to_bits(),
+        dpr_bits: cfg.device_pixel_ratio.to_bits(),
+        family_hash: fnv1a64(cfg.family.as_bytes()),
+        weight: spans.first().map(|s| s.weight.0).unwrap_or(400),
+    }
+}
+
 /// Light pre-pass for run gating: true iff some text leaf's cache key
 /// misses (fresh node, changed bytes, or changed resolved size/weight —
 /// the TEXT-only change surfaces here, not via flags). Weight inherits
@@ -447,7 +480,10 @@ fn needs_measure(rec: &Reconciler, cfg: &LayoutTextConfig, root: NodeId) -> bool
                 if !text.is_empty() {
                     let size = resolve_text_px(n.text_hint, inherited, cfg);
                     let weight = resolve_text_weight(n.text_hint, inherited_weight);
-                    let key = measure_key(text, size, weight, cfg);
+                    let key = match &n.rich_text {
+                        Some(spans) => measure_key_rich(text, spans, size, cfg),
+                        None => measure_key(text, size, weight, cfg),
+                    };
                     if n.measured.as_ref().is_none_or(|m| m.key != key) {
                         return true;
                     }
@@ -3314,7 +3350,15 @@ impl<'a> LayoutCtx<'a> {
         } else {
             text
         };
-        let measured = self.measure(id, measure_text, size_px, weight);
+        // Rich path (Phase 36 PR3): nodes carrying a span table shape
+        // each non-empty span with its own weight and join (never
+        // re-shape); single-style nodes keep the cached `measure`
+        // path exactly.
+        let spans = self.rec.get(id).and_then(|n| n.rich_text.clone());
+        let measured = match &spans {
+            Some(spans) => self.measure_rich(id, measure_text, spans, size_px),
+            None => self.measure(id, measure_text, size_px, weight),
+        };
         let (shaped, ascent, descent, line_gap) = match measured {
             Some(m) => (m.shaped.clone(), m.ascent, m.descent, m.line_gap),
             None => {
@@ -3322,6 +3366,20 @@ impl<'a> LayoutCtx<'a> {
                 return Size { w: 0.0, h: 0.0 };
             }
         };
+        // Span table for the ink post-pass (`None` on single-style
+        // text — every run keeps `ink: None`, builders keep
+        // byte-identical op counts).
+        let span_table: Option<(Vec<usize>, Vec<Option<Color>>)> = spans.map(|spans| {
+            let mut ends = Vec::with_capacity(spans.len());
+            let mut inks = Vec::with_capacity(spans.len());
+            let mut acc = 0usize;
+            for s in &spans {
+                acc += s.text.len();
+                ends.push(acc);
+                inks.push(s.ink);
+            }
+            (ends, inks)
+        });
         let text_len = shaped.text_len_bytes;
         if shaped.clusters.is_empty() || text_len == 0 {
             let w = explicit_w.or(constrain_w).unwrap_or(0.0);
@@ -3365,6 +3423,8 @@ impl<'a> LayoutCtx<'a> {
         };
         // Post-pass context the pure order/wrap step cannot own (M7,
         // decision 110): exact em size + resolved per-run families.
+        // Phase 36 PR3 adds span ink the same way (leading affinity
+        // at boundaries — the `span_index_for_byte` rule).
         let em_size = size_px * self.dpr;
         let requested = self.engine.config.family.clone();
         for line in &mut lines {
@@ -3372,6 +3432,13 @@ impl<'a> LayoutCtx<'a> {
             for run in &mut line.runs {
                 if run.family.is_empty() {
                     run.family = self.engine.family_of(run.font_id, &requested);
+                }
+                if run.ink.is_none() {
+                    if let Some((ends, inks)) = &span_table {
+                        if let Some(si) = crate::text::span_index_for_byte(ends, run.byte_range.0) {
+                            run.ink = inks[si];
+                        }
+                    }
                 }
             }
         }
@@ -3442,6 +3509,81 @@ impl<'a> LayoutCtx<'a> {
                 ),
             }
         };
+        let metrics = service.measure_line(&shaped);
+        self.stats.nodes_shaped += shaped_count;
+        let measured = MeasuredText {
+            key,
+            shaped,
+            width: metrics.width,
+            ascent: metrics.ascent,
+            descent: metrics.descent,
+            line_gap: metrics.line_gap,
+        };
+        if let Some(n) = self.rec.node_mut(id) {
+            n.measured = Some(measured.clone());
+        }
+        Some(measured)
+    }
+
+    /// Multi-span measurement (Phase 36 PR3, decision 355): shapes
+    /// each non-empty span with its own weight and joins (the
+    /// `join_shaped_runs` rule — never re-shape). The joined run is
+    /// cached on the node under the rich key (span weights/inks ride
+    /// it — a span re-style re-shapes). `None` when no service is
+    /// installed or every span is empty (the `measure` zero rule).
+    /// Per-span shapes bypass the node cache (one slot holds the
+    /// joined run — per-span slots are a profiled follow-up,
+    /// stated).
+    fn measure_rich(
+        &mut self,
+        id: NodeId,
+        joined: &str,
+        spans: &[crate::vnode::TextSpan],
+        size_px: f32,
+    ) -> Option<MeasuredText> {
+        let cfg = &self.engine.config;
+        let key = measure_key_rich(joined, spans, size_px, cfg);
+        if let Some(n) = self.rec.get(id) {
+            if let Some(m) = &n.measured {
+                if m.key == key {
+                    return Some(m.clone());
+                }
+            }
+        }
+        let service = self.service?;
+        let mut runs: Vec<ShapedRun> = Vec::with_capacity(spans.len());
+        let mut shaped_count: usize = 0;
+        for span in spans {
+            if span.text.is_empty() {
+                continue; // inert — zero bytes, never shaped
+            }
+            let style = TextStyle {
+                family: cfg.family.clone(),
+                font_size_px: size_px,
+                device_pixel_ratio: cfg.device_pixel_ratio,
+                weight: span.weight,
+                style: crate::text::FontStyle::Normal,
+                stretch: crate::text::FontStretch::NORMAL,
+                letter_spacing_px: 0.0,
+                locale: "en-US".to_string(),
+            };
+            match service.shape(&span.text, &style) {
+                Ok(r) => {
+                    shaped_count += 1;
+                    runs.push(r);
+                }
+                Err(TextError::EmptyText) => {}
+                Err(e) => panic!(
+                    "layout: rich span measurement failed (family {:?}, {size_px}px): {e} — \
+                     a shaping failure is a backend/config bug, never silent",
+                    cfg.family,
+                ),
+            }
+        }
+        if runs.is_empty() {
+            return None;
+        }
+        let shaped = crate::text::join_shaped_runs(&runs);
         let metrics = service.measure_line(&shaped);
         self.stats.nodes_shaped += shaped_count;
         let measured = MeasuredText {
@@ -3955,6 +4097,9 @@ fn emit_lines(
                 glyphs: laid,
                 font_id: run_font_of(shaped, c.byte_range.0),
                 family: String::new(),
+                // Span ink arrives post-pass (see `layout_text_leaf`)
+                // — the pure order/wrap step owns no span table.
+                ink: None,
             });
         }
         if ellipsis_here && finite {
@@ -3971,6 +4116,7 @@ fn emit_lines(
                 glyphs: Vec::new(),
                 font_id: FontId(0),
                 family: String::new(),
+                ink: None,
             });
         }
         let full_width = if ellipsis_here && finite {

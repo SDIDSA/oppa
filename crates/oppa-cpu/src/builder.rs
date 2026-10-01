@@ -645,12 +645,53 @@ fn emit_node_ops(
             // Flatten runs into cells while recording the per-run font
             // identity (M7, decision 110): consecutive same-font runs
             // merge so fallback boundaries — not cluster boundaries —
-            // are what the op carries.
+            // are what the op carries. Phase 36 PR3 (decision 355)
+            // splits at span-ink boundaries too (one op per ink run —
+            // backends paint solid ink per op, so mixed-ink lines need
+            // one op per ink; single-ink lines keep exactly one op —
+            // existing scenes stay byte-identical).
             let mut glyphs: Vec<PlacedGlyph> = Vec::new();
             let mut fonts: Vec<oppa::FontRun> = Vec::new();
+            let mut ink_run: Option<oppa::Color> = None;
+            let mut flush = |glyphs: &mut Vec<PlacedGlyph>,
+                             fonts: &mut Vec<oppa::FontRun>,
+                             ink_run: &mut Option<oppa::Color>| {
+                if glyphs.is_empty() {
+                    return;
+                }
+                // Glyph cells carry the layout's pre-positioned advances into
+                // the backend; the backend fills cells, never re-shapes.
+                // `baseline` rides along for the GPU backend (M6 decision
+                // 105); the CPU backend ignores it, `em_size`/`fonts` alike
+                // (cells unchanged).
+                plan.ops.push(DrawOp::Text {
+                    node: id,
+                    x: b.x,
+                    y: b.y + line.y,
+                    line_height: line.height,
+                    baseline: line.baseline,
+                    em_size: line.em_size,
+                    glyphs: std::mem::take(glyphs),
+                    fonts: std::mem::take(fonts),
+                    ink: ink_run
+                        .take()
+                        .unwrap_or_else(|| resolve_ink(rec, styles, id, style, theme)),
+                    opacity,
+                });
+            };
             for run in &line.runs {
                 if run.glyphs.is_empty() {
                     continue;
+                }
+                // Ink boundary: flush the open op before starting a new
+                // ink run (backends paint solid ink per op). `None`
+                // runs join the open op (single-style fast path — no
+                // extra ops).
+                if ink_run != run.ink && !glyphs.is_empty() {
+                    flush(&mut glyphs, &mut fonts, &mut ink_run);
+                }
+                if ink_run.is_none() {
+                    ink_run = run.ink;
                 }
                 let base = glyphs.len();
                 glyphs.extend(run.glyphs.iter().map(|g| PlacedGlyph {
@@ -670,26 +711,7 @@ fn emit_node_ops(
                     }),
                 }
             }
-            if glyphs.is_empty() {
-                continue;
-            }
-            // Glyph cells carry the layout's pre-positioned advances into
-            // the backend; the backend fills cells, never re-shapes.
-            // `baseline` rides along for the GPU backend (M6 decision
-            // 105); the CPU backend ignores it, `em_size`/`fonts` alike
-            // (cells unchanged).
-            plan.ops.push(DrawOp::Text {
-                node: id,
-                x: b.x,
-                y: b.y + line.y,
-                line_height: line.height,
-                baseline: line.baseline,
-                em_size: line.em_size,
-                glyphs,
-                fonts,
-                ink: resolve_ink(rec, styles, id, style, theme),
-                opacity,
-            });
+            flush(&mut glyphs, &mut fonts, &mut ink_run);
         }
     }
     // Round 15.1 (decision 312): the focused caret bar — one
@@ -1132,4 +1154,117 @@ pub fn node_styles(rec: &Reconciler) -> HashMap<NodeId, oppa::StyleId> {
         .into_iter()
         .filter_map(|id| rec.get(id).map(|n| (id, n.style)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oppa::{ComponentHost, Ctx, Div, DrawOp, Props, RichText, TextService, TextSpan, VNode};
+
+    /// Uniform-advance fake (the m3/m4 rig shape): one cluster per
+    /// byte, advance = em × 0.625. Weight/family ignored (ink is
+    /// layout-independent — spans shape identically, paint differs).
+    struct FakeText;
+
+    impl TextService for FakeText {
+        fn enumerate_fonts(&self) -> Vec<oppa::FontInfo> {
+            Vec::new()
+        }
+
+        fn shape(
+            &self,
+            text: &str,
+            style: &oppa::TextStyle,
+        ) -> Result<oppa::ShapedRun, oppa::TextError> {
+            if text.is_empty() {
+                return Err(oppa::TextError::EmptyText);
+            }
+            let em = style.font_size_px * style.device_pixel_ratio;
+            let adv = em * 0.625;
+            let n = text.len();
+            Ok(oppa::ShapedRun {
+                glyphs: (0..n)
+                    .map(|_| oppa::ShapedGlyph {
+                        glyph_id: 0,
+                        x_advance: adv,
+                        x_offset: 0.0,
+                        y_offset: 0.0,
+                    })
+                    .collect(),
+                runs: vec![oppa::TextRun {
+                    byte_range: (0, n),
+                    glyph_range: (0, n),
+                    rtl: false,
+                    script: 0,
+                    font_id: oppa::FontId(0),
+                    font_metrics: oppa::FontMetrics {
+                        ascent: em * 0.8,
+                        descent: em * 0.2,
+                        line_gap: 0.0,
+                    },
+                }],
+                clusters: (0..n)
+                    .map(|i| oppa::Cluster {
+                        byte_range: (i, i + 1),
+                        glyph_range: (i, i + 1),
+                    })
+                    .collect(),
+                total_advance: adv * n as f32,
+                text_len_bytes: n,
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct RichProps;
+    impl Props for RichProps {}
+
+    fn rich_scene(ctx: &Ctx, _: &RichProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        Div("wrap").child(
+            RichText::new(vec![
+                TextSpan::new("ab").ink(oppa::Color(0xFF_00_00)),
+                TextSpan::new("cd"),
+            ])
+            .into(),
+        )
+    }
+
+    /// Phase 36 PR3: a two-ink line emits one `DrawOp::Text` per ink
+    /// run (red span + node-ink span); a single-ink line keeps exactly
+    /// one op (existing scenes stay byte-identical).
+    #[test]
+    fn mixed_ink_line_splits_text_ops_per_ink() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        host.set_text_service(Box::new(FakeText));
+        host.mount("Rich", RichProps, rich_scene);
+        host.run_until_idle();
+        let builder = FramePlanBuilder::new(1.0);
+        let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+        let texts: Vec<&DrawOp> = plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, DrawOp::Text { .. }))
+            .collect();
+        assert_eq!(texts.len(), 2, "one op per ink run, got {}", texts.len());
+        let inks: Vec<oppa::Color> = texts
+            .iter()
+            .map(|op| match op {
+                DrawOp::Text { ink, .. } => *ink,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(inks[0], oppa::Color(0xFF_00_00), "span ink first");
+        assert_ne!(inks[1], inks[0], "node ink resolves separately");
+        // Glyph coverage splits 2 + 2 across the ops.
+        let counts: Vec<usize> = texts
+            .iter()
+            .map(|op| match op {
+                DrawOp::Text { glyphs, .. } => glyphs.len(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(counts, vec![2, 2]);
+    }
 }

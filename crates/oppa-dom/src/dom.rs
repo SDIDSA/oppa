@@ -127,6 +127,16 @@ pub enum HtmlKind {
     External(u64),
 }
 
+/// One text run inside a DOM element (Phase 36 PR3): the fallback
+/// family, the run text, and the span ink as `#rrggbb` (`None` =
+/// inherit — no `color:` declaration, the node's own ink wins).
+#[derive(Clone, PartialEq, Debug)]
+pub struct DomRun {
+    pub family: String,
+    pub ink: Option<String>,
+    pub text: String,
+}
+
 /// One DOM element (presenter-side, keyed by [`NodeId`]).
 #[derive(Clone, PartialEq, Debug)]
 pub struct DomElement {
@@ -140,8 +150,12 @@ pub struct DomElement {
     pub inline_font: String,
     /// Span content / input value (raw; escaped at render).
     pub text: String,
-    /// Per-run `(family, text)` segmentation (fallback runs → inner spans).
-    pub runs: Vec<(String, String)>,
+    /// Per-run segmentation (fallback runs → inner spans): family
+    /// plus the run text plus the span ink (`None` = inherit — the
+    /// node's own ink, the `resolve_ink` rule). Phase 36 PR3 merges
+    /// on `(family, ink)` so multi-ink paragraphs render one `<span>`
+    /// per ink run with an honest `color:` declaration.
+    pub runs: Vec<DomRun>,
     /// ARIA + foreign attributes (deterministic order).
     pub attrs: Vec<(String, String)>,
     /// Retained child order (fields: empty — absorbed).
@@ -500,6 +514,12 @@ pub struct DomBackend {
     /// nodes, never thousands).
     snap: HashMap<NodeId, DomElement>,
     snap_roots: Vec<NodeId>,
+    /// Registered web fonts (Phase 36 PR3, decision 355): family →
+    /// raw sfnt bytes, served to the page as `@font-face` data URIs
+    /// so the browser shapes with the same bytes the framework
+    /// measured with (decision-81 parity). Re-registering a family
+    /// replaces its bytes (last wins, stated).
+    fonts: Vec<(String, Vec<u8>)>,
 }
 
 impl DomBackend {
@@ -524,6 +544,7 @@ impl DomBackend {
             last_patched_theme: Some(ThemeMode::Light),
             snap: HashMap::new(),
             snap_roots: Vec::new(),
+            fonts: Vec::new(),
         }
     }
 
@@ -536,6 +557,43 @@ impl DomBackend {
     /// retained id resolves).
     pub fn set_images(&mut self, images: ImageCache) {
         self.images = images;
+    }
+
+    /// Registers one web font (Phase 36 PR3, decision 355): the
+    /// browser serves `family` from these sfnt bytes (data-URI
+    /// `@font-face`, see [`DomBackend::font_face_css`]) — the same
+    /// bytes the framework measured with, closing the decision-81
+    /// display-vs-measure drift. Re-registering a family replaces
+    /// its bytes (last wins). Empty bytes refuse loudly (a packaging
+    /// bug, never a silent fallback).
+    pub fn register_font(&mut self, family: &str, ttf_bytes: &[u8]) {
+        if ttf_bytes.is_empty() {
+            panic!(
+                "dom: register_font({family}) with empty bytes — refused, never a silent fallback"
+            );
+        }
+        if let Some(slot) = self.fonts.iter_mut().find(|(f, _)| f == family) {
+            slot.1 = ttf_bytes.to_vec();
+        } else {
+            self.fonts.push((family.to_string(), ttf_bytes.to_vec()));
+        }
+    }
+
+    /// `@font-face` CSS for every registered font (Phase 36 PR3):
+    /// one block per family, bytes inline as base64 data URIs
+    /// (emitted once per page boot, never per patch — the page shell
+    /// injects it before any text renders). Empty with no fonts
+    /// (unregistered trees render exactly as before).
+    pub fn font_face_css(&self) -> String {
+        let mut out = String::new();
+        for (family, bytes) in &self.fonts {
+            out.push_str(&format!(
+                "@font-face{{font-family:\"{}\";src:url(data:font/ttf;base64,{}) format(\"truetype\");}}\n",
+                family.replace('"', ""),
+                base64_encode(bytes),
+            ));
+        }
+        out
     }
 
     pub fn element(&self, id: NodeId) -> Option<&DomElement> {
@@ -1186,15 +1244,22 @@ impl DomBackend {
     }
 
     fn render_runs(&self, el: &DomElement) -> String {
-        if el.runs.len() <= 1 {
+        // Plain text fast path: at most one run and no span ink (an
+        // inked single run still needs its `<span>` — otherwise the
+        // color drops silently).
+        if el.runs.len() <= 1 && el.runs.iter().all(|r| r.ink.is_none()) {
             return esc(&el.text);
         }
         let mut out = String::new();
-        for (family, text) in &el.runs {
+        for run in &el.runs {
+            let mut style = format!("font-family:{};", css_family(&run.family));
+            if let Some(ink) = &run.ink {
+                style.push_str(&format!("color:{ink};"));
+            }
             out.push_str(&format!(
                 "<span style=\"{}\">{}</span>",
-                esc(&format!("font-family:{};", css_family(family))),
-                esc(text)
+                esc(&style),
+                esc(&run.text)
             ));
         }
         out
@@ -1682,14 +1747,42 @@ fn placeholder_attr(hint: &str) -> String {
 /// nodes (hint, no payload — the `Text`-struct shape) render their
 /// children only, never the descendant string again (duplicating it
 /// would double content and dirty parents on every value change).
-fn text_runs(rec: &Reconciler, id: NodeId, dpr: f32) -> (String, Vec<(String, String)>, String) {
+fn text_runs(rec: &Reconciler, id: NodeId, dpr: f32) -> (String, Vec<DomRun>, String) {
     let Some(n) = rec.get(id) else {
         return (String::new(), Vec::new(), String::new());
     };
     let payload: String = n.text.clone().map(|t| t.to_string()).unwrap_or_default();
     let lines = n.layout.as_ref().map(|b| b.lines.as_slice()).unwrap_or(&[]);
     let em = lines.first().map(|l| l.em_size).unwrap_or(0.0);
-    let mut runs: Vec<(String, String)> = Vec::new();
+    let runs = merge_text_runs(lines, &payload);
+    let text = if runs.is_empty() {
+        payload
+    } else {
+        runs.iter()
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    let inline_font = if em > 0.0 {
+        let family = runs.first().map(|r| r.family.clone()).unwrap_or_default();
+        format!(
+            "font-family:{};font-size:{}px;white-space:pre;",
+            css_family(&family),
+            css_num(em / dpr.max(f32::EPSILON))
+        )
+    } else {
+        String::new()
+    };
+    (text, runs, inline_font)
+}
+
+/// Merges committed line runs into render runs (Phase 36 PR3):
+/// slices the payload by each non-empty run's byte range, joins
+/// consecutive same-`(family, ink)` runs back into one `<span>`
+/// (fallback boundaries split, and so do span-ink boundaries).
+/// Pure over lines + payload (headless-testable, never re-measured).
+fn merge_text_runs(lines: &[oppa::LaidLine], payload: &str) -> Vec<DomRun> {
+    let mut runs: Vec<DomRun> = Vec::new();
     for line in lines {
         for run in &line.runs {
             if run.glyphs.is_empty() {
@@ -1702,31 +1795,20 @@ fn text_runs(rec: &Reconciler, id: NodeId, dpr: f32) -> (String, Vec<(String, St
             if slice.is_empty() {
                 continue;
             }
+            let ink = run.ink.map(dom_hex);
             match runs.last_mut() {
-                Some(last) if last.0 == run.family => last.1.push_str(&slice),
-                _ => runs.push((run.family.clone(), slice)),
+                Some(last) if last.family == run.family && last.ink == ink => {
+                    last.text.push_str(&slice)
+                }
+                _ => runs.push(DomRun {
+                    family: run.family.clone(),
+                    ink,
+                    text: slice,
+                }),
             }
         }
     }
-    let text = if runs.is_empty() {
-        payload
-    } else {
-        runs.iter()
-            .map(|(_, t)| t.as_str())
-            .collect::<Vec<_>>()
-            .join("")
-    };
-    let inline_font = if em > 0.0 {
-        let family = runs.first().map(|(f, _)| f.clone()).unwrap_or_default();
-        format!(
-            "font-family:{};font-size:{}px;white-space:pre;",
-            css_family(&family),
-            css_num(em / dpr.max(f32::EPSILON))
-        )
-    } else {
-        String::new()
-    };
-    (text, runs, inline_font)
+    runs
 }
 
 /// Absolute geometry inline style. Root = relative container (no
@@ -1819,6 +1901,33 @@ fn css_num(v: f32) -> String {
     } else {
         format!("{v}")
     }
+}
+
+/// Minimal base64 encoder (Phase 36 PR3): standard alphabet, `=`
+/// padding — just enough for `@font-face` data URIs, kept inline so
+/// the backend adds no dependency for one call site.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let mut n: u32 = 0;
+        for (i, b) in chunk.iter().enumerate() {
+            n |= (*b as u32) << (16 - 8 * i);
+        }
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// Hex fill/stroke for vector paths (the stylesheet's `fmt_hex`
@@ -2020,5 +2129,157 @@ impl RendererBackend for DomBackend {
 impl Default for DomBackend {
     fn default() -> Self {
         Self::new(1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_encodes_rfc_vectors() {
+        assert_eq!(super::base64_encode(b""), "");
+        assert_eq!(super::base64_encode(b"f"), "Zg==");
+        assert_eq!(super::base64_encode(b"fo"), "Zm8=");
+        assert_eq!(super::base64_encode(b"foo"), "Zm9v");
+        assert_eq!(super::base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(super::base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(super::base64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(super::base64_encode(&[0x00, 0x01, 0x00, 0x00]), "AAEAAA==");
+    }
+
+    #[test]
+    fn register_font_replaces_and_emits_face_once_per_family() {
+        let mut dom = DomBackend::new(1.0);
+        assert_eq!(dom.font_face_css(), "", "unregistered trees emit nothing");
+        dom.register_font("DejaVu Sans", &[0x00, 0x01, 0x00, 0x00]);
+        let css = dom.font_face_css();
+        assert!(
+            css.contains("@font-face") && css.contains("DejaVu Sans"),
+            "face block names the family: {css}"
+        );
+        assert!(
+            css.contains("data:font/ttf;base64,AAEAAA=="),
+            "bytes ride a data URI: {css}"
+        );
+        // Re-registering replaces (last wins — one block per family).
+        dom.register_font("DejaVu Sans", &[0x01, 0x02, 0x03]);
+        assert_eq!(dom.font_face_css().matches("@font-face").count(), 1);
+        assert!(dom.font_face_css().contains("AQID"));
+    }
+
+    #[test]
+    #[should_panic(expected = "empty bytes")]
+    fn register_font_refuses_empty_bytes() {
+        DomBackend::new(1.0).register_font("DejaVu Sans", &[]);
+    }
+
+    #[test]
+    fn render_page_carries_registered_faces_in_style() {
+        use crate::css::StyleSheet;
+        let mut dom = DomBackend::new(1.0);
+        dom.register_font("DejaVu Sans", &[0x00, 0x01, 0x00, 0x00]);
+        let sheet = StyleSheet::new(1.0);
+        let page = crate::page::render_page("t", &dom, &sheet);
+        assert!(
+            page.contains("@font-face") && page.contains("DejaVu Sans"),
+            "full pages carry the face blocks"
+        );
+    }
+
+    #[test]
+    fn inked_runs_render_color_spans_and_merge_like_kinds() {
+        // Direct DomRun coverage (the `text_runs` merge rule):
+        // same (family, ink) joins; ink splits; None inherits.
+        let el = DomElement {
+            node: oppa::NodeId::new(1, 0),
+            kind: HtmlKind::Block,
+            classes: Vec::new(),
+            inline_geom: String::new(),
+            inline_font: String::new(),
+            text: "ab".to_string(),
+            runs: vec![DomRun {
+                family: "DejaVu Sans".to_string(),
+                ink: Some("#ff0000".to_string()),
+                text: "ab".to_string(),
+            }],
+            attrs: Vec::new(),
+            children: Vec::new(),
+            spacer_h: None,
+            sel_rects: Vec::new(),
+            caret_rect: None,
+            caret_ink: String::new(),
+            placeholder: String::new(),
+            no_transition: false,
+        };
+        let dom = DomBackend::new(1.0);
+        let html = dom.render_runs(&el);
+        assert!(
+            html.contains("<span") && html.contains("color:#ff0000;") && html.contains(">ab<"),
+            "single inked run keeps its span: {html}"
+        );
+        // Plain single run stays bare text (no span noise).
+        let plain = DomElement {
+            runs: Vec::new(),
+            text: "ab".to_string(),
+            ..el.clone()
+        };
+        assert_eq!(dom.render_runs(&plain), "ab");
+    }
+
+    fn laid_run(bytes: (usize, usize), family: &str, ink: Option<oppa::Color>) -> oppa::LaidRun {
+        oppa::LaidRun {
+            byte_range: bytes,
+            rtl: false,
+            glyphs: vec![oppa::LaidGlyph {
+                glyph_id: 0,
+                x: 0.0,
+                x_advance: 5.0,
+            }],
+            font_id: oppa::FontId(0),
+            family: family.to_string(),
+            ink,
+        }
+    }
+
+    fn laid_line(runs: Vec<oppa::LaidRun>) -> oppa::LaidLine {
+        oppa::LaidLine {
+            y: 0.0,
+            height: 16.0,
+            baseline: 12.0,
+            em_size: 16.0,
+            width: 10.0,
+            runs,
+            clusters: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn merge_text_runs_splits_ink_and_joins_like_kinds() {
+        use oppa::Color;
+        let red = Some(Color(0xFF_00_00));
+        let lines = vec![laid_line(vec![
+            laid_run((0, 1), "DejaVu Sans", red),
+            laid_run((1, 2), "DejaVu Sans", red),
+            laid_run((2, 3), "DejaVu Sans", None),
+        ])];
+        let runs = super::merge_text_runs(&lines, "abc");
+        assert_eq!(runs.len(), 2, "same-ink joins, ink splits: {runs:?}");
+        assert_eq!(runs[0].text, "ab");
+        assert_eq!(runs[0].ink, Some("#ff0000".to_string()));
+        assert_eq!(runs[1].text, "c");
+        assert_eq!(runs[1].ink, None, "None inherits");
+        // Family boundaries split even with matching ink.
+        let lines = vec![laid_line(vec![
+            laid_run((0, 1), "DejaVu Sans", red),
+            laid_run((1, 2), "Noto", red),
+        ])];
+        let runs = super::merge_text_runs(&lines, "ab");
+        assert_eq!(runs.len(), 2, "family splits: {runs:?}");
+        // Empty-glyph runs never render.
+        let mut empty = laid_run((0, 1), "DejaVu Sans", red);
+        empty.glyphs.clear();
+        let lines = vec![laid_line(vec![empty])];
+        assert!(super::merge_text_runs(&lines, "a").is_empty());
     }
 }

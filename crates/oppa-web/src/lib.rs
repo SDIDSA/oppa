@@ -738,6 +738,24 @@ mod tests {
         );
     }
 
+    /// Phase 36 PR3 (decision 355): the served page carries the
+    /// bundled DejaVu bytes as `@font-face` — the browser shapes
+    /// display text with the measured bytes, closing the
+    /// decision-81 display-vs-measure drift at the page level.
+    #[test]
+    fn webapp_page_serves_measured_font_bytes() {
+        let mut app = WebApp::new();
+        let html = app.html();
+        assert!(
+            html.contains("@font-face") && html.contains("DejaVu Sans"),
+            "page carries the measured face"
+        );
+        assert!(
+            html.contains("data:font/ttf;base64,"),
+            "bytes ride a data URI"
+        );
+    }
+
     /// Round 6.4 (pluggable runner): mounting a custom root
     /// component renders its content into the DOM, and pressing it
     /// updates the DOM through the same bindings. The default

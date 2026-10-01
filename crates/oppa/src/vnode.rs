@@ -137,7 +137,7 @@ pub fn stamp_handler_owner(vnode: &VNode, owner: u64) {
                 stamp_handler_owner(child, owner);
             }
         }
-        VNode::Text(_) | VNode::Hole => {}
+        VNode::Text(_) | VNode::RichText(_) | VNode::Hole => {}
     }
 }
 
@@ -174,6 +174,10 @@ pub struct Element {
 pub enum VNode {
     Element(Box<Element>),
     Text(SharedString),
+    /// Multi-span text leaf (Phase 36 PR3, decision 355): reconciles
+    /// to a `Tag::Text` retained node carrying the joined bytes plus
+    /// the span table (backends key off the tag — no tag change).
+    RichText(RichText),
     Fragment(Vec<VNode>),
     Hole,
 }
@@ -571,6 +575,88 @@ pub enum TextClass {
     TitleSmall,
     BodySecondary,
     Custom { size_px: u16, weight: FontWeight },
+}
+
+/// One styled span of a [`RichText`] paragraph (Phase 36 PR3,
+/// decision 355): contiguous text sharing one shaper weight and one
+/// paint ink. Spans share the paragraph's size (one [`TextClass`]
+/// per `RichText` node — mixed sizes stay out of minimal RichText,
+/// stated, never silently unified): weight varies the shaping (each
+/// span shapes separately — shape-per-span, never re-shape, the M3
+/// no-re-shape rule), ink varies the paint (per-run ink downstream).
+/// No cross-span ligatures/kerning (shaping sees one span at a time —
+/// stated shaping boundary, the Q5 shape-per-line answer applied to
+/// spans). Empty spans are inert (zero bytes — skipped at layout,
+/// never a silent break).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TextSpan {
+    pub text: SharedString,
+    pub weight: FontWeight,
+    pub ink: Option<Color>,
+}
+
+impl TextSpan {
+    pub fn new(text: impl Into<SharedString>) -> Self {
+        Self {
+            text: text.into(),
+            weight: FontWeight::NORMAL,
+            ink: None,
+        }
+    }
+
+    /// Shaper weight for this span (e.g. `FontWeight::BOLD`).
+    pub fn weight(mut self, weight: FontWeight) -> Self {
+        self.weight = weight;
+        self
+    }
+
+    /// Paint ink for this span (`None` = the node's ink — style ink,
+    /// then theme `text_primary`, the `resolve_ink` rule).
+    pub fn ink(mut self, color: Color) -> Self {
+        self.ink = Some(color);
+        self
+    }
+}
+
+/// Multi-span text leaf (Phase 36 PR3, decision 355 — G22 display
+/// half): a paragraph of [`TextSpan`]s sharing one [`TextClass`]
+/// size. Concatenated bytes are the paragraph (caret/selection math
+/// is paragraph-relative, unchanged); each span shapes with its own
+/// weight and paints with its own ink.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RichText {
+    pub spans: Vec<TextSpan>,
+    pub style: TextClass,
+}
+
+impl RichText {
+    pub fn new(spans: Vec<TextSpan>) -> Self {
+        Self {
+            spans,
+            style: Text::body_secondary,
+        }
+    }
+
+    /// Paragraph size class (shared by all spans — see [`TextSpan`]).
+    pub fn style(mut self, style: TextClass) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Concatenated paragraph bytes (the caret/selection space).
+    pub fn joined_text(&self) -> String {
+        let mut out = String::new();
+        for s in &self.spans {
+            out.push_str(&s.text);
+        }
+        out
+    }
+}
+
+impl From<RichText> for VNode {
+    fn from(t: RichText) -> Self {
+        VNode::RichText(t)
+    }
 }
 
 /// `TextField { text, style, label }` leaf (M7, decision 113): an

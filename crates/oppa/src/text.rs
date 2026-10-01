@@ -384,6 +384,74 @@ pub trait TextService {
     }
 }
 
+/// Joins per-span [`ShapedRun`]s into one paragraph run (Phase 36 PR3,
+/// decision 355 — the shape-whole-paragraph data half of
+/// `v2-paragraph.md` Q5): glyphs/runs/clusters concatenate with
+/// paragraph-relative byte and glyph ranges, advances sum. Each span
+/// keeps its own shaping (no cross-span ligatures/kerning — the
+/// stated shaping boundary); the joined run wraps/breaks/carets
+/// exactly like a single run (the M3 no-re-shape rule — wrapping
+/// never re-shapes). Empty runs contribute zero bytes (inert —
+/// skipped, never a silent break). All inputs must share the
+/// paragraph's size (mixed sizes stay out of minimal RichText —
+/// refused loudly below, never silently unified).
+pub fn join_shaped_runs(runs: &[ShapedRun]) -> ShapedRun {
+    let mut glyphs = Vec::new();
+    let mut out_runs = Vec::new();
+    let mut clusters = Vec::new();
+    let mut byte_base = 0usize;
+    let mut total_advance = 0.0f32;
+    for run in runs {
+        let glyph_base = glyphs.len();
+        glyphs.extend_from_slice(&run.glyphs);
+        for r in &run.runs {
+            out_runs.push(TextRun {
+                byte_range: (r.byte_range.0 + byte_base, r.byte_range.1 + byte_base),
+                glyph_range: (r.glyph_range.0 + glyph_base, r.glyph_range.1 + glyph_base),
+                rtl: r.rtl,
+                script: r.script,
+                font_id: r.font_id,
+                font_metrics: r.font_metrics,
+            });
+        }
+        for c in &run.clusters {
+            clusters.push(Cluster {
+                byte_range: (c.byte_range.0 + byte_base, c.byte_range.1 + byte_base),
+                glyph_range: (c.glyph_range.0 + glyph_base, c.glyph_range.1 + glyph_base),
+            });
+        }
+        byte_base += run.text_len_bytes;
+        total_advance += run.total_advance;
+    }
+    ShapedRun {
+        glyphs,
+        runs: out_runs,
+        clusters,
+        total_advance,
+        text_len_bytes: byte_base,
+    }
+}
+
+/// Span index owning a paragraph byte (Phase 36 PR3): leading
+/// affinity at boundaries (a boundary byte belongs to the span
+/// starting there — trailing blanks trimmed from a prior line read
+/// the next span, the decision-195 wrap-point rule). Empty spans own
+/// no bytes (inert). Out-of-range bytes clamp to the last non-empty
+/// span; no non-empty span → `None` (never an invented owner).
+pub fn span_index_for_byte(ends: &[usize], byte: usize) -> Option<usize> {
+    let mut owner: Option<usize> = None;
+    for (i, end) in ends.iter().enumerate() {
+        if *end == 0 || (i > 0 && *end == ends[i - 1]) {
+            continue; // empty span — owns no bytes
+        }
+        owner = Some(i);
+        if byte < *end {
+            return Some(i);
+        }
+    }
+    owner
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,5 +644,88 @@ mod tests {
     fn unused_fmt_helper(f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let err = TextError::FontNotFound("x".to_string());
         writeln!(f, "{err}")
+    }
+
+    fn span_run(text: &str, adv: f32, font: u32) -> ShapedRun {
+        // One cluster per byte, one glyph per cluster (the m3 FakeText
+        // shape — advances uniform per span so joins are exact).
+        let n = text.len();
+        let glyphs: Vec<ShapedGlyph> = (0..n)
+            .map(|_| ShapedGlyph {
+                glyph_id: font,
+                x_advance: adv,
+                x_offset: 0.0,
+                y_offset: 0.0,
+            })
+            .collect();
+        ShapedRun {
+            glyphs,
+            runs: vec![TextRun {
+                byte_range: (0, n),
+                glyph_range: (0, n),
+                rtl: false,
+                script: 0,
+                font_id: FontId(font),
+                font_metrics: FontMetrics {
+                    ascent: 12.0,
+                    descent: 4.0,
+                    line_gap: 2.0,
+                },
+            }],
+            clusters: (0..n)
+                .map(|i| Cluster {
+                    byte_range: (i, i + 1),
+                    glyph_range: (i, i + 1),
+                })
+                .collect(),
+            total_advance: adv * n as f32,
+            text_len_bytes: n,
+        }
+    }
+
+    #[test]
+    fn join_concatenates_ranges_and_advances() {
+        let a = span_run("hi", 5.0, 0);
+        let b = span_run("!", 7.0, 1);
+        let j = join_shaped_runs(&[a.clone(), b.clone()]);
+        assert_eq!(j.text_len_bytes, 3);
+        assert_eq!(j.total_advance, 17.0);
+        assert_eq!(j.glyphs.len(), 3);
+        // Runs rebase to paragraph bytes/glyphs, keeping identity.
+        assert_eq!(j.runs.len(), 2);
+        assert_eq!(j.runs[0].byte_range, (0, 2));
+        assert_eq!(j.runs[0].glyph_range, (0, 2));
+        assert_eq!(j.runs[0].font_id, FontId(0));
+        assert_eq!(j.runs[1].byte_range, (2, 3));
+        assert_eq!(j.runs[1].glyph_range, (2, 3));
+        assert_eq!(j.runs[1].font_id, FontId(1));
+        // Clusters rebase; caret/hit-test math reads the joined run.
+        assert_eq!(j.clusters.len(), 3);
+        assert_eq!(j.clusters[2].byte_range, (2, 3));
+        assert_eq!(j.caret_x(2), 10.0, "span boundary caret");
+        assert_eq!(j.caret_x(3), 17.0, "trailing edge");
+        assert_eq!(j.byte_offset_for_x(11.0), 2, "hit-test spans");
+        // Empty runs are inert (zero bytes/glyphs — builders skip
+        // them, caret math never sees them) but preserved (their
+        // metrics still strut the line box, like CSS empty inlines).
+        let e = span_run("", 5.0, 2);
+        let je = join_shaped_runs(&[a.clone(), e, b.clone()]);
+        assert_eq!(je.text_len_bytes, 3);
+        assert_eq!(je.runs.len(), 3, "empty run preserved as strut");
+        assert_eq!(je.runs[1].byte_range, (2, 2));
+        assert_eq!(je.clusters.len(), 3, "no empty clusters");
+    }
+
+    #[test]
+    fn span_lookup_has_leading_affinity_and_skips_empties() {
+        // Ends: span0 = [0,2), span1 empty, span2 = [2,5).
+        let ends = vec![2usize, 2, 5];
+        assert_eq!(span_index_for_byte(&ends, 0), Some(0));
+        assert_eq!(span_index_for_byte(&ends, 1), Some(0));
+        assert_eq!(span_index_for_byte(&ends, 2), Some(2), "boundary leads");
+        assert_eq!(span_index_for_byte(&ends, 4), Some(2));
+        assert_eq!(span_index_for_byte(&ends, 99), Some(2), "clamps");
+        assert_eq!(span_index_for_byte(&[], 0), None);
+        assert_eq!(span_index_for_byte(&[0, 0], 0), None, "all empty");
     }
 }

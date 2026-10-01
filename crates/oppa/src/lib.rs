@@ -91,8 +91,8 @@ pub use text::{
 pub use transition::{ease_at, AnimProp, TransitionEvaluator};
 pub use vnode::{
     stamp_handler_owner, Children, Column, Custom, Div, Element, ElementBuilder, Grid, ImageId,
-    Img, Path, PathSpec, Portal, Row, ScrollArea, SharedString, Stack, StrokeDesc, Tag, Text,
-    TextArea, TextBuilder, TextClass, TextField, VNode,
+    Img, Path, PathSpec, Portal, RichText, Row, ScrollArea, SharedString, Stack, StrokeDesc, Tag,
+    Text, TextArea, TextBuilder, TextClass, TextField, TextSpan, VNode,
 };
 pub use window::{ScriptedWindowControl, WindowCall, WindowControl, WindowIcon};
 pub use worker::{HotGeneration, TaskId, TaskScope, TaskStage, WorkerQueue, WorkerResult};

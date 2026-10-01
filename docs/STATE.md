@@ -26,13 +26,23 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   overflow with x self-wire, `Shift+Wheel` routing at the shell layer
   (win + linux), transposed `Scrollbar` axis (incl. G18 range payload);
   all pre-existing scroll suites green.
+- Phase 36 PR3 (decision 355, gate green 2026-10-01): Text v2 —
+  `VNode::RichText` (shape-per-span then join, shared size; joined
+  bytes stay the caret/selection space); per-run ink splitting paint
+  ops (single-ink scenes byte-identical) on the shared builder (CPU +
+  Vello) and DOM spans; web `@font-face` serves the measured DejaVu
+  bytes (closes decision-81 drift); DejaVu-pinned corpus extended
+  (join transparency, bold-span breaks/carets/inks, empty-span).
 
 ## Now (in progress)
 
-- Phase 36 PR3 (Core Engine v2): Text v2 — multi-span
-  `VNode::RichText(Vec<TextSpan>)` shaped across line breaks per
-  `v2-paragraph.md`, cluster-accurate caret/hit-test, web text-metric
-  parity from bundled reference font bytes.
+- Phase 36 PR4 (Core Engine v2): Render & animation v2 — multi-stop
+  `Keyframes` in `TransitionEvaluator` per `v2-keyframes.md`
+  (stops + segment ease + once/loop/ping-pong); `blur_radius` on
+  `Shadow`/`DrawOp::Shadow` (decision row required); `RImg`/DOM-`Image`
+  via `oppa-image` RGBA8 through `ImageCache` (static pre-decoded);
+  retained `Canvas` primitive emitting `DrawOp::{Rect, RRect, Path,
+  Text}` (new `Tag` variant).
 
 ## Next (accepted, not started)
 

@@ -43,6 +43,8 @@ contract test suite — not prose — defines sameness.
 - `TextService::{enumerate_fonts, shape → ShapedRun, measure_line}`. Caret = cluster leading edge; hit-test = cluster midpoint, ties → leading edge.
 - Shaped-cluster rules: decomposed é = 1 cluster; ZWJ sequences = 1 cluster; combining-caret steps cluster starts (shaperless stays scalar).
 - Fallback precedence: requested family → slice chain → loud `Backend U+XXXX` (never tofu/`.notdef`); unknown family is always loud. No color-emoji rendering in v1.
+- Multi-span RichText: spans share one size; each span shapes with its own weight (no cross-span shaping, never re-shaped on wrap); concatenated bytes are the caret/selection space with leading affinity at span boundaries; ink splits paint (one op/span per ink run, single-ink scenes unchanged).
+- Web display serves the measured font bytes (`@font-face` data URI); residual browser-shaper differences are stated tolerance, not contract.
 - Editing: controlled components (content = author signal; caret/selection/composition/undo = core session, survives hot swap). Authority: GPU backend owns on GPU, DOM `<input>` owns on Web, shared op-suite is the contract. Clipboard is plain-text only via the `Clipboard` trait; non-Win32 clipboard refuses loudly.
 
 ## Transitions

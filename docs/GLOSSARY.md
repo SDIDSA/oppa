@@ -27,4 +27,5 @@ concept, this file wins.
 - **Grid** — the minimal 2D container (`Tag::Grid`, decision 353): `Px`/`Fr`/`Auto` track templates, row-major auto-flow with spans only (no explicit placement); variable-height virtualized rows stay out.
 - **Flex share** — weighted `flex_grow` remainder split over the intrinsic base (decision 353); `fill_width`/`fill_height` ride the same pool with weight 1; opt-in `flex_shrink` absorbs overflow.
 - **2D scroll (`ScrollXY` / `ScrollOffset2D`)** — the plain-data 2D position value and the one view over the instance's `scroll` + `scroll_x` signals (decision 354); mixing 1D and 2D handles shares state, never forks it.
+- **RichText (`TextSpan`)** — a multi-span text leaf sharing one size (decision 355): each span shapes with its own weight and paints with its own ink; concatenated bytes are the caret/selection space.
 - **Slot** — a stable virtualization position in `ScrollArea`; keys are slots, not items.
