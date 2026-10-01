@@ -1,0 +1,17 @@
+[package]
+name = "hello-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Starter template: minimal Oppa desktop app (Round 28.1, decision 343)"
+
+[[bin]]
+name = "hello-desktop"
+path = "src/main.rs"
+
+[dependencies]
+oppa = { path = "../../crates/oppa" }
+oppa-controls = { path = "../../crates/oppa-controls" }
+oppa-app = { path = "../../crates/oppa-app" }
+
+[workspace]

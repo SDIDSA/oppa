@@ -1,0 +1,23 @@
+[package]
+name = "oppa-text-dwrite"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Windows DirectWrite backend for the oppa TextService contract (M0b)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+oppa = { path = "../oppa" }
+
+[target.'cfg(windows)'.dependencies]
+windows-core = "0.62"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = ["Win32_Graphics_DirectWrite"]
+
+[dev-dependencies]
+oppa-linebreak = { path = "../oppa-linebreak" }
+

@@ -1,0 +1,16 @@
+{
+  "tool": "webapp",
+  "browser": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+  "ready": true,
+  "initial": "false",
+  "after_click1": "true",
+  "after_click2": "false",
+  "fetch_quote": true,
+  "nav_push_url_ok": true,
+  "nav_forward_settings": true,
+  "storage_persisted_on": true,
+  "storage_persisted_off": true,
+  "pass": true,
+  "note": "",
+  "img_decoded": true
+}

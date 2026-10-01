@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="icon" href="data:," />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>oppa web — toggle demo</title>
+<style>
+  body { margin: 0; background: #eee; font-family: sans-serif; }
+  #oppa-root { width: 800px; height: 600px; background: #fff; }
+  #oppa-status { padding: 8px 12px; color: #333; }
+  #oppa-fetch { margin: 8px 12px; }
+  #oppa-nav button { margin: 8px 0 8px 12px; }
+</style>
+</head>
+<body>
+<div id="oppa-status">booting…</div>
+<div id="oppa-root" tabindex="0"></div>
+<button id="oppa-fetch" type="button">Fetch quote</button>
+<span id="oppa-nav">
+  <button id="oppa-settings" type="button">Settings</button>
+  <button id="oppa-back" type="button">Back</button>
+</span>
+<script type="module" src="./bootstrap.js"></script>
+</body>
+</html>

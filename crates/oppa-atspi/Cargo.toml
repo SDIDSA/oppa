@@ -1,0 +1,9 @@
+[package]
+name = "oppa-atspi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "M10: AT-SPI emitter — SemanticsDiff to at-spi2 roles/states/events plus the incremental accessible tree mirror (Linux-only scope; live-bus validation gated)"
+
+[dependencies]
+oppa = { path = "../oppa" }

@@ -1,0 +1,10 @@
+[package]
+name = "oppa-linebreak"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UAX #14 line-break opportunities behind the oppa BreakSource trait (unicode-linebreak tables, never in oppa core)"
+
+[dependencies]
+oppa = { path = "../oppa" }
+unicode-linebreak = "0.1.5"

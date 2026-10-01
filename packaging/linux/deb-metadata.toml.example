@@ -1,0 +1,24 @@
+# cargo-deb metadata for an Oppa desktop app (Round 25.5, decision 340).
+#
+# Copy this block into YOUR app's Cargo.toml under [package.metadata.deb]
+# (this file is a recipe, not a live manifest — nothing here reads it).
+# Then: cargo deb --target x86_64-unknown-linux-gnu
+# (manual — needs cargo-deb installed and a display-linked build;
+# no automation claims it).
+#
+# The shell reaches X11/Wayland through runtime dlopen (no -dev
+# packages at build time), so the binary + .desktop file below are
+# the whole payload.
+
+[package.metadata.deb]
+maintainer = "Example <dev@example.com>"
+copyright = "2026, Example"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+A Hello, Oppa desktop app built on the Oppa cross-platform GUI framework."""
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/hello", "usr/bin/", "755"],
+    ["packaging/linux/hello.desktop", "usr/share/applications/", "644"],
+]

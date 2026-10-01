@@ -1,0 +1,24 @@
+[package]
+name = "oppa-vello"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "M6 Vello GPU backend: first GPU presenter on the M4-proved contract"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+oppa = { path = "../oppa" }
+oppa-cpu = { path = "../oppa-cpu" }
+tiny-skia = "0.12"
+vello = "0.10"
+wgpu = "29"
+pollster = "0.4"
+# Portable Instant (std panics on wasm): present/readback timings.
+web-time = "1"
+
+[dev-dependencies]
+
+[target.'cfg(windows)'.dev-dependencies]
+oppa-text-dwrite = { path = "../oppa-text-dwrite" }

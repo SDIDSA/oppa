@@ -1,0 +1,16 @@
+[package]
+name = "oppa-text-rustybuzz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared rustybuzz TextService core (font-dir loader + script itemizer + shaper) behind a caller-supplied fallback chain"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+oppa = { path = "../oppa" }
+rustybuzz = "0.20"
+
+[dev-dependencies]
+oppa-linebreak = { path = "../oppa-linebreak" }

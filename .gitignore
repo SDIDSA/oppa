@@ -1,0 +1,38 @@
+# Rust
+/target/
+**/target/
+Cargo.lock.bak
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local debug / audit outputs (do not commit)
+audit_*.txt
+*_out.txt
+emu*_*.txt
+wsl_*.txt
+*.log
+
+# Android (local caches / device logs / build outputs — do not commit)
+**/.gradle/
+**/build/
+**/device-out*/
+**/device-out-phone*/
+local.properties
+*.apk
+*.aab
+*.idsig
+**/jniLibs/
+**/apk/stage/
+
+# Root screenshots (do not commit; put real assets under docs/ or packaging/)
+/*.png

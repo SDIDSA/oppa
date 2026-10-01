@@ -1,0 +1,4618 @@
+{
+ "arm": "web-dom",
+ "rig_version": 2,
+ "browser": "edge",
+ "c2_clicks": [
+  {
+   "string": "Hello world",
+   "max_x": 84,
+   "sweep": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    9,
+    9,
+    9,
+    9,
+    9,
+    10,
+    10,
+    10,
+    10,
+    10,
+    10,
+    10,
+    11,
+    11,
+    11,
+    11,
+    11,
+    11,
+    11,
+    11
+   ],
+   "boundary": [
+    {
+     "cluster": 0,
+     "x": -1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 6,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 0,
+     "x": 10,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 10,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 12,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 16,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 1,
+     "x": 19,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 19,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 21,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 22,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 2,
+     "x": 23,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 23,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 25,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 26,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 3,
+     "x": 26,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 26,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 28,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 32,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 36,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 5,
+     "x": 36,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 5,
+     "x": 38,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 5,
+     "x": 39,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 5,
+     "x": 40,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 6,
+     "x": 40,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 6,
+     "x": 42,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 6,
+     "x": 47,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 6,
+     "x": 52,
+     "start": 7,
+     "end": 7
+    },
+    {
+     "cluster": 7,
+     "x": 52,
+     "start": 7,
+     "end": 7
+    },
+    {
+     "cluster": 7,
+     "x": 54,
+     "start": 7,
+     "end": 7
+    },
+    {
+     "cluster": 7,
+     "x": 57,
+     "start": 7,
+     "end": 7
+    },
+    {
+     "cluster": 7,
+     "x": 61,
+     "start": 8,
+     "end": 8
+    },
+    {
+     "cluster": 8,
+     "x": 61,
+     "start": 8,
+     "end": 8
+    },
+    {
+     "cluster": 8,
+     "x": 63,
+     "start": 8,
+     "end": 8
+    },
+    {
+     "cluster": 8,
+     "x": 65,
+     "start": 9,
+     "end": 9
+    },
+    {
+     "cluster": 8,
+     "x": 67,
+     "start": 9,
+     "end": 9
+    },
+    {
+     "cluster": 9,
+     "x": 67,
+     "start": 9,
+     "end": 9
+    },
+    {
+     "cluster": 9,
+     "x": 69,
+     "start": 9,
+     "end": 9
+    },
+    {
+     "cluster": 9,
+     "x": 70,
+     "start": 10,
+     "end": 10
+    },
+    {
+     "cluster": 9,
+     "x": 71,
+     "start": 10,
+     "end": 10
+    },
+    {
+     "cluster": 10,
+     "x": 71,
+     "start": 10,
+     "end": 10
+    },
+    {
+     "cluster": 10,
+     "x": 73,
+     "start": 10,
+     "end": 10
+    },
+    {
+     "cluster": 10,
+     "x": 76,
+     "start": 10,
+     "end": 10
+    },
+    {
+     "cluster": 10,
+     "x": 80,
+     "start": 11,
+     "end": 11
+    }
+   ]
+  },
+  {
+   "string": "Hello world [selection ops]",
+   "selection": [
+    {
+     "kind": "drag",
+     "from_x": 1,
+     "to_x": 24.6015625,
+     "start": 0,
+     "end": 3
+    },
+    {
+     "kind": "shift-click",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "kind": "dbl-click",
+     "x": 12.359375,
+     "start": 0,
+     "end": 6
+    }
+   ]
+  },
+  {
+   "string": "héllo",
+   "max_x": 37,
+   "sweep": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5
+   ],
+   "boundary": [
+    {
+     "cluster": 0,
+     "x": -1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 5,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 0,
+     "x": 8,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 8,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 10,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 13,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 16,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 16,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 18,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 19,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 20,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 20,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 22,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 23,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 24,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 24,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 26,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 30,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 4,
+     "x": 34,
+     "start": 5,
+     "end": 5
+    }
+   ]
+  },
+  {
+   "string": "héllo [selection ops]",
+   "selection": [
+    {
+     "kind": "drag",
+     "from_x": 1,
+     "to_x": 22.296875,
+     "start": 0,
+     "end": 3
+    },
+    {
+     "kind": "shift-click",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "kind": "dbl-click",
+     "x": 10.0546875,
+     "start": 0,
+     "end": 5
+    }
+   ]
+  },
+  {
+   "string": "日本語",
+   "max_x": 50,
+   "sweep": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3
+   ],
+   "boundary": [
+    {
+     "cluster": 0,
+     "x": -1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 8,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 15,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 15,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 17,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 24,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 31,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 31,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 33,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 40,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 47,
+     "start": 3,
+     "end": 3
+    }
+   ]
+  },
+  {
+   "string": "日本語 [selection ops]",
+   "selection": [
+    {
+     "kind": "drag",
+     "from_x": 1,
+     "to_x": 33,
+     "start": 0,
+     "end": 2
+    },
+    {
+     "kind": "shift-click",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "kind": "dbl-click",
+     "x": 17,
+     "start": 0,
+     "end": 3
+    }
+   ]
+  },
+  {
+   "string": "héllo 👍",
+   "max_x": 63,
+   "sweep": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8,
+    8
+   ],
+   "boundary": [
+    {
+     "cluster": 0,
+     "x": -1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 5,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 0,
+     "x": 8,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 8,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 10,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 13,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 16,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 16,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 18,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 19,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 20,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 20,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 22,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 23,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 24,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 24,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 26,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 30,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 4,
+     "x": 34,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 5,
+     "x": 34,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 5,
+     "x": 36,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 5,
+     "x": 37,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 5,
+     "x": 38,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 6,
+     "x": 38,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 6,
+     "x": 40,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 6,
+     "x": 50,
+     "start": 8,
+     "end": 8
+    },
+    {
+     "cluster": 6,
+     "x": 60,
+     "start": 8,
+     "end": 8
+    }
+   ]
+  },
+  {
+   "string": "héllo 👍 [selection ops]",
+   "selection": [
+    {
+     "kind": "drag",
+     "from_x": 1,
+     "to_x": 22.296875,
+     "start": 0,
+     "end": 3
+    },
+    {
+     "kind": "shift-click",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "kind": "dbl-click",
+     "x": 10.0546875,
+     "start": 0,
+     "end": 6
+    }
+   ]
+  },
+  {
+   "string": "abc مرحبا 123",
+   "max_x": 97,
+   "sweep": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3,
+    4,
+    4,
+    10,
+    10,
+    10,
+    10,
+    11,
+    11,
+    11,
+    11,
+    11,
+    11,
+    11,
+    11,
+    11,
+    12,
+    12,
+    12,
+    12,
+    12,
+    12,
+    12,
+    12,
+    13,
+    13,
+    13,
+    13,
+    13,
+    13,
+    13,
+    9,
+    9,
+    9,
+    9,
+    8,
+    8,
+    8,
+    8,
+    8,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    13,
+    13,
+    13,
+    13,
+    13,
+    13,
+    13,
+    13
+   ],
+   "boundary": [
+    {
+     "cluster": 0,
+     "x": -1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 4,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 7,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 7,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 9,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 13,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 1,
+     "x": 17,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 17,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 19,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 21,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 24,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 24,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 26,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 27,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 28,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 28,
+     "start": 4,
+     "end": 4
+    },
+    {
+     "cluster": 4,
+     "x": 30,
+     "start": 10,
+     "end": 10
+    },
+    {
+     "cluster": 4,
+     "x": 34,
+     "start": 11,
+     "end": 11
+    },
+    {
+     "cluster": 4,
+     "x": 38,
+     "start": 11,
+     "end": 11
+    },
+    {
+     "cluster": 5,
+     "x": 38,
+     "start": 11,
+     "end": 11
+    },
+    {
+     "cluster": 5,
+     "x": 40,
+     "start": 11,
+     "end": 11
+    },
+    {
+     "cluster": 5,
+     "x": 42,
+     "start": 11,
+     "end": 11
+    },
+    {
+     "cluster": 5,
+     "x": 44,
+     "start": 12,
+     "end": 12
+    },
+    {
+     "cluster": 6,
+     "x": 44,
+     "start": 12,
+     "end": 12
+    },
+    {
+     "cluster": 6,
+     "x": 46,
+     "start": 12,
+     "end": 12
+    },
+    {
+     "cluster": 6,
+     "x": 50,
+     "start": 12,
+     "end": 12
+    },
+    {
+     "cluster": 6,
+     "x": 54,
+     "start": 13,
+     "end": 13
+    },
+    {
+     "cluster": 7,
+     "x": 54,
+     "start": 13,
+     "end": 13
+    },
+    {
+     "cluster": 7,
+     "x": 56,
+     "start": 13,
+     "end": 13
+    },
+    {
+     "cluster": 7,
+     "x": 57,
+     "start": 13,
+     "end": 13
+    },
+    {
+     "cluster": 7,
+     "x": 59,
+     "start": 9,
+     "end": 9
+    },
+    {
+     "cluster": 8,
+     "x": 59,
+     "start": 9,
+     "end": 9
+    },
+    {
+     "cluster": 8,
+     "x": 61,
+     "start": 9,
+     "end": 9
+    },
+    {
+     "cluster": 8,
+     "x": 62,
+     "start": 8,
+     "end": 8
+    },
+    {
+     "cluster": 8,
+     "x": 63,
+     "start": 8,
+     "end": 8
+    },
+    {
+     "cluster": 9,
+     "x": 63,
+     "start": 8,
+     "end": 8
+    },
+    {
+     "cluster": 9,
+     "x": 65,
+     "start": 8,
+     "end": 8
+    },
+    {
+     "cluster": 9,
+     "x": 66,
+     "start": 8,
+     "end": 8
+    },
+    {
+     "cluster": 9,
+     "x": 67,
+     "start": 7,
+     "end": 7
+    },
+    {
+     "cluster": 10,
+     "x": 67,
+     "start": 7,
+     "end": 7
+    },
+    {
+     "cluster": 10,
+     "x": 69,
+     "start": 7,
+     "end": 7
+    },
+    {
+     "cluster": 10,
+     "x": 73,
+     "start": 7,
+     "end": 7
+    },
+    {
+     "cluster": 10,
+     "x": 76,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 11,
+     "x": 76,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 11,
+     "x": 78,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 11,
+     "x": 81,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 11,
+     "x": 85,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 12,
+     "x": 85,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 12,
+     "x": 87,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 12,
+     "x": 90,
+     "start": 13,
+     "end": 13
+    },
+    {
+     "cluster": 12,
+     "x": 93,
+     "start": 13,
+     "end": 13
+    }
+   ]
+  },
+  {
+   "string": "abc مرحبا 123 [selection ops]",
+   "selection": [
+    {
+     "kind": "drag",
+     "from_x": 1,
+     "to_x": 25.9375,
+     "start": 0,
+     "end": 3
+    },
+    {
+     "kind": "shift-click",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "kind": "dbl-click",
+     "x": 9.140625,
+     "start": 0,
+     "end": 4
+    }
+   ]
+  },
+  {
+   "string": "café",
+   "max_x": 31,
+   "sweep": [
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    3,
+    3,
+    3,
+    3,
+    3,
+    3,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5,
+    5
+   ],
+   "boundary": [
+    {
+     "cluster": 0,
+     "x": -1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 4,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 0,
+     "x": 6,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 6,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 8,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 11,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 15,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 15,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 17,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 18,
+     "start": 2,
+     "end": 2
+    },
+    {
+     "cluster": 2,
+     "x": 20,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 20,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 22,
+     "start": 3,
+     "end": 3
+    },
+    {
+     "cluster": 3,
+     "x": 25,
+     "start": 5,
+     "end": 5
+    },
+    {
+     "cluster": 3,
+     "x": 28,
+     "start": 5,
+     "end": 5
+    }
+   ]
+  },
+  {
+   "string": "café [selection ops]",
+   "selection": [
+    {
+     "kind": "drag",
+     "from_x": 1,
+     "to_x": 21.5390625,
+     "start": 0,
+     "end": 3
+    },
+    {
+     "kind": "shift-click",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "kind": "dbl-click",
+     "x": 8.390625,
+     "start": 0,
+     "end": 5
+    }
+   ]
+  },
+  {
+   "string": "a👩‍💻b",
+   "max_x": 42,
+   "sweep": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7
+   ],
+   "boundary": [
+    {
+     "cluster": 0,
+     "x": -1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 1,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 4,
+     "start": 0,
+     "end": 0
+    },
+    {
+     "cluster": 0,
+     "x": 7,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 7,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 9,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 19,
+     "start": 1,
+     "end": 1
+    },
+    {
+     "cluster": 1,
+     "x": 29,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 2,
+     "x": 29,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 2,
+     "x": 31,
+     "start": 6,
+     "end": 6
+    },
+    {
+     "cluster": 2,
+     "x": 35,
+     "start": 7,
+     "end": 7
+    },
+    {
+     "cluster": 2,
+     "x": 39,
+     "start": 7,
+     "end": 7
+    }
+   ]
+  },
+  {
+   "string": "a👩‍💻b [selection ops]",
+   "selection": [
+    {
+     "kind": "drag",
+     "from_x": 1,
+     "to_x": 31.109375,
+     "start": 0,
+     "end": 6
+    },
+    {
+     "kind": "shift-click",
+     "start": 0,
+     "end": 6
+    },
+    {
+     "kind": "dbl-click",
+     "x": 9.140625,
+     "start": 0,
+     "end": 6
+    }
+   ]
+  }
+ ],
+ "c2_caret_rect": [
+  {
+   "string": "Hello world",
+   "at_x": 41,
+   "caret_rect": {
+    "x": 0,
+    "y": 0,
+    "w": 0,
+    "h": 0
+   },
+   "start": 6,
+   "end": 6
+  },
+  {
+   "string": "héllo",
+   "at_x": 17,
+   "caret_rect": {
+    "x": 0,
+    "y": 0,
+    "w": 0,
+    "h": 0
+   },
+   "start": 2,
+   "end": 2
+  },
+  {
+   "string": "日本語",
+   "at_x": 24,
+   "caret_rect": {
+    "x": 0,
+    "y": 0,
+    "w": 0,
+    "h": 0
+   },
+   "start": 1,
+   "end": 1
+  },
+  {
+   "string": "héllo 👍",
+   "at_x": 30,
+   "caret_rect": {
+    "x": 0,
+    "y": 0,
+    "w": 0,
+    "h": 0
+   },
+   "start": 5,
+   "end": 5
+  },
+  {
+   "string": "abc مرحبا 123",
+   "at_x": 47,
+   "caret_rect": {
+    "x": 0,
+    "y": 0,
+    "w": 0,
+    "h": 0
+   },
+   "start": 12,
+   "end": 12
+  },
+  {
+   "string": "café",
+   "at_x": 14,
+   "caret_rect": {
+    "x": 0,
+    "y": 0,
+    "w": 0,
+    "h": 0
+   },
+   "start": 2,
+   "end": 2
+  },
+  {
+   "string": "a👩‍💻b",
+   "at_x": 20,
+   "caret_rect": {
+    "x": 0,
+    "y": 0,
+    "w": 0,
+    "h": 0
+   },
+   "start": 6,
+   "end": 6
+  }
+ ],
+ "c2_boundary_geometry": [
+  {
+   "string": "Hello world",
+   "rows": [
+    {
+     "cluster": 0,
+     "ours_x": 11.359375,
+     "ours_mid": 5.6796875,
+     "browser_x": 5.501220703125,
+     "delta_mid": -0.178466796875
+    },
+    {
+     "cluster": 1,
+     "ours_x": 19.7265625,
+     "ours_mid": 15.54296875,
+     "browser_x": 15.50006103515625,
+     "delta_mid": -0.04290771484375
+    },
+    {
+     "cluster": 2,
+     "ours_x": 23.6015625,
+     "ours_mid": 21.6640625,
+     "browser_x": 21.50042724609375,
+     "delta_mid": -0.16363525390625
+    },
+    {
+     "cluster": 3,
+     "ours_x": 27.4765625,
+     "ours_mid": 25.5390625,
+     "browser_x": 25.50421142578125,
+     "delta_mid": -0.03485107421875
+    },
+    {
+     "cluster": 4,
+     "ours_x": 36.8515625,
+     "ours_mid": 32.1640625,
+     "browser_x": 32.50286865234375,
+     "delta_mid": 0.33880615234375
+    },
+    {
+     "cluster": 5,
+     "ours_x": 41.234375,
+     "ours_mid": 39.04296875,
+     "browser_x": 39.50152587890625,
+     "delta_mid": 0.45855712890625
+    },
+    {
+     "cluster": 6,
+     "ours_x": 52.796875,
+     "ours_mid": 47.015625,
+     "browser_x": 47.5037841796875,
+     "delta_mid": 0.4881591796875
+    },
+    {
+     "cluster": 7,
+     "ours_x": 62.171875,
+     "ours_mid": 57.484375,
+     "browser_x": 57.50262451171875,
+     "delta_mid": 0.01824951171875
+    },
+    {
+     "cluster": 8,
+     "ours_x": 67.734375,
+     "ours_mid": 64.953125,
+     "browser_x": 64.50128173828125,
+     "delta_mid": -0.45184326171875
+    },
+    {
+     "cluster": 9,
+     "ours_x": 71.609375,
+     "ours_mid": 69.671875,
+     "browser_x": 69.50335693359375,
+     "delta_mid": -0.16851806640625
+    },
+    {
+     "cluster": 10,
+     "ours_x": 81.03125,
+     "ours_mid": 76.3203125,
+     "browser_x": 76.50201416015625,
+     "delta_mid": 0.18170166015625
+    }
+   ],
+   "basis": "real input clicks (1px-resolution bisection)"
+  },
+  {
+   "string": "héllo",
+   "rows": [
+    {
+     "cluster": 0,
+     "ours_x": 9.0546875,
+     "ours_mid": 4.52734375,
+     "browser_x": 4.50189208984375,
+     "delta_mid": -0.02545166015625
+    },
+    {
+     "cluster": 1,
+     "ours_x": 17.421875,
+     "ours_mid": 13.23828125,
+     "browser_x": 13.50067138671875,
+     "delta_mid": 0.26239013671875
+    },
+    {
+     "cluster": 2,
+     "ours_x": 21.296875,
+     "ours_mid": 19.359375,
+     "browser_x": 19.50152587890625,
+     "delta_mid": 0.14215087890625
+    },
+    {
+     "cluster": 3,
+     "ours_x": 25.171875,
+     "ours_mid": 23.234375,
+     "browser_x": 23.50042724609375,
+     "delta_mid": 0.26605224609375
+    },
+    {
+     "cluster": 4,
+     "ours_x": 34.546875,
+     "ours_mid": 29.859375,
+     "browser_x": 29.50128173828125,
+     "delta_mid": -0.35809326171875
+    }
+   ],
+   "basis": "real input clicks (1px-resolution bisection)"
+  },
+  {
+   "string": "日本語",
+   "rows": [
+    {
+     "cluster": 0,
+     "ours_x": 16,
+     "ours_mid": 8,
+     "browser_x": 8.5001220703125,
+     "delta_mid": 0.5001220703125
+    },
+    {
+     "cluster": 1,
+     "ours_x": 32,
+     "ours_mid": 24,
+     "browser_x": 24.501708984375,
+     "delta_mid": 0.501708984375
+    },
+    {
+     "cluster": 2,
+     "ours_x": 48,
+     "ours_mid": 40,
+     "browser_x": 40.5,
+     "delta_mid": 0.5
+    }
+   ],
+   "basis": "real input clicks (1px-resolution bisection)"
+  },
+  {
+   "string": "héllo 👍",
+   "rows": [
+    {
+     "cluster": 0,
+     "ours_x": 9.0546875,
+     "ours_mid": 4.52734375,
+     "browser_x": 4.50238037109375,
+     "delta_mid": -0.02496337890625
+    },
+    {
+     "cluster": 1,
+     "ours_x": 17.421875,
+     "ours_mid": 13.23828125,
+     "browser_x": 13.5030517578125,
+     "delta_mid": 0.2647705078125
+    },
+    {
+     "cluster": 2,
+     "ours_x": 21.296875,
+     "ours_mid": 19.359375,
+     "browser_x": 19.50213623046875,
+     "delta_mid": 0.14276123046875
+    },
+    {
+     "cluster": 3,
+     "ours_x": 25.171875,
+     "ours_mid": 23.234375,
+     "browser_x": 23.50152587890625,
+     "delta_mid": 0.26715087890625
+    },
+    {
+     "cluster": 4,
+     "ours_x": 34.546875,
+     "ours_mid": 29.859375,
+     "browser_x": 29.5006103515625,
+     "delta_mid": -0.3587646484375
+    },
+    {
+     "cluster": 5,
+     "ours_x": 38.9296875,
+     "ours_mid": 36.73828125,
+     "browser_x": 36.5015869140625,
+     "delta_mid": -0.2366943359375
+    },
+    {
+     "cluster": 6,
+     "ours_x": 60.8984375,
+     "ours_mid": 49.9140625,
+     "browser_x": 49.50164794921875,
+     "delta_mid": -0.41241455078125
+    }
+   ],
+   "basis": "real input clicks (1px-resolution bisection)"
+  },
+  {
+   "string": "abc مرحبا 123",
+   "rows": [
+    {
+     "cluster": 0,
+     "ours_x": 8.140625,
+     "ours_mid": 4.0703125,
+     "browser_x": 4.50439453125,
+     "delta_mid": 0.43408203125
+    },
+    {
+     "cluster": 1,
+     "ours_x": 17.546875,
+     "ours_mid": 12.84375,
+     "browser_x": 12.5,
+     "delta_mid": -0.34375
+    },
+    {
+     "cluster": 2,
+     "ours_x": 24.9375,
+     "ours_mid": 21.2421875,
+     "browser_x": 21.502685546875,
+     "delta_mid": 0.260498046875
+    },
+    {
+     "cluster": 3,
+     "ours_x": 29.3203125,
+     "ours_mid": 27.12890625,
+     "browser_x": 27.50244140625,
+     "delta_mid": 0.37353515625
+    },
+    {
+     "cluster": 4,
+     "ours_x": 38.6796875,
+     "ours_mid": 34,
+     "browser_x": 29.50439453125,
+     "delta_mid": -4.49560546875
+    },
+    {
+     "cluster": 5,
+     "ours_x": 45.359375,
+     "ours_mid": 42.01953125,
+     "browser_x": 29.50439453125,
+     "delta_mid": -12.51513671875
+    },
+    {
+     "cluster": 6,
+     "ours_x": 54.7109375,
+     "ours_mid": 50.03515625,
+     "browser_x": 29.50439453125,
+     "delta_mid": -20.53076171875
+    },
+    {
+     "cluster": 7,
+     "ours_x": 60.0546875,
+     "ours_mid": 57.3828125,
+     "browser_x": 29.50439453125,
+     "delta_mid": -27.87841796875
+    },
+    {
+     "cluster": 8,
+     "ours_x": 64.0625,
+     "ours_mid": 62.05859375,
+     "browser_x": 29.50439453125,
+     "delta_mid": -32.55419921875
+    },
+    {
+     "cluster": 9,
+     "ours_x": 68.4453125,
+     "ours_mid": 66.25390625,
+     "browser_x": 29.50439453125,
+     "delta_mid": -36.74951171875
+    },
+    {
+     "cluster": 10,
+     "ours_x": 77.0703125,
+     "ours_mid": 72.7578125,
+     "browser_x": 33.502197265625,
+     "delta_mid": -39.255615234375
+    },
+    {
+     "cluster": 11,
+     "ours_x": 85.6953125,
+     "ours_mid": 81.3828125,
+     "browser_x": 42.5048828125,
+     "delta_mid": -38.8779296875
+    },
+    {
+     "cluster": 12,
+     "ours_x": 94.3203125,
+     "ours_mid": 90.0078125,
+     "browser_x": 89.501953125,
+     "delta_mid": -0.505859375
+    }
+   ],
+   "basis": "real input clicks (1px-resolution bisection)"
+  },
+  {
+   "string": "café",
+   "rows": [
+    {
+     "cluster": 0,
+     "ours_x": 7.390625,
+     "ours_mid": 3.6953125,
+     "browser_x": 3.50128173828125,
+     "delta_mid": -0.19403076171875
+    },
+    {
+     "cluster": 1,
+     "ours_x": 15.53125,
+     "ours_mid": 11.4609375,
+     "browser_x": 11.50146484375,
+     "delta_mid": 0.04052734375
+    },
+    {
+     "cluster": 2,
+     "ours_x": 20.5390625,
+     "ours_mid": 18.03515625,
+     "browser_x": 18.50189208984375,
+     "delta_mid": 0.46673583984375
+    },
+    {
+     "cluster": 3,
+     "ours_x": 28.90625,
+     "ours_mid": 24.72265625,
+     "browser_x": 24.50042724609375,
+     "delta_mid": -0.22222900390625
+    }
+   ],
+   "basis": "real input clicks (1px-resolution bisection)"
+  },
+  {
+   "string": "a👩‍💻b",
+   "rows": [
+    {
+     "cluster": 0,
+     "ours_x": 8.140625,
+     "ours_mid": 4.0703125,
+     "browser_x": 4.5006103515625,
+     "delta_mid": 0.4302978515625
+    },
+    {
+     "cluster": 1,
+     "ours_x": 30.109375,
+     "ours_mid": 19.125,
+     "browser_x": 19.501708984375,
+     "delta_mid": 0.376708984375
+    },
+    {
+     "cluster": 2,
+     "ours_x": 39.515625,
+     "ours_mid": 34.8125,
+     "browser_x": 19.501708984375,
+     "delta_mid": -15.310791015625
+    }
+   ],
+   "basis": "real input clicks (1px-resolution bisection)"
+  }
+ ],
+ "c3_scenarios": [
+  {
+   "name": "zh_nihao_candidate_commit",
+   "language": "zh",
+   "base": "",
+   "steps": [
+    {
+     "op": "start",
+     "value": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": []
+    },
+    {
+     "op": "update",
+     "value": "ni",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionstart",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "ni",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "ni",
+       "composing": true,
+       "value": ""
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 0,
+       "dir": "forward",
+       "value": "ni"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "nih",
+     "selStart": 0,
+     "selEnd": 2,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "nih",
+       "selStart": 0,
+       "selEnd": 2,
+       "value": "ni"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "nih",
+       "composing": true,
+       "value": "ni"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 2,
+       "dir": "forward",
+       "value": "nih"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "niha",
+     "selStart": 0,
+     "selEnd": 3,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "niha",
+       "selStart": 0,
+       "selEnd": 3,
+       "value": "nih"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "niha",
+       "composing": true,
+       "value": "nih"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 3,
+       "dir": "forward",
+       "value": "niha"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "nihao",
+     "selStart": 0,
+     "selEnd": 4,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "nihao",
+       "selStart": 0,
+       "selEnd": 4,
+       "value": "niha"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "nihao",
+       "composing": true,
+       "value": "niha"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 4,
+       "dir": "forward",
+       "value": "nihao"
+      }
+     ]
+    },
+    {
+     "op": "commit",
+     "value": "你好",
+     "selStart": 2,
+     "selEnd": 2,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "你好",
+       "selStart": 0,
+       "selEnd": 5,
+       "value": "nihao"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "你好",
+       "composing": true,
+       "value": "nihao"
+      },
+      {
+       "t": "composition",
+       "type": "compositionend",
+       "data": "你好",
+       "selStart": 2,
+       "selEnd": 2,
+       "value": "你好"
+      },
+      {
+       "t": "selection",
+       "start": 2,
+       "end": 2,
+       "dir": "forward",
+       "value": "你好"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "t": "composition",
+     "type": "compositionstart",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "ni",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "ni",
+     "composing": true,
+     "value": ""
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 0,
+     "dir": "forward",
+     "value": "ni"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "nih",
+     "selStart": 0,
+     "selEnd": 2,
+     "value": "ni"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "nih",
+     "composing": true,
+     "value": "ni"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 2,
+     "dir": "forward",
+     "value": "nih"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "niha",
+     "selStart": 0,
+     "selEnd": 3,
+     "value": "nih"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "niha",
+     "composing": true,
+     "value": "nih"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 3,
+     "dir": "forward",
+     "value": "niha"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "nihao",
+     "selStart": 0,
+     "selEnd": 4,
+     "value": "niha"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "nihao",
+     "composing": true,
+     "value": "niha"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 4,
+     "dir": "forward",
+     "value": "nihao"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "你好",
+     "selStart": 0,
+     "selEnd": 5,
+     "value": "nihao"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "你好",
+     "composing": true,
+     "value": "nihao"
+    },
+    {
+     "t": "composition",
+     "type": "compositionend",
+     "data": "你好",
+     "selStart": 2,
+     "selEnd": 2,
+     "value": "你好"
+    },
+    {
+     "t": "selection",
+     "start": 2,
+     "end": 2,
+     "dir": "forward",
+     "value": "你好"
+    }
+   ]
+  },
+  {
+   "name": "ja_kana_conversion_then_candidate",
+   "language": "ja",
+   "base": "",
+   "steps": [
+    {
+     "op": "start",
+     "value": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": []
+    },
+    {
+     "op": "update",
+     "value": "k",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionstart",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "k",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "k",
+       "composing": true,
+       "value": ""
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 0,
+       "dir": "forward",
+       "value": "k"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "ko",
+     "selStart": 0,
+     "selEnd": 1,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "ko",
+       "selStart": 0,
+       "selEnd": 1,
+       "value": "k"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "ko",
+       "composing": true,
+       "value": "k"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 1,
+       "dir": "forward",
+       "value": "ko"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "kon",
+     "selStart": 0,
+     "selEnd": 2,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "kon",
+       "selStart": 0,
+       "selEnd": 2,
+       "value": "ko"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "kon",
+       "composing": true,
+       "value": "ko"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 2,
+       "dir": "forward",
+       "value": "kon"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "konn",
+     "selStart": 0,
+     "selEnd": 3,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "konn",
+       "selStart": 0,
+       "selEnd": 3,
+       "value": "kon"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "konn",
+       "composing": true,
+       "value": "kon"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 3,
+       "dir": "forward",
+       "value": "konn"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "konni",
+     "selStart": 0,
+     "selEnd": 4,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "konni",
+       "selStart": 0,
+       "selEnd": 4,
+       "value": "konn"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "konni",
+       "composing": true,
+       "value": "konn"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 4,
+       "dir": "forward",
+       "value": "konni"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "konniti",
+     "selStart": 0,
+     "selEnd": 5,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "konniti",
+       "selStart": 0,
+       "selEnd": 5,
+       "value": "konni"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "konniti",
+       "composing": true,
+       "value": "konni"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 5,
+       "dir": "forward",
+       "value": "konniti"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "konnitiha",
+     "selStart": 0,
+     "selEnd": 7,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "konnitiha",
+       "selStart": 0,
+       "selEnd": 7,
+       "value": "konniti"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "konnitiha",
+       "composing": true,
+       "value": "konniti"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 7,
+       "dir": "forward",
+       "value": "konnitiha"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "こんにちは",
+     "selStart": 0,
+     "selEnd": 5,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "こんにちは",
+       "selStart": 0,
+       "selEnd": 9,
+       "value": "konnitiha"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "こんにちは",
+       "composing": true,
+       "value": "konnitiha"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 5,
+       "dir": "forward",
+       "value": "こんにちは"
+      }
+     ]
+    },
+    {
+     "op": "commit",
+     "value": "今日は",
+     "selStart": 3,
+     "selEnd": 3,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "今日は",
+       "selStart": 0,
+       "selEnd": 5,
+       "value": "こんにちは"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "今日は",
+       "composing": true,
+       "value": "こんにちは"
+      },
+      {
+       "t": "composition",
+       "type": "compositionend",
+       "data": "今日は",
+       "selStart": 3,
+       "selEnd": 3,
+       "value": "今日は"
+      },
+      {
+       "t": "selection",
+       "start": 3,
+       "end": 3,
+       "dir": "forward",
+       "value": "今日は"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "t": "composition",
+     "type": "compositionstart",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "k",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "k",
+     "composing": true,
+     "value": ""
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 0,
+     "dir": "forward",
+     "value": "k"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "ko",
+     "selStart": 0,
+     "selEnd": 1,
+     "value": "k"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "ko",
+     "composing": true,
+     "value": "k"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 1,
+     "dir": "forward",
+     "value": "ko"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "kon",
+     "selStart": 0,
+     "selEnd": 2,
+     "value": "ko"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "kon",
+     "composing": true,
+     "value": "ko"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 2,
+     "dir": "forward",
+     "value": "kon"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "konn",
+     "selStart": 0,
+     "selEnd": 3,
+     "value": "kon"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "konn",
+     "composing": true,
+     "value": "kon"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 3,
+     "dir": "forward",
+     "value": "konn"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "konni",
+     "selStart": 0,
+     "selEnd": 4,
+     "value": "konn"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "konni",
+     "composing": true,
+     "value": "konn"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 4,
+     "dir": "forward",
+     "value": "konni"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "konniti",
+     "selStart": 0,
+     "selEnd": 5,
+     "value": "konni"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "konniti",
+     "composing": true,
+     "value": "konni"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 5,
+     "dir": "forward",
+     "value": "konniti"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "konnitiha",
+     "selStart": 0,
+     "selEnd": 7,
+     "value": "konniti"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "konnitiha",
+     "composing": true,
+     "value": "konniti"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 7,
+     "dir": "forward",
+     "value": "konnitiha"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "こんにちは",
+     "selStart": 0,
+     "selEnd": 9,
+     "value": "konnitiha"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "こんにちは",
+     "composing": true,
+     "value": "konnitiha"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 5,
+     "dir": "forward",
+     "value": "こんにちは"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "今日は",
+     "selStart": 0,
+     "selEnd": 5,
+     "value": "こんにちは"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "今日は",
+     "composing": true,
+     "value": "こんにちは"
+    },
+    {
+     "t": "composition",
+     "type": "compositionend",
+     "data": "今日は",
+     "selStart": 3,
+     "selEnd": 3,
+     "value": "今日は"
+    },
+    {
+     "t": "selection",
+     "start": 3,
+     "end": 3,
+     "dir": "forward",
+     "value": "今日は"
+    }
+   ]
+  },
+  {
+   "name": "cancel_mid_composition",
+   "language": "zh",
+   "base": "",
+   "steps": [
+    {
+     "op": "start",
+     "value": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": []
+    },
+    {
+     "op": "update",
+     "value": "ni",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionstart",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "ni",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "ni",
+       "composing": true,
+       "value": ""
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 0,
+       "dir": "forward",
+       "value": "ni"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "nih",
+     "selStart": 0,
+     "selEnd": 2,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "nih",
+       "selStart": 0,
+       "selEnd": 2,
+       "value": "ni"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "nih",
+       "composing": true,
+       "value": "ni"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 2,
+       "dir": "forward",
+       "value": "nih"
+      }
+     ]
+    },
+    {
+     "op": "cancel",
+     "value": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 3,
+       "value": "nih"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "",
+       "composing": true,
+       "value": "nih"
+      },
+      {
+       "t": "composition",
+       "type": "compositionend",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 0,
+       "dir": "forward",
+       "value": ""
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "t": "composition",
+     "type": "compositionstart",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "ni",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "ni",
+     "composing": true,
+     "value": ""
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 0,
+     "dir": "forward",
+     "value": "ni"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "nih",
+     "selStart": 0,
+     "selEnd": 2,
+     "value": "ni"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "nih",
+     "composing": true,
+     "value": "ni"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 2,
+     "dir": "forward",
+     "value": "nih"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 3,
+     "value": "nih"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "",
+     "composing": true,
+     "value": "nih"
+    },
+    {
+     "t": "composition",
+     "type": "compositionend",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 0,
+     "dir": "forward",
+     "value": ""
+    }
+   ]
+  },
+  {
+   "name": "caret_nav_inside_composition",
+   "language": "zh",
+   "base": "abc ",
+   "steps": [
+    {
+     "op": "start",
+     "value": "abc ",
+     "selStart": 4,
+     "selEnd": 4,
+     "events": []
+    },
+    {
+     "op": "update",
+     "value": "abc nihao",
+     "selStart": 8,
+     "selEnd": 8,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionstart",
+       "data": "",
+       "selStart": 4,
+       "selEnd": 4,
+       "value": "abc "
+      },
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "nihao",
+       "selStart": 4,
+       "selEnd": 4,
+       "value": "abc "
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "nihao",
+       "composing": true,
+       "value": "abc "
+      },
+      {
+       "t": "selection",
+       "start": 8,
+       "end": 8,
+       "dir": "forward",
+       "value": "abc nihao"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "abc nihao",
+     "selStart": 8,
+     "selEnd": 9,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "nihao",
+       "selStart": 4,
+       "selEnd": 9,
+       "value": "abc nihao"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "nihao",
+       "composing": true,
+       "value": "abc nihao"
+      },
+      {
+       "t": "selection",
+       "start": 8,
+       "end": 9,
+       "dir": "forward",
+       "value": "abc nihao"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "abc nihao",
+     "selStart": 8,
+     "selEnd": 9,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "nihao",
+       "selStart": 4,
+       "selEnd": 9,
+       "value": "abc nihao"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "nihao",
+       "composing": true,
+       "value": "abc nihao"
+      },
+      {
+       "t": "selection",
+       "start": 8,
+       "end": 9,
+       "dir": "forward",
+       "value": "abc nihao"
+      }
+     ]
+    },
+    {
+     "op": "commit",
+     "value": "abc 你好",
+     "selStart": 6,
+     "selEnd": 6,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "你好",
+       "selStart": 4,
+       "selEnd": 9,
+       "value": "abc nihao"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "你好",
+       "composing": true,
+       "value": "abc nihao"
+      },
+      {
+       "t": "composition",
+       "type": "compositionend",
+       "data": "你好",
+       "selStart": 6,
+       "selEnd": 6,
+       "value": "abc 你好"
+      },
+      {
+       "t": "selection",
+       "start": 6,
+       "end": 6,
+       "dir": "forward",
+       "value": "abc 你好"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "t": "composition",
+     "type": "compositionstart",
+     "data": "",
+     "selStart": 4,
+     "selEnd": 4,
+     "value": "abc "
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "nihao",
+     "selStart": 4,
+     "selEnd": 4,
+     "value": "abc "
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "nihao",
+     "composing": true,
+     "value": "abc "
+    },
+    {
+     "t": "selection",
+     "start": 8,
+     "end": 8,
+     "dir": "forward",
+     "value": "abc nihao"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "nihao",
+     "selStart": 4,
+     "selEnd": 9,
+     "value": "abc nihao"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "nihao",
+     "composing": true,
+     "value": "abc nihao"
+    },
+    {
+     "t": "selection",
+     "start": 8,
+     "end": 9,
+     "dir": "forward",
+     "value": "abc nihao"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "nihao",
+     "selStart": 4,
+     "selEnd": 9,
+     "value": "abc nihao"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "nihao",
+     "composing": true,
+     "value": "abc nihao"
+    },
+    {
+     "t": "selection",
+     "start": 8,
+     "end": 9,
+     "dir": "forward",
+     "value": "abc nihao"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "你好",
+     "selStart": 4,
+     "selEnd": 9,
+     "value": "abc nihao"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "你好",
+     "composing": true,
+     "value": "abc nihao"
+    },
+    {
+     "t": "composition",
+     "type": "compositionend",
+     "data": "你好",
+     "selStart": 6,
+     "selEnd": 6,
+     "value": "abc 你好"
+    },
+    {
+     "t": "selection",
+     "start": 6,
+     "end": 6,
+     "dir": "forward",
+     "value": "abc 你好"
+    }
+   ]
+  },
+  {
+   "name": "rapid_zh_ja_switch",
+   "language": "zh/ja",
+   "base": "",
+   "steps": [
+    {
+     "op": "start",
+     "value": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": []
+    },
+    {
+     "op": "update",
+     "value": "ni",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionstart",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "ni",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "ni",
+       "composing": true,
+       "value": ""
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 0,
+       "dir": "forward",
+       "value": "ni"
+      }
+     ]
+    },
+    {
+     "op": "cancel",
+     "value": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 2,
+       "value": "ni"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "",
+       "composing": true,
+       "value": "ni"
+      },
+      {
+       "t": "composition",
+       "type": "compositionend",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 0,
+       "dir": "forward",
+       "value": ""
+      }
+     ]
+    },
+    {
+     "op": "start",
+     "value": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": []
+    },
+    {
+     "op": "update",
+     "value": "ko",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionstart",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "ko",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "ko",
+       "composing": true,
+       "value": ""
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 0,
+       "dir": "forward",
+       "value": "ko"
+      }
+     ]
+    },
+    {
+     "op": "update",
+     "value": "kon",
+     "selStart": 0,
+     "selEnd": 2,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "kon",
+       "selStart": 0,
+       "selEnd": 2,
+       "value": "ko"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "kon",
+       "composing": true,
+       "value": "ko"
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 2,
+       "dir": "forward",
+       "value": "kon"
+      }
+     ]
+    },
+    {
+     "op": "commit",
+     "value": "今",
+     "selStart": 1,
+     "selEnd": 1,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "今",
+       "selStart": 0,
+       "selEnd": 3,
+       "value": "kon"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "今",
+       "composing": true,
+       "value": "kon"
+      },
+      {
+       "t": "composition",
+       "type": "compositionend",
+       "data": "今",
+       "selStart": 1,
+       "selEnd": 1,
+       "value": "今"
+      },
+      {
+       "t": "selection",
+       "start": 1,
+       "end": 1,
+       "dir": "forward",
+       "value": "今"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "t": "composition",
+     "type": "compositionstart",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "ni",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "ni",
+     "composing": true,
+     "value": ""
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 0,
+     "dir": "forward",
+     "value": "ni"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 2,
+     "value": "ni"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "",
+     "composing": true,
+     "value": "ni"
+    },
+    {
+     "t": "composition",
+     "type": "compositionend",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 0,
+     "dir": "forward",
+     "value": ""
+    },
+    {
+     "t": "composition",
+     "type": "compositionstart",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "ko",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "ko",
+     "composing": true,
+     "value": ""
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 0,
+     "dir": "forward",
+     "value": "ko"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "kon",
+     "selStart": 0,
+     "selEnd": 2,
+     "value": "ko"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "kon",
+     "composing": true,
+     "value": "ko"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 2,
+     "dir": "forward",
+     "value": "kon"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "今",
+     "selStart": 0,
+     "selEnd": 3,
+     "value": "kon"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "今",
+     "composing": true,
+     "value": "kon"
+    },
+    {
+     "t": "composition",
+     "type": "compositionend",
+     "data": "今",
+     "selStart": 1,
+     "selEnd": 1,
+     "value": "今"
+    },
+    {
+     "t": "selection",
+     "start": 1,
+     "end": 1,
+     "dir": "forward",
+     "value": "今"
+    }
+   ]
+  },
+  {
+   "name": "delete_range_mid_composition",
+   "language": "zh",
+   "base": "abc",
+   "steps": [
+    {
+     "op": "start",
+     "value": "abc",
+     "selStart": 3,
+     "selEnd": 3,
+     "events": []
+    },
+    {
+     "op": "update",
+     "value": "abcnihao",
+     "selStart": 6,
+     "selEnd": 6,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionstart",
+       "data": "",
+       "selStart": 3,
+       "selEnd": 3,
+       "value": "abc"
+      },
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "nihao",
+       "selStart": 3,
+       "selEnd": 3,
+       "value": "abc"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "nihao",
+       "composing": true,
+       "value": "abc"
+      },
+      {
+       "t": "selection",
+       "start": 6,
+       "end": 6,
+       "dir": "forward",
+       "value": "abcnihao"
+      }
+     ]
+    },
+    {
+     "op": "delete-range",
+     "value": "abc",
+     "selStart": 3,
+     "selEnd": 3,
+     "events": [
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 3,
+       "dir": "forward",
+       "value": "abcnihao"
+      },
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "",
+       "selStart": 3,
+       "selEnd": 8,
+       "value": "abcnihao"
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "",
+       "composing": true,
+       "value": "abcnihao"
+      },
+      {
+       "t": "composition",
+       "type": "compositionend",
+       "data": "",
+       "selStart": 3,
+       "selEnd": 3,
+       "value": "abc"
+      },
+      {
+       "t": "selection",
+       "start": 3,
+       "end": 3,
+       "dir": "forward",
+       "value": "abc"
+      }
+     ]
+    },
+    {
+     "op": "commit",
+     "value": "abc你好",
+     "selStart": 5,
+     "selEnd": 5,
+     "events": [
+      {
+       "t": "beforeinput",
+       "type": "insertText",
+       "data": "你好",
+       "composing": false,
+       "value": "abc"
+      },
+      {
+       "t": "selection",
+       "start": 5,
+       "end": 5,
+       "dir": "forward",
+       "value": "abc你好"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "t": "composition",
+     "type": "compositionstart",
+     "data": "",
+     "selStart": 3,
+     "selEnd": 3,
+     "value": "abc"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "nihao",
+     "selStart": 3,
+     "selEnd": 3,
+     "value": "abc"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "nihao",
+     "composing": true,
+     "value": "abc"
+    },
+    {
+     "t": "selection",
+     "start": 6,
+     "end": 6,
+     "dir": "forward",
+     "value": "abcnihao"
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 3,
+     "dir": "forward",
+     "value": "abcnihao"
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "",
+     "selStart": 3,
+     "selEnd": 8,
+     "value": "abcnihao"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "",
+     "composing": true,
+     "value": "abcnihao"
+    },
+    {
+     "t": "composition",
+     "type": "compositionend",
+     "data": "",
+     "selStart": 3,
+     "selEnd": 3,
+     "value": "abc"
+    },
+    {
+     "t": "selection",
+     "start": 3,
+     "end": 3,
+     "dir": "forward",
+     "value": "abc"
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertText",
+     "data": "你好",
+     "composing": false,
+     "value": "abc"
+    },
+    {
+     "t": "selection",
+     "start": 5,
+     "end": 5,
+     "dir": "forward",
+     "value": "abc你好"
+    }
+   ]
+  },
+  {
+   "name": "focus_loss_mid_composition",
+   "language": "zh",
+   "base": "",
+   "steps": [
+    {
+     "op": "start",
+     "value": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": []
+    },
+    {
+     "op": "update",
+     "value": "nih",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionstart",
+       "data": "",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "composition",
+       "type": "compositionupdate",
+       "data": "nih",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": ""
+      },
+      {
+       "t": "beforeinput",
+       "type": "insertCompositionText",
+       "data": "nih",
+       "composing": true,
+       "value": ""
+      },
+      {
+       "t": "selection",
+       "start": 0,
+       "end": 0,
+       "dir": "forward",
+       "value": "nih"
+      }
+     ]
+    },
+    {
+     "op": "focus-loss",
+     "value": "nih",
+     "selStart": 0,
+     "selEnd": 0,
+     "events": [
+      {
+       "t": "composition",
+       "type": "compositionend",
+       "data": "nih",
+       "selStart": 0,
+       "selEnd": 0,
+       "value": "nih"
+      },
+      {
+       "t": "blur"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "t": "composition",
+     "type": "compositionstart",
+     "data": "",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "composition",
+     "type": "compositionupdate",
+     "data": "nih",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": ""
+    },
+    {
+     "t": "beforeinput",
+     "type": "insertCompositionText",
+     "data": "nih",
+     "composing": true,
+     "value": ""
+    },
+    {
+     "t": "selection",
+     "start": 0,
+     "end": 0,
+     "dir": "forward",
+     "value": "nih"
+    },
+    {
+     "t": "composition",
+     "type": "compositionend",
+     "data": "nih",
+     "selStart": 0,
+     "selEnd": 0,
+     "value": "nih"
+    },
+    {
+     "t": "blur"
+    }
+   ]
+  }
+ ],
+ "c4_suites": [
+  {
+   "name": "latin_edit",
+   "base": "Hello world",
+   "steps": [
+    {
+     "step": 0,
+     "op": "click",
+     "op_x": [
+      1
+     ],
+     "value": "Hello world",
+     "selStart": 0,
+     "selEnd": 0,
+     "caret_cp": 0,
+     "sel_cp": [
+      0,
+      0
+     ],
+     "expected": {
+      "value": "Hello world",
+      "caret_cp": 0,
+      "sel_cp": [
+       0,
+       0
+      ]
+     }
+    },
+    {
+     "step": 1,
+     "op": "insert",
+     "op_x": [],
+     "value": "XHello world",
+     "selStart": 1,
+     "selEnd": 1,
+     "caret_cp": 1,
+     "sel_cp": [
+      1,
+      1
+     ],
+     "expected": {
+      "value": "XHello world",
+      "caret_cp": 1,
+      "sel_cp": [
+       1,
+       1
+      ]
+     }
+    },
+    {
+     "step": 2,
+     "op": "caret-move",
+     "op_x": [],
+     "value": "XHello world",
+     "selStart": 3,
+     "selEnd": 3,
+     "caret_cp": 3,
+     "sel_cp": [
+      3,
+      3
+     ],
+     "expected": {
+      "value": "XHello world",
+      "caret_cp": 3,
+      "sel_cp": [
+       3,
+       3
+      ]
+     }
+    },
+    {
+     "step": 3,
+     "op": "drag",
+     "op_x": [
+      30.1640625,
+      63.234375
+     ],
+     "value": "XHello world",
+     "selStart": 3,
+     "selEnd": 8,
+     "caret_cp": 8,
+     "sel_cp": [
+      3,
+      8
+     ],
+     "expected": {
+      "value": "XHello world",
+      "caret_cp": 8,
+      "sel_cp": [
+       3,
+       8
+      ]
+     }
+    },
+    {
+     "step": 4,
+     "op": "insert",
+     "op_x": [],
+     "value": "XHe!orld",
+     "selStart": 4,
+     "selEnd": 4,
+     "caret_cp": 4,
+     "sel_cp": [
+      4,
+      4
+     ],
+     "expected": {
+      "value": "XHe!orld",
+      "caret_cp": 4,
+      "sel_cp": [
+       4,
+       4
+      ]
+     }
+    },
+    {
+     "step": 5,
+     "op": "undo",
+     "op_x": [],
+     "value": "XHello world",
+     "selStart": 3,
+     "selEnd": 8,
+     "caret_cp": 8,
+     "sel_cp": [
+      3,
+      8
+     ],
+     "expected": {
+      "value": "XHello world",
+      "caret_cp": 8,
+      "sel_cp": [
+       3,
+       8
+      ]
+     }
+    },
+    {
+     "step": 6,
+     "op": "end",
+     "op_x": [],
+     "value": "XHello world",
+     "selStart": 12,
+     "selEnd": 12,
+     "caret_cp": 12,
+     "sel_cp": [
+      12,
+      12
+     ],
+     "expected": {
+      "value": "XHello world",
+      "caret_cp": 12,
+      "sel_cp": [
+       12,
+       12
+      ]
+     }
+    },
+    {
+     "step": 7,
+     "op": "insert",
+     "op_x": [],
+     "value": "XHello world!",
+     "selStart": 13,
+     "selEnd": 13,
+     "caret_cp": 13,
+     "sel_cp": [
+      13,
+      13
+     ],
+     "expected": {
+      "value": "XHello world!",
+      "caret_cp": 13,
+      "sel_cp": [
+       13,
+       13
+      ]
+     }
+    },
+    {
+     "step": 8,
+     "op": "undo",
+     "op_x": [],
+     "value": "XHello world",
+     "selStart": 12,
+     "selEnd": 12,
+     "caret_cp": 12,
+     "sel_cp": [
+      12,
+      12
+     ],
+     "expected": {
+      "value": "XHello world",
+      "caret_cp": 12,
+      "sel_cp": [
+       12,
+       12
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "multibyte_edit",
+   "base": "日本語x",
+   "steps": [
+    {
+     "step": 0,
+     "op": "click",
+     "op_x": [
+      17
+     ],
+     "value": "日本語x",
+     "selStart": 1,
+     "selEnd": 1,
+     "caret_cp": 1,
+     "sel_cp": [
+      1,
+      1
+     ],
+     "expected": {
+      "value": "日本語x",
+      "caret_cp": 1,
+      "sel_cp": [
+       1,
+       1
+      ]
+     }
+    },
+    {
+     "step": 1,
+     "op": "insert",
+     "op_x": [],
+     "value": "日あ本語x",
+     "selStart": 2,
+     "selEnd": 2,
+     "caret_cp": 2,
+     "sel_cp": [
+      2,
+      2
+     ],
+     "expected": {
+      "value": "日あ本語x",
+      "caret_cp": 2,
+      "sel_cp": [
+       2,
+       2
+      ]
+     }
+    },
+    {
+     "step": 2,
+     "op": "undo",
+     "op_x": [],
+     "value": "日本語x",
+     "selStart": 1,
+     "selEnd": 1,
+     "caret_cp": 1,
+     "sel_cp": [
+      1,
+      1
+     ],
+     "expected": {
+      "value": "日本語x",
+      "caret_cp": 1,
+      "sel_cp": [
+       1,
+       1
+      ]
+     }
+    },
+    {
+     "step": 3,
+     "op": "shift-click",
+     "op_x": [
+      17,
+      49
+     ],
+     "value": "日本語x",
+     "selStart": 1,
+     "selEnd": 3,
+     "caret_cp": 3,
+     "sel_cp": [
+      1,
+      3
+     ],
+     "expected": {
+      "value": "日本語x",
+      "caret_cp": 3,
+      "sel_cp": [
+       1,
+       3
+      ]
+     }
+    },
+    {
+     "step": 4,
+     "op": "dbl-click",
+     "op_x": [
+      17
+     ],
+     "value": "日本語x",
+     "selStart": 0,
+     "selEnd": 3,
+     "caret_cp": 3,
+     "sel_cp": [
+      0,
+      3
+     ],
+     "expected": {
+      "value": "日本語x",
+      "caret_cp": 2,
+      "sel_cp": [
+       1,
+       2
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "undo_granularity",
+   "base": "Hello world",
+   "steps": [
+    {
+     "step": 0,
+     "op": "click",
+     "op_x": [
+      1
+     ],
+     "value": "Hello world",
+     "selStart": 0,
+     "selEnd": 0,
+     "caret_cp": 0,
+     "sel_cp": [
+      0,
+      0
+     ],
+     "expected": {
+      "value": "Hello world",
+      "caret_cp": 0,
+      "sel_cp": [
+       0,
+       0
+      ]
+     }
+    },
+    {
+     "step": 1,
+     "op": "insert",
+     "op_x": [],
+     "value": "aHello world",
+     "selStart": 1,
+     "selEnd": 1,
+     "caret_cp": 1,
+     "sel_cp": [
+      1,
+      1
+     ],
+     "expected": {
+      "value": "aHello world",
+      "caret_cp": 1,
+      "sel_cp": [
+       1,
+       1
+      ]
+     }
+    },
+    {
+     "step": 2,
+     "op": "insert",
+     "op_x": [],
+     "value": "abHello world",
+     "selStart": 2,
+     "selEnd": 2,
+     "caret_cp": 2,
+     "sel_cp": [
+      2,
+      2
+     ],
+     "expected": {
+      "value": "abHello world",
+      "caret_cp": 2,
+      "sel_cp": [
+       2,
+       2
+      ]
+     }
+    },
+    {
+     "step": 3,
+     "op": "undo",
+     "op_x": [],
+     "value": "Hello world",
+     "selStart": 0,
+     "selEnd": 0,
+     "caret_cp": 0,
+     "sel_cp": [
+      0,
+      0
+     ],
+     "expected": {
+      "value": "aHello world",
+      "caret_cp": 1,
+      "sel_cp": [
+       1,
+       1
+      ]
+     }
+    }
+   ]
+  }
+ ],
+ "rig_notes": [
+  {
+   "rig": "Input.imeSetComposition works; param shape resolved"
+  },
+  {
+   "rig": "commit probing",
+   "probe_log": [
+    {
+     "method": "Input.imeCommitText",
+     "params": [
+      "text",
+      "selectionStart",
+      "selectionEnd"
+     ],
+     "ok": false,
+     "error": "Protocol error (Input.imeCommitText): 'Input.imeCommitText' wasn't found",
+     "value": "x"
+    },
+    {
+     "method": "Ime.imeCommitText",
+     "params": [
+      "text",
+      "selectionStart",
+      "selectionEnd"
+     ],
+     "ok": false,
+     "error": "Protocol error (Ime.imeCommitText): 'Ime.imeCommitText' wasn't found",
+     "value": "x"
+    },
+    {
+     "method": "Input.imeCommitText",
+     "params": [
+      "text",
+      "relativeSelectionStart",
+      "relativeSelectionEnd"
+     ],
+     "ok": false,
+     "error": "Protocol error (Input.imeCommitText): 'Input.imeCommitText' wasn't found",
+     "value": "x"
+    },
+    {
+     "method": "Input.insertText during composition",
+     "ok": true,
+     "value": "b",
+     "events": [
+      "composition:compositionupdate:b",
+      "beforeinput:insertCompositionText:b",
+      "composition:compositionend:b",
+      "selection:undefined:"
+     ]
+    }
+   ]
+  },
+  {
+   "rig": "commit path: Input.insertText"
+  }
+ ],
+ "letter_tracking": {
+  "string": "Hello world",
+  "css_letter_spacing_px": 1,
+  "dom_width_plain": 81.03125,
+  "dom_width_tracked": 92.03125,
+  "framework_width_plain": 81.03125,
+  "framework_width_tracked": 91.03125,
+  "convention": "M0b: spacing on every advance except the final glyph (trailing caret == run width); CSS letter-spacing: after every character including the final one"
+ }
+}

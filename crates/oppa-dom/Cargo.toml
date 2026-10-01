@@ -1,0 +1,22 @@
+[package]
+name = "oppa-dom"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "M7 DOM backend: third presenter on the M4-proved contract (TreeDiff to DOM mutations, StyleId to CSS rules, native scroll, ARIA)"
+
+[dependencies]
+oppa = { path = "../oppa" }
+# Structural (not dev-only): the DOM paint hook builds the shared
+# dirty-subtree FramePlans — same plans, same damage discipline as both
+# rasterizers; no raster/DOM code is shared.
+oppa-cpu = { path = "../oppa-cpu" }
+
+[dev-dependencies]
+oppa-macros = { path = "../oppa-macros" }
+oppa-controls = { path = "../oppa-controls" }
+oppa-vello = { path = "../oppa-vello" }
+vello = "0.10"
+
+[target.'cfg(windows)'.dev-dependencies]
+oppa-text-dwrite = { path = "../oppa-text-dwrite" }

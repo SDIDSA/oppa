@@ -1,0 +1,255 @@
+{
+  "tool": "m7-parity",
+  "browser": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+  "devicePixelRatio": 1,
+  "dpr_ok": true,
+  "box_tol": 0.5,
+  "text_w_tol": 1,
+  "gated_rows": 10,
+  "green_rows": 10,
+  "match_rate": 1,
+  "pass": true,
+  "rows": [
+    {
+      "pid": "0-0",
+      "kind": "box",
+      "verdict": "pass",
+      "engine": {
+        "x": 0,
+        "y": 0,
+        "w": 360,
+        "h": 400
+      },
+      "browser": {
+        "x": 0,
+        "y": 0,
+        "w": 360,
+        "h": 400
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0,
+        "dh": 0
+      }
+    },
+    {
+      "pid": "1-0",
+      "kind": "box",
+      "verdict": "pass",
+      "engine": {
+        "x": 0,
+        "y": 0,
+        "w": 220,
+        "h": 64
+      },
+      "browser": {
+        "x": 0,
+        "y": 0,
+        "w": 220,
+        "h": 64
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0,
+        "dh": 0
+      }
+    },
+    {
+      "pid": "2-0",
+      "kind": "box",
+      "verdict": "pass",
+      "engine": {
+        "x": 8,
+        "y": 0,
+        "w": 60,
+        "h": 40
+      },
+      "browser": {
+        "x": 8,
+        "y": 0,
+        "w": 60,
+        "h": 40
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0,
+        "dh": 0
+      }
+    },
+    {
+      "pid": "3-0",
+      "kind": "box",
+      "verdict": "pass",
+      "engine": {
+        "x": 76,
+        "y": 0,
+        "w": 80,
+        "h": 40
+      },
+      "browser": {
+        "x": 76,
+        "y": 0,
+        "w": 80,
+        "h": 40
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0,
+        "dh": 0
+      }
+    },
+    {
+      "pid": "4-0",
+      "kind": "box",
+      "verdict": "pass",
+      "engine": {
+        "x": 0,
+        "y": 64,
+        "w": 120,
+        "h": 90
+      },
+      "browser": {
+        "x": 0,
+        "y": 64,
+        "w": 120,
+        "h": 90
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0,
+        "dh": 0
+      }
+    },
+    {
+      "pid": "5-0",
+      "kind": "box",
+      "verdict": "pass",
+      "engine": {
+        "x": 0,
+        "y": 64,
+        "w": 100,
+        "h": 30
+      },
+      "browser": {
+        "x": 0,
+        "y": 64,
+        "w": 100,
+        "h": 30
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0,
+        "dh": 0
+      }
+    },
+    {
+      "pid": "6-0",
+      "kind": "box",
+      "verdict": "pass",
+      "engine": {
+        "x": 0,
+        "y": 94,
+        "w": 100,
+        "h": 40
+      },
+      "browser": {
+        "x": 0,
+        "y": 94,
+        "w": 100,
+        "h": 40
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0,
+        "dh": 0
+      }
+    },
+    {
+      "pid": "8-0",
+      "kind": "text-width",
+      "verdict": "pass",
+      "engine": {
+        "x": 0,
+        "y": 154,
+        "w": 81.03125
+      },
+      "browser": {
+        "x": 0,
+        "y": 154,
+        "w": 81.03125
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0
+      }
+    },
+    {
+      "pid": "8-0",
+      "kind": "text-height-record",
+      "verdict": "record",
+      "engine": {
+        "h": 21.28125
+      },
+      "browser": {
+        "h": 21
+      },
+      "deltas": {
+        "dh": 0.28125
+      }
+    },
+    {
+      "pid": "9-0",
+      "kind": "box",
+      "verdict": "pass",
+      "engine": {
+        "x": 0,
+        "y": 175,
+        "w": 60,
+        "h": 30
+      },
+      "browser": {
+        "x": 0,
+        "y": 175,
+        "w": 60,
+        "h": 30
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0,
+        "dh": 0
+      }
+    },
+    {
+      "pid": "10-0",
+      "kind": "box",
+      "verdict": "pass",
+      "engine": {
+        "x": 0,
+        "y": 205,
+        "w": 40,
+        "h": 40
+      },
+      "browser": {
+        "x": 0,
+        "y": 205,
+        "w": 40,
+        "h": 40
+      },
+      "deltas": {
+        "dx": 0,
+        "dy": 0,
+        "dw": 0,
+        "dh": 0
+      }
+    }
+  ]
+}

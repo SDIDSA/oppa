@@ -1,0 +1,38 @@
+[package]
+name = "oppa-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop application runner: window + event/paint loop over ComponentHost (Windows Win32+GDI, Linux winit+softbuffer)"
+
+[dependencies]
+oppa = { path = "../oppa" }
+oppa-cpu = { path = "../oppa-cpu" }
+oppa-vello = { path = "../oppa-vello" }
+tiny-skia = "0.12"
+wgpu = "29"
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+oppa-shell-win = { path = "../oppa-shell-win" }
+oppa-text-dwrite = { path = "../oppa-text-dwrite" }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+oppa-shell-linux = { path = "../oppa-shell-linux" }
+oppa-text-linux = { path = "../oppa-text-linux" }
+winit = { version = "0.30", default-features = false, features = ["x11", "x11-dl", "wayland", "wayland-dlopen", "rwh_06"] }
+
+[dev-dependencies]
+# Round 24.1: the Task Studio E2E suite drives the reference app
+# (controls) plus the DOM twin (test-only coupling, never product).
+oppa-controls = { path = "../oppa-controls" }
+oppa-dom = { path = "../oppa-dom" }

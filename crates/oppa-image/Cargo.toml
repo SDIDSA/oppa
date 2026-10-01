@@ -1,0 +1,17 @@
+[package]
+name = "oppa-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "G8: image decode seam — PNG bytes to straight-alpha RGBA8 (JPEG and friends are named follow-ups, not silent gaps)"
+
+[dependencies]
+png = "0.18"
+# SVG rasterization (decision 291): resvg without default features —
+# no font stack (text-in-SVG refuses loudly, never renders tofu),
+# pixels via the re-exported tiny-skia (no second raster version).
+resvg = { version = "0.48", default-features = false }
+
+[dev-dependencies]
+oppa = { path = "../oppa" }
+oppa-cpu = { path = "../oppa-cpu" }

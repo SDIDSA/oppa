@@ -1,0 +1,19 @@
+{
+  "tool": "sink",
+  "browser": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+  "ready": true,
+  "title": true,
+  "form_roles": true,
+  "checkbox_svg": true,
+  "select_pick": "Mint",
+  "slider_step": "55",
+  "text_typing": "Ada",
+  "layout_chips": true,
+  "modal_confirm": true,
+  "platform_pick": true,
+  "platform_count": true,
+  "fetch_mock": true,
+  "demo_still_boots": true,
+  "pass": true,
+  "note": ""
+}

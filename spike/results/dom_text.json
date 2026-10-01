@@ -1,0 +1,181 @@
+{
+  "tool": "m7-dom-text",
+  "suites": [
+    {
+      "name": "latin_edit",
+      "steps": [
+        {
+          "op": "base",
+          "value": "Hello world",
+          "start": 0,
+          "end": 0,
+          "want": {
+            "value": "Hello world"
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "ClickCluster{0}",
+          "value": "Hello world",
+          "start": 0,
+          "end": 0,
+          "want": {
+            "start": 0,
+            "end": 0
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "Insert{X}",
+          "value": "XHello world",
+          "start": 1,
+          "end": 1,
+          "want": {
+            "value": "XHello world",
+            "start": 1
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "CaretMove{+2}",
+          "value": "XHello world",
+          "start": 3,
+          "end": 3,
+          "want": {
+            "start": 3,
+            "end": 3
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "DragCluster{3,8}",
+          "value": "XHello world",
+          "start": 3,
+          "end": 8,
+          "want": {
+            "start": 3,
+            "end": 8
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "Insert{!}",
+          "value": "XHe!orld",
+          "start": 4,
+          "end": 4,
+          "want": {
+            "value": "XHe!orld",
+            "start": 4
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "Undo",
+          "value": "XHello world",
+          "start": 3,
+          "end": 8,
+          "want": {
+            "value": "XHello world",
+            "start": 3,
+            "end": 8
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "EndKey",
+          "value": "XHello world",
+          "start": 12,
+          "end": 12,
+          "want": {
+            "start": 12
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "Insert{!}@end",
+          "value": "XHello world!",
+          "start": 13,
+          "end": 13,
+          "want": {
+            "value": "XHello world!"
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "Undo@burst",
+          "value": "XHello world",
+          "start": 12,
+          "end": 12,
+          "want": {
+            "value": "XHello world"
+          },
+          "verdict": "pass"
+        }
+      ]
+    },
+    {
+      "name": "multibyte_edit",
+      "steps": [
+        {
+          "op": "replace-all",
+          "value": "日本語x",
+          "start": 4,
+          "end": 4,
+          "want": {
+            "value": "日本語x"
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "DblClickCluster{1}",
+          "value": "日本語x",
+          "start": 0,
+          "end": 3,
+          "want": {
+            "start": 0,
+            "end": 3
+          },
+          "verdict": "pass"
+        }
+      ]
+    },
+    {
+      "name": "undo_granularity",
+      "steps": [
+        {
+          "op": "type{a}{b}",
+          "value": "abHello world",
+          "start": 2,
+          "end": 2,
+          "want": {
+            "value": "abHello world"
+          },
+          "verdict": "pass"
+        },
+        {
+          "op": "Undo",
+          "value": "aHello world",
+          "start": 1,
+          "end": 1,
+          "verdict": "pass"
+        }
+      ]
+    }
+  ],
+  "divergences": [
+    {
+      "suite": "undo_granularity",
+      "op": "Undo",
+      "got": {
+        "value": "aHello world",
+        "start": 1,
+        "end": 1
+      },
+      "coalesced": false,
+      "split": true,
+      "rule": "browser burst coalescing vs single-level session"
+    }
+  ],
+  "failed_steps": 0,
+  "pass": true
+}

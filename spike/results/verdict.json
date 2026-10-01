@@ -1,0 +1,2403 @@
+{
+ "rig": {
+  "windows_arm": "windows-gpu (framework-authority editing session over DWriteTextService; set_ime anchoring)",
+  "web_arm": "web-dom (real <input> in headless Edge; native clicks/keys/IME; hook records what the DOM reports)",
+  "tolerance_px": 2,
+  "rig_notes": [
+   {
+    "rig": "Input.imeSetComposition works; param shape resolved"
+   },
+   {
+    "rig": "commit probing",
+    "probe_log": [
+     {
+      "method": "Input.imeCommitText",
+      "params": [
+       "text",
+       "selectionStart",
+       "selectionEnd"
+      ],
+      "ok": false,
+      "error": "Protocol error (Input.imeCommitText): 'Input.imeCommitText' wasn't found",
+      "value": "x"
+     },
+     {
+      "method": "Ime.imeCommitText",
+      "params": [
+       "text",
+       "selectionStart",
+       "selectionEnd"
+      ],
+      "ok": false,
+      "error": "Protocol error (Ime.imeCommitText): 'Ime.imeCommitText' wasn't found",
+      "value": "x"
+     },
+     {
+      "method": "Input.imeCommitText",
+      "params": [
+       "text",
+       "relativeSelectionStart",
+       "relativeSelectionEnd"
+      ],
+      "ok": false,
+      "error": "Protocol error (Input.imeCommitText): 'Input.imeCommitText' wasn't found",
+      "value": "x"
+     },
+     {
+      "method": "Input.insertText during composition",
+      "ok": true,
+      "value": "b",
+      "events": [
+       "composition:compositionupdate:b",
+       "beforeinput:insertCompositionText:b",
+       "composition:compositionend:b",
+       "selection:undefined:"
+      ]
+     }
+    ]
+   },
+   {
+    "rig": "commit path: Input.insertText"
+   }
+  ]
+ },
+ "c1": {
+  "statement": "Framework caret rects (emitted through PlatformShell::set_ime) agree with (a) IDWriteTextLayout::HitTestTextPosition at every cluster boundary and trailing caret on every corpus string at DPR 1 and 2, and (b) a real Win32 EDIT control (EM_POSFROMCHAR, identical font/size) at DPR 1, within N=2 device px; and track the caret through every composition edit and in-composition arrow step.",
+  "N_justification": "N=2 device px: M0b's handoff fixes the Windows caret tolerance at ±2 device px; 2 device px = 1 CSS px at DPR 2; far inside DESIGN's \"within one caret height\"; tightest bound that does not require two engines (GetGlyphs pipeline vs IDWriteTextLayout/EDIT control) to agree subpixel-exactly.",
+  "max_delta_vs_textlayout_px": 130,
+  "max_delta_vs_edit_control_px": 45.3203125,
+  "composition_tracking_max_delta_px": 0,
+  "composition_failing_steps": 0,
+  "pass": false,
+  "per_string": [
+   {
+    "string": "Hello world",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 1.234375,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "Hello world",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "héllo",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 0.546875,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "héllo",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "日本語",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 0,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "日本語",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "héllo 👍",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 0.9296875,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "héllo 👍",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "abc مرحبا 123",
+    "dpr": 1,
+    "max_delta_layout_px": 65,
+    "worst_index": 4,
+    "pass_layout": false,
+    "max_delta_edit_px": 45.3203125,
+    "pass_edit": false,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "abc مرحبا 123",
+    "dpr": 2,
+    "max_delta_layout_px": 130,
+    "worst_index": 4,
+    "pass_layout": false,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "café",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 0.90625,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "café",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "a👩‍💻b",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 0.515625,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "a👩‍💻b",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "nihao",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 0.5,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "nihao",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "你好world",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 0.625,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "你好world",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "こんにちは",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 1.40625,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "こんにちは",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "abc日本語x",
+    "dpr": 1,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": 1.28125,
+    "pass_edit": true,
+    "oracle_intra_cluster_spread_px": 0
+   },
+   {
+    "string": "abc日本語x",
+    "dpr": 2,
+    "max_delta_layout_px": 0,
+    "worst_index": null,
+    "pass_layout": true,
+    "max_delta_edit_px": null,
+    "pass_edit": null,
+    "oracle_intra_cluster_spread_px": 0
+   }
+  ]
+ },
+ "c1_composition": {
+  "pass": true,
+  "per_scenario": [
+   {
+    "scenario": "zh_nihao_candidate_commit",
+    "steps": [
+     {
+      "step": 0,
+      "phase": "start",
+      "composite": "",
+      "caret_byte": 0,
+      "rect_x": null,
+      "oracle_x": null,
+      "delta_px": null,
+      "pass": true
+     },
+     {
+      "step": 1,
+      "phase": "update",
+      "composite": "ni",
+      "caret_byte": 2,
+      "rect_x": 12.9296875,
+      "oracle_x": 12.9296875,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 2,
+      "phase": "update",
+      "composite": "nih",
+      "caret_byte": 3,
+      "rect_x": 21.984375,
+      "oracle_x": 21.984375,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 3,
+      "phase": "update",
+      "composite": "niha",
+      "caret_byte": 4,
+      "rect_x": 30.125,
+      "oracle_x": 30.125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 4,
+      "phase": "update",
+      "composite": "nihao",
+      "caret_byte": 5,
+      "rect_x": 39.5,
+      "oracle_x": 39.5,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 5,
+      "phase": "commit",
+      "composite": "你好",
+      "caret_byte": 6,
+      "rect_x": 32,
+      "oracle_x": 32,
+      "delta_px": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "scenario": "ja_kana_conversion_then_candidate",
+    "steps": [
+     {
+      "step": 0,
+      "phase": "start",
+      "composite": "",
+      "caret_byte": 0,
+      "rect_x": null,
+      "oracle_x": null,
+      "delta_px": null,
+      "pass": true
+     },
+     {
+      "step": 1,
+      "phase": "update",
+      "composite": "k",
+      "caret_byte": 1,
+      "rect_x": 7.953125,
+      "oracle_x": 7.953125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 2,
+      "phase": "update",
+      "composite": "ko",
+      "caret_byte": 2,
+      "rect_x": 17.328125,
+      "oracle_x": 17.328125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 3,
+      "phase": "update",
+      "composite": "kon",
+      "caret_byte": 3,
+      "rect_x": 26.3828125,
+      "oracle_x": 26.3828125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 4,
+      "phase": "update",
+      "composite": "konn",
+      "caret_byte": 4,
+      "rect_x": 35.4375,
+      "oracle_x": 35.4375,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 5,
+      "phase": "update",
+      "composite": "konni",
+      "caret_byte": 5,
+      "rect_x": 39.3125,
+      "oracle_x": 39.3125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 6,
+      "phase": "update",
+      "composite": "konniti",
+      "caret_byte": 6,
+      "rect_x": 44.734375,
+      "oracle_x": 44.734375,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 7,
+      "phase": "update",
+      "composite": "konnitiha",
+      "caret_byte": 8,
+      "rect_x": 57.6640625,
+      "oracle_x": 57.6640625,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 8,
+      "phase": "update",
+      "composite": "こんにちは",
+      "caret_byte": 15,
+      "rect_x": 61.59375,
+      "oracle_x": 61.59375,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 9,
+      "phase": "commit",
+      "composite": "今日は",
+      "caret_byte": 9,
+      "rect_x": 45.6796875,
+      "oracle_x": 45.6796875,
+      "delta_px": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "scenario": "cancel_mid_composition",
+    "steps": [
+     {
+      "step": 0,
+      "phase": "start",
+      "composite": "",
+      "caret_byte": 0,
+      "rect_x": null,
+      "oracle_x": null,
+      "delta_px": null,
+      "pass": true
+     },
+     {
+      "step": 1,
+      "phase": "update",
+      "composite": "ni",
+      "caret_byte": 2,
+      "rect_x": 12.9296875,
+      "oracle_x": 12.9296875,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 2,
+      "phase": "update",
+      "composite": "nih",
+      "caret_byte": 3,
+      "rect_x": 21.984375,
+      "oracle_x": 21.984375,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 3,
+      "phase": "cancel",
+      "composite": "",
+      "caret_byte": 0,
+      "rect_x": null,
+      "oracle_x": null,
+      "delta_px": null,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "scenario": "caret_nav_inside_composition",
+    "steps": [
+     {
+      "step": 0,
+      "phase": "start",
+      "composite": "abc ",
+      "caret_byte": 4,
+      "rect_x": 29.3203125,
+      "oracle_x": 29.3203125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 1,
+      "phase": "update",
+      "composite": "abc nihao",
+      "caret_byte": 9,
+      "rect_x": 68.8203125,
+      "oracle_x": 68.8203125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 2,
+      "phase": "update",
+      "composite": "abc nihao",
+      "caret_byte": 7,
+      "rect_x": 51.3046875,
+      "oracle_x": 51.3046875,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 3,
+      "phase": "update",
+      "composite": "abc nihao",
+      "caret_byte": 9,
+      "rect_x": 68.8203125,
+      "oracle_x": 68.8203125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 4,
+      "phase": "commit",
+      "composite": "abc 你好",
+      "caret_byte": 10,
+      "rect_x": 61.3203125,
+      "oracle_x": 61.3203125,
+      "delta_px": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "scenario": "rapid_zh_ja_switch",
+    "steps": [
+     {
+      "step": 0,
+      "phase": "start",
+      "composite": "",
+      "caret_byte": 0,
+      "rect_x": null,
+      "oracle_x": null,
+      "delta_px": null,
+      "pass": true
+     },
+     {
+      "step": 1,
+      "phase": "update",
+      "composite": "ni",
+      "caret_byte": 2,
+      "rect_x": 12.9296875,
+      "oracle_x": 12.9296875,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 2,
+      "phase": "cancel",
+      "composite": "",
+      "caret_byte": 0,
+      "rect_x": null,
+      "oracle_x": null,
+      "delta_px": null,
+      "pass": true
+     },
+     {
+      "step": 3,
+      "phase": "start",
+      "composite": "",
+      "caret_byte": 0,
+      "rect_x": null,
+      "oracle_x": null,
+      "delta_px": null,
+      "pass": true
+     },
+     {
+      "step": 4,
+      "phase": "update",
+      "composite": "ko",
+      "caret_byte": 2,
+      "rect_x": 17.328125,
+      "oracle_x": 17.328125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 5,
+      "phase": "update",
+      "composite": "kon",
+      "caret_byte": 3,
+      "rect_x": 26.3828125,
+      "oracle_x": 26.3828125,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 6,
+      "phase": "commit",
+      "composite": "今",
+      "caret_byte": 3,
+      "rect_x": 16,
+      "oracle_x": 16,
+      "delta_px": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "scenario": "delete_range_mid_composition",
+    "steps": [
+     {
+      "step": 0,
+      "phase": "start",
+      "composite": "abc",
+      "caret_byte": 3,
+      "rect_x": 24.9375,
+      "oracle_x": 24.9375,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 1,
+      "phase": "update",
+      "composite": "abcnihao",
+      "caret_byte": 8,
+      "rect_x": 64.4375,
+      "oracle_x": 64.4375,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 2,
+      "phase": "delete-range",
+      "composite": "nihao",
+      "caret_byte": 5,
+      "rect_x": 39.5,
+      "oracle_x": 39.5,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 3,
+      "phase": "commit",
+      "composite": "你好",
+      "caret_byte": 6,
+      "rect_x": 32,
+      "oracle_x": 32,
+      "delta_px": 0,
+      "pass": true
+     }
+    ]
+   },
+   {
+    "scenario": "focus_loss_mid_composition",
+    "steps": [
+     {
+      "step": 0,
+      "phase": "start",
+      "composite": "",
+      "caret_byte": 0,
+      "rect_x": null,
+      "oracle_x": null,
+      "delta_px": null,
+      "pass": true
+     },
+     {
+      "step": 1,
+      "phase": "update",
+      "composite": "nih",
+      "caret_byte": 3,
+      "rect_x": 21.984375,
+      "oracle_x": 21.984375,
+      "delta_px": 0,
+      "pass": true
+     },
+     {
+      "step": 2,
+      "phase": "cancel",
+      "composite": "",
+      "caret_byte": 0,
+      "rect_x": null,
+      "oracle_x": null,
+      "delta_px": null,
+      "pass": true
+     }
+    ]
+   }
+  ]
+ },
+ "c2": {
+  "statement": "Click-to-index (integer x sweep + cluster-boundary probes) and mouse selection (drag / shift-click extend / double-click word select) resolve to the same code-point index on both arms for the same x and string. Normalization: UTF-16 selection indices → code-point indices.",
+  "sweep_mismatches": 63,
+  "sweep_probes": 411,
+  "selection_op_mismatches": 6,
+  "selection_op_probes": 21,
+  "worst_click_boundary_delta_vs_framework_mid_px": 39.255615234375,
+  "pass": false,
+  "per_string": [
+   {
+    "string": "Hello world",
+    "sweep_probes": 85,
+    "sweep_mismatches": [],
+    "boundary_probes": 44,
+    "boundary_mismatches": [],
+    "selection_ops": [
+     {
+      "kind": "drag",
+      "windows_cp": [
+       0,
+       3
+      ],
+      "web_cp": [
+       0,
+       3
+      ],
+      "match": true
+     },
+     {
+      "kind": "shift-click",
+      "windows_cp": [
+       0,
+       2
+      ],
+      "web_cp": [
+       0,
+       2
+      ],
+      "match": true
+     },
+     {
+      "kind": "dbl-click",
+      "windows_cp": [
+       0,
+       5
+      ],
+      "web_cp": [
+       0,
+       6
+      ],
+      "match": false
+     }
+    ],
+    "click_boundary_delta_vs_framework_mid_px": {
+     "worst_abs": 0.4881591796875,
+     "rows": [
+      {
+       "cluster": 0,
+       "ours_x": 11.359375,
+       "ours_mid": 5.6796875,
+       "browser_x": 5.501220703125,
+       "delta_mid": -0.178466796875
+      },
+      {
+       "cluster": 1,
+       "ours_x": 19.7265625,
+       "ours_mid": 15.54296875,
+       "browser_x": 15.50006103515625,
+       "delta_mid": -0.04290771484375
+      },
+      {
+       "cluster": 2,
+       "ours_x": 23.6015625,
+       "ours_mid": 21.6640625,
+       "browser_x": 21.50042724609375,
+       "delta_mid": -0.16363525390625
+      },
+      {
+       "cluster": 3,
+       "ours_x": 27.4765625,
+       "ours_mid": 25.5390625,
+       "browser_x": 25.50421142578125,
+       "delta_mid": -0.03485107421875
+      },
+      {
+       "cluster": 4,
+       "ours_x": 36.8515625,
+       "ours_mid": 32.1640625,
+       "browser_x": 32.50286865234375,
+       "delta_mid": 0.33880615234375
+      },
+      {
+       "cluster": 5,
+       "ours_x": 41.234375,
+       "ours_mid": 39.04296875,
+       "browser_x": 39.50152587890625,
+       "delta_mid": 0.45855712890625
+      },
+      {
+       "cluster": 6,
+       "ours_x": 52.796875,
+       "ours_mid": 47.015625,
+       "browser_x": 47.5037841796875,
+       "delta_mid": 0.4881591796875
+      },
+      {
+       "cluster": 7,
+       "ours_x": 62.171875,
+       "ours_mid": 57.484375,
+       "browser_x": 57.50262451171875,
+       "delta_mid": 0.01824951171875
+      },
+      {
+       "cluster": 8,
+       "ours_x": 67.734375,
+       "ours_mid": 64.953125,
+       "browser_x": 64.50128173828125,
+       "delta_mid": -0.45184326171875
+      },
+      {
+       "cluster": 9,
+       "ours_x": 71.609375,
+       "ours_mid": 69.671875,
+       "browser_x": 69.50335693359375,
+       "delta_mid": -0.16851806640625
+      },
+      {
+       "cluster": 10,
+       "ours_x": 81.03125,
+       "ours_mid": 76.3203125,
+       "browser_x": 76.50201416015625,
+       "delta_mid": 0.18170166015625
+      }
+     ]
+    }
+   },
+   {
+    "string": "héllo",
+    "sweep_probes": 38,
+    "sweep_mismatches": [],
+    "boundary_probes": 20,
+    "boundary_mismatches": [],
+    "selection_ops": [
+     {
+      "kind": "drag",
+      "windows_cp": [
+       0,
+       3
+      ],
+      "web_cp": [
+       0,
+       3
+      ],
+      "match": true
+     },
+     {
+      "kind": "shift-click",
+      "windows_cp": [
+       0,
+       2
+      ],
+      "web_cp": [
+       0,
+       2
+      ],
+      "match": true
+     },
+     {
+      "kind": "dbl-click",
+      "windows_cp": [
+       0,
+       5
+      ],
+      "web_cp": [
+       0,
+       5
+      ],
+      "match": true
+     }
+    ],
+    "click_boundary_delta_vs_framework_mid_px": {
+     "worst_abs": 0.35809326171875,
+     "rows": [
+      {
+       "cluster": 0,
+       "ours_x": 9.0546875,
+       "ours_mid": 4.52734375,
+       "browser_x": 4.50189208984375,
+       "delta_mid": -0.02545166015625
+      },
+      {
+       "cluster": 1,
+       "ours_x": 17.421875,
+       "ours_mid": 13.23828125,
+       "browser_x": 13.50067138671875,
+       "delta_mid": 0.26239013671875
+      },
+      {
+       "cluster": 2,
+       "ours_x": 21.296875,
+       "ours_mid": 19.359375,
+       "browser_x": 19.50152587890625,
+       "delta_mid": 0.14215087890625
+      },
+      {
+       "cluster": 3,
+       "ours_x": 25.171875,
+       "ours_mid": 23.234375,
+       "browser_x": 23.50042724609375,
+       "delta_mid": 0.26605224609375
+      },
+      {
+       "cluster": 4,
+       "ours_x": 34.546875,
+       "ours_mid": 29.859375,
+       "browser_x": 29.50128173828125,
+       "delta_mid": -0.35809326171875
+      }
+     ]
+    }
+   },
+   {
+    "string": "日本語",
+    "sweep_probes": 51,
+    "sweep_mismatches": [
+     {
+      "x": 8,
+      "ours_cp": 1,
+      "web_cp": 0
+     },
+     {
+      "x": 24,
+      "ours_cp": 2,
+      "web_cp": 1
+     },
+     {
+      "x": 40,
+      "ours_cp": 3,
+      "web_cp": 2
+     }
+    ],
+    "boundary_probes": 12,
+    "boundary_mismatches": [],
+    "selection_ops": [
+     {
+      "kind": "drag",
+      "windows_cp": [
+       0,
+       2
+      ],
+      "web_cp": [
+       0,
+       2
+      ],
+      "match": true
+     },
+     {
+      "kind": "shift-click",
+      "windows_cp": [
+       0,
+       2
+      ],
+      "web_cp": [
+       0,
+       2
+      ],
+      "match": true
+     },
+     {
+      "kind": "dbl-click",
+      "windows_cp": [
+       1,
+       2
+      ],
+      "web_cp": [
+       0,
+       3
+      ],
+      "match": false
+     }
+    ],
+    "click_boundary_delta_vs_framework_mid_px": {
+     "worst_abs": 0.501708984375,
+     "rows": [
+      {
+       "cluster": 0,
+       "ours_x": 16,
+       "ours_mid": 8,
+       "browser_x": 8.5001220703125,
+       "delta_mid": 0.5001220703125
+      },
+      {
+       "cluster": 1,
+       "ours_x": 32,
+       "ours_mid": 24,
+       "browser_x": 24.501708984375,
+       "delta_mid": 0.501708984375
+      },
+      {
+       "cluster": 2,
+       "ours_x": 48,
+       "ours_mid": 40,
+       "browser_x": 40.5,
+       "delta_mid": 0.5
+      }
+     ]
+    }
+   },
+   {
+    "string": "héllo 👍",
+    "sweep_probes": 64,
+    "sweep_mismatches": [],
+    "boundary_probes": 28,
+    "boundary_mismatches": [],
+    "selection_ops": [
+     {
+      "kind": "drag",
+      "windows_cp": [
+       0,
+       3
+      ],
+      "web_cp": [
+       0,
+       3
+      ],
+      "match": true
+     },
+     {
+      "kind": "shift-click",
+      "windows_cp": [
+       0,
+       2
+      ],
+      "web_cp": [
+       0,
+       2
+      ],
+      "match": true
+     },
+     {
+      "kind": "dbl-click",
+      "windows_cp": [
+       0,
+       5
+      ],
+      "web_cp": [
+       0,
+       6
+      ],
+      "match": false
+     }
+    ],
+    "click_boundary_delta_vs_framework_mid_px": {
+     "worst_abs": 0.41241455078125,
+     "rows": [
+      {
+       "cluster": 0,
+       "ours_x": 9.0546875,
+       "ours_mid": 4.52734375,
+       "browser_x": 4.50238037109375,
+       "delta_mid": -0.02496337890625
+      },
+      {
+       "cluster": 1,
+       "ours_x": 17.421875,
+       "ours_mid": 13.23828125,
+       "browser_x": 13.5030517578125,
+       "delta_mid": 0.2647705078125
+      },
+      {
+       "cluster": 2,
+       "ours_x": 21.296875,
+       "ours_mid": 19.359375,
+       "browser_x": 19.50213623046875,
+       "delta_mid": 0.14276123046875
+      },
+      {
+       "cluster": 3,
+       "ours_x": 25.171875,
+       "ours_mid": 23.234375,
+       "browser_x": 23.50152587890625,
+       "delta_mid": 0.26715087890625
+      },
+      {
+       "cluster": 4,
+       "ours_x": 34.546875,
+       "ours_mid": 29.859375,
+       "browser_x": 29.5006103515625,
+       "delta_mid": -0.3587646484375
+      },
+      {
+       "cluster": 5,
+       "ours_x": 38.9296875,
+       "ours_mid": 36.73828125,
+       "browser_x": 36.5015869140625,
+       "delta_mid": -0.2366943359375
+      },
+      {
+       "cluster": 6,
+       "ours_x": 60.8984375,
+       "ours_mid": 49.9140625,
+       "browser_x": 49.50164794921875,
+       "delta_mid": -0.41241455078125
+      }
+     ]
+    }
+   },
+   {
+    "string": "abc مرحبا 123",
+    "sweep_probes": 98,
+    "sweep_mismatches": [
+     {
+      "x": 30,
+      "ours_cp": 4,
+      "web_cp": 10
+     },
+     {
+      "x": 31,
+      "ours_cp": 4,
+      "web_cp": 10
+     },
+     {
+      "x": 32,
+      "ours_cp": 4,
+      "web_cp": 10
+     },
+     {
+      "x": 33,
+      "ours_cp": 4,
+      "web_cp": 10
+     },
+     {
+      "x": 34,
+      "ours_cp": 5,
+      "web_cp": 11
+     },
+     {
+      "x": 35,
+      "ours_cp": 5,
+      "web_cp": 11
+     },
+     {
+      "x": 36,
+      "ours_cp": 5,
+      "web_cp": 11
+     },
+     {
+      "x": 37,
+      "ours_cp": 5,
+      "web_cp": 11
+     },
+     {
+      "x": 38,
+      "ours_cp": 5,
+      "web_cp": 11
+     },
+     {
+      "x": 39,
+      "ours_cp": 5,
+      "web_cp": 11
+     },
+     {
+      "x": 40,
+      "ours_cp": 5,
+      "web_cp": 11
+     },
+     {
+      "x": 41,
+      "ours_cp": 5,
+      "web_cp": 11
+     },
+     {
+      "x": 42,
+      "ours_cp": 5,
+      "web_cp": 11
+     },
+     {
+      "x": 43,
+      "ours_cp": 6,
+      "web_cp": 12
+     },
+     {
+      "x": 44,
+      "ours_cp": 6,
+      "web_cp": 12
+     },
+     {
+      "x": 45,
+      "ours_cp": 6,
+      "web_cp": 12
+     },
+     {
+      "x": 46,
+      "ours_cp": 6,
+      "web_cp": 12
+     },
+     {
+      "x": 47,
+      "ours_cp": 6,
+      "web_cp": 12
+     },
+     {
+      "x": 48,
+      "ours_cp": 6,
+      "web_cp": 12
+     },
+     {
+      "x": 49,
+      "ours_cp": 6,
+      "web_cp": 12
+     },
+     {
+      "x": 50,
+      "ours_cp": 6,
+      "web_cp": 12
+     },
+     {
+      "x": 51,
+      "ours_cp": 7,
+      "web_cp": 13
+     },
+     {
+      "x": 52,
+      "ours_cp": 7,
+      "web_cp": 13
+     },
+     {
+      "x": 53,
+      "ours_cp": 7,
+      "web_cp": 13
+     },
+     {
+      "x": 54,
+      "ours_cp": 7,
+      "web_cp": 13
+     },
+     {
+      "x": 55,
+      "ours_cp": 7,
+      "web_cp": 13
+     },
+     {
+      "x": 56,
+      "ours_cp": 7,
+      "web_cp": 13
+     },
+     {
+      "x": 57,
+      "ours_cp": 7,
+      "web_cp": 13
+     },
+     {
+      "x": 58,
+      "ours_cp": 8,
+      "web_cp": 9
+     },
+     {
+      "x": 59,
+      "ours_cp": 8,
+      "web_cp": 9
+     },
+     {
+      "x": 60,
+      "ours_cp": 8,
+      "web_cp": 9
+     },
+     {
+      "x": 61,
+      "ours_cp": 8,
+      "web_cp": 9
+     },
+     {
+      "x": 63,
+      "ours_cp": 9,
+      "web_cp": 8
+     },
+     {
+      "x": 64,
+      "ours_cp": 9,
+      "web_cp": 8
+     },
+     {
+      "x": 65,
+      "ours_cp": 9,
+      "web_cp": 8
+     },
+     {
+      "x": 66,
+      "ours_cp": 9,
+      "web_cp": 8
+     },
+     {
+      "x": 67,
+      "ours_cp": 10,
+      "web_cp": 7
+     },
+     {
+      "x": 68,
+      "ours_cp": 10,
+      "web_cp": 7
+     },
+     {
+      "x": 69,
+      "ours_cp": 10,
+      "web_cp": 7
+     },
+     {
+      "x": 70,
+      "ours_cp": 10,
+      "web_cp": 7
+     },
+     {
+      "x": 71,
+      "ours_cp": 10,
+      "web_cp": 7
+     },
+     {
+      "x": 72,
+      "ours_cp": 10,
+      "web_cp": 7
+     },
+     {
+      "x": 73,
+      "ours_cp": 11,
+      "web_cp": 7
+     },
+     {
+      "x": 74,
+      "ours_cp": 11,
+      "web_cp": 6
+     },
+     {
+      "x": 75,
+      "ours_cp": 11,
+      "web_cp": 6
+     },
+     {
+      "x": 76,
+      "ours_cp": 11,
+      "web_cp": 6
+     },
+     {
+      "x": 77,
+      "ours_cp": 11,
+      "web_cp": 6
+     },
+     {
+      "x": 78,
+      "ours_cp": 11,
+      "web_cp": 6
+     },
+     {
+      "x": 79,
+      "ours_cp": 11,
+      "web_cp": 6
+     },
+     {
+      "x": 80,
+      "ours_cp": 11,
+      "web_cp": 6
+     },
+     {
+      "x": 81,
+      "ours_cp": 11,
+      "web_cp": 6
+     },
+     {
+      "x": 82,
+      "ours_cp": 12,
+      "web_cp": 5
+     },
+     {
+      "x": 83,
+      "ours_cp": 12,
+      "web_cp": 5
+     },
+     {
+      "x": 84,
+      "ours_cp": 12,
+      "web_cp": 5
+     },
+     {
+      "x": 85,
+      "ours_cp": 12,
+      "web_cp": 5
+     },
+     {
+      "x": 86,
+      "ours_cp": 12,
+      "web_cp": 5
+     },
+     {
+      "x": 87,
+      "ours_cp": 12,
+      "web_cp": 5
+     },
+     {
+      "x": 88,
+      "ours_cp": 12,
+      "web_cp": 5
+     },
+     {
+      "x": 89,
+      "ours_cp": 12,
+      "web_cp": 5
+     },
+     {
+      "x": 90,
+      "ours_cp": 12,
+      "web_cp": 13
+     }
+    ],
+    "boundary_probes": 52,
+    "boundary_mismatches": [],
+    "selection_ops": [
+     {
+      "kind": "drag",
+      "windows_cp": [
+       0,
+       3
+      ],
+      "web_cp": [
+       0,
+       3
+      ],
+      "match": true
+     },
+     {
+      "kind": "shift-click",
+      "windows_cp": [
+       0,
+       2
+      ],
+      "web_cp": [
+       0,
+       2
+      ],
+      "match": true
+     },
+     {
+      "kind": "dbl-click",
+      "windows_cp": [
+       0,
+       3
+      ],
+      "web_cp": [
+       0,
+       4
+      ],
+      "match": false
+     }
+    ],
+    "click_boundary_delta_vs_framework_mid_px": {
+     "worst_abs": 39.255615234375,
+     "rows": [
+      {
+       "cluster": 0,
+       "ours_x": 8.140625,
+       "ours_mid": 4.0703125,
+       "browser_x": 4.50439453125,
+       "delta_mid": 0.43408203125
+      },
+      {
+       "cluster": 1,
+       "ours_x": 17.546875,
+       "ours_mid": 12.84375,
+       "browser_x": 12.5,
+       "delta_mid": -0.34375
+      },
+      {
+       "cluster": 2,
+       "ours_x": 24.9375,
+       "ours_mid": 21.2421875,
+       "browser_x": 21.502685546875,
+       "delta_mid": 0.260498046875
+      },
+      {
+       "cluster": 3,
+       "ours_x": 29.3203125,
+       "ours_mid": 27.12890625,
+       "browser_x": 27.50244140625,
+       "delta_mid": 0.37353515625
+      },
+      {
+       "cluster": 4,
+       "ours_x": 38.6796875,
+       "ours_mid": 34,
+       "browser_x": 29.50439453125,
+       "delta_mid": -4.49560546875
+      },
+      {
+       "cluster": 5,
+       "ours_x": 45.359375,
+       "ours_mid": 42.01953125,
+       "browser_x": 29.50439453125,
+       "delta_mid": -12.51513671875
+      },
+      {
+       "cluster": 6,
+       "ours_x": 54.7109375,
+       "ours_mid": 50.03515625,
+       "browser_x": 29.50439453125,
+       "delta_mid": -20.53076171875
+      },
+      {
+       "cluster": 7,
+       "ours_x": 60.0546875,
+       "ours_mid": 57.3828125,
+       "browser_x": 29.50439453125,
+       "delta_mid": -27.87841796875
+      },
+      {
+       "cluster": 8,
+       "ours_x": 64.0625,
+       "ours_mid": 62.05859375,
+       "browser_x": 29.50439453125,
+       "delta_mid": -32.55419921875
+      },
+      {
+       "cluster": 9,
+       "ours_x": 68.4453125,
+       "ours_mid": 66.25390625,
+       "browser_x": 29.50439453125,
+       "delta_mid": -36.74951171875
+      },
+      {
+       "cluster": 10,
+       "ours_x": 77.0703125,
+       "ours_mid": 72.7578125,
+       "browser_x": 33.502197265625,
+       "delta_mid": -39.255615234375
+      },
+      {
+       "cluster": 11,
+       "ours_x": 85.6953125,
+       "ours_mid": 81.3828125,
+       "browser_x": 42.5048828125,
+       "delta_mid": -38.8779296875
+      },
+      {
+       "cluster": 12,
+       "ours_x": 94.3203125,
+       "ours_mid": 90.0078125,
+       "browser_x": 89.501953125,
+       "delta_mid": -0.505859375
+      }
+     ]
+    }
+   },
+   {
+    "string": "café",
+    "sweep_probes": 32,
+    "sweep_mismatches": [],
+    "boundary_probes": 16,
+    "boundary_mismatches": [],
+    "selection_ops": [
+     {
+      "kind": "drag",
+      "windows_cp": [
+       0,
+       3
+      ],
+      "web_cp": [
+       0,
+       3
+      ],
+      "match": true
+     },
+     {
+      "kind": "shift-click",
+      "windows_cp": [
+       0,
+       2
+      ],
+      "web_cp": [
+       0,
+       2
+      ],
+      "match": true
+     },
+     {
+      "kind": "dbl-click",
+      "windows_cp": [
+       0,
+       4
+      ],
+      "web_cp": [
+       0,
+       5
+      ],
+      "match": false
+     }
+    ],
+    "click_boundary_delta_vs_framework_mid_px": {
+     "worst_abs": 0.46673583984375,
+     "rows": [
+      {
+       "cluster": 0,
+       "ours_x": 7.390625,
+       "ours_mid": 3.6953125,
+       "browser_x": 3.50128173828125,
+       "delta_mid": -0.19403076171875
+      },
+      {
+       "cluster": 1,
+       "ours_x": 15.53125,
+       "ours_mid": 11.4609375,
+       "browser_x": 11.50146484375,
+       "delta_mid": 0.04052734375
+      },
+      {
+       "cluster": 2,
+       "ours_x": 20.5390625,
+       "ours_mid": 18.03515625,
+       "browser_x": 18.50189208984375,
+       "delta_mid": 0.46673583984375
+      },
+      {
+       "cluster": 3,
+       "ours_x": 28.90625,
+       "ours_mid": 24.72265625,
+       "browser_x": 24.50042724609375,
+       "delta_mid": -0.22222900390625
+      }
+     ]
+    }
+   },
+   {
+    "string": "a👩‍💻b",
+    "sweep_probes": 43,
+    "sweep_mismatches": [],
+    "boundary_probes": 12,
+    "boundary_mismatches": [],
+    "selection_ops": [
+     {
+      "kind": "drag",
+      "windows_cp": [
+       0,
+       4
+      ],
+      "web_cp": [
+       0,
+       4
+      ],
+      "match": true
+     },
+     {
+      "kind": "shift-click",
+      "windows_cp": [
+       0,
+       4
+      ],
+      "web_cp": [
+       0,
+       4
+      ],
+      "match": true
+     },
+     {
+      "kind": "dbl-click",
+      "windows_cp": [
+       1,
+       1
+      ],
+      "web_cp": [
+       0,
+       4
+      ],
+      "match": false
+     }
+    ],
+    "click_boundary_delta_vs_framework_mid_px": {
+     "worst_abs": 15.310791015625,
+     "rows": [
+      {
+       "cluster": 0,
+       "ours_x": 8.140625,
+       "ours_mid": 4.0703125,
+       "browser_x": 4.5006103515625,
+       "delta_mid": 0.4302978515625
+      },
+      {
+       "cluster": 1,
+       "ours_x": 30.109375,
+       "ours_mid": 19.125,
+       "browser_x": 19.501708984375,
+       "delta_mid": 0.376708984375
+      },
+      {
+       "cluster": 2,
+       "ours_x": 39.515625,
+       "ours_mid": 34.8125,
+       "browser_x": 19.501708984375,
+       "delta_mid": -15.310791015625
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "c3": {
+  "statement": "The begin/update/commit/cancel streams for each scripted scenario (candidate commit, kana conversion, cancel mid-composition, in-composition caret navigation, rapid zh↔ja switching, delete-range re-anchor, focus loss mid-composition) must match the editing model with no lost or duplicated characters. In-progress state must be visible identically: the framework sees composition text in (Windows) the session buffer / (Web) the field value + compositionupdate data.",
+  "pass": false,
+  "per_scenario": [
+   {
+    "name": "zh_nihao_candidate_commit",
+    "language": "zh",
+    "windows_logged_phases": [
+     "start",
+     "update",
+     "update",
+     "update",
+     "update",
+     "commit"
+    ],
+    "web_dom_phases": [
+     "start",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "commit"
+    ],
+    "phases_match": false,
+    "value_mismatch_steps": 0,
+    "caret_mismatch_steps": 4,
+    "lost_or_duplicated": null,
+    "ok": false,
+    "steps": [
+     {
+      "op": "start",
+      "web_value": "",
+      "framework_composite": "",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 0,
+      "caret_match": true
+     },
+     {
+      "op": "update",
+      "web_value": "ni",
+      "framework_composite": "ni",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 2,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "nih",
+      "framework_composite": "nih",
+      "value_match": true,
+      "web_caret_cp": 2,
+      "framework_caret_cp": 3,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "niha",
+      "framework_composite": "niha",
+      "value_match": true,
+      "web_caret_cp": 3,
+      "framework_caret_cp": 4,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "nihao",
+      "framework_composite": "nihao",
+      "value_match": true,
+      "web_caret_cp": 4,
+      "framework_caret_cp": 5,
+      "caret_match": false
+     },
+     {
+      "op": "commit",
+      "web_value": "你好",
+      "framework_composite": "你好",
+      "value_match": true,
+      "web_caret_cp": 2,
+      "framework_caret_cp": 2,
+      "caret_match": true
+     }
+    ]
+   },
+   {
+    "name": "ja_kana_conversion_then_candidate",
+    "language": "ja",
+    "windows_logged_phases": [
+     "start",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "commit"
+    ],
+    "web_dom_phases": [
+     "start",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "update",
+     "commit"
+    ],
+    "phases_match": false,
+    "value_mismatch_steps": 0,
+    "caret_mismatch_steps": 7,
+    "lost_or_duplicated": null,
+    "ok": false,
+    "steps": [
+     {
+      "op": "start",
+      "web_value": "",
+      "framework_composite": "",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 0,
+      "caret_match": true
+     },
+     {
+      "op": "update",
+      "web_value": "k",
+      "framework_composite": "k",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 1,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "ko",
+      "framework_composite": "ko",
+      "value_match": true,
+      "web_caret_cp": 1,
+      "framework_caret_cp": 2,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "kon",
+      "framework_composite": "kon",
+      "value_match": true,
+      "web_caret_cp": 2,
+      "framework_caret_cp": 3,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "konn",
+      "framework_composite": "konn",
+      "value_match": true,
+      "web_caret_cp": 3,
+      "framework_caret_cp": 4,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "konni",
+      "framework_composite": "konni",
+      "value_match": true,
+      "web_caret_cp": 4,
+      "framework_caret_cp": 5,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "konniti",
+      "framework_composite": "konniti",
+      "value_match": true,
+      "web_caret_cp": 5,
+      "framework_caret_cp": 6,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "konnitiha",
+      "framework_composite": "konnitiha",
+      "value_match": true,
+      "web_caret_cp": 7,
+      "framework_caret_cp": 8,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "こんにちは",
+      "framework_composite": "こんにちは",
+      "value_match": true,
+      "web_caret_cp": 5,
+      "framework_caret_cp": 5,
+      "caret_match": true
+     },
+     {
+      "op": "commit",
+      "web_value": "今日は",
+      "framework_composite": "今日は",
+      "value_match": true,
+      "web_caret_cp": 3,
+      "framework_caret_cp": 3,
+      "caret_match": true
+     }
+    ]
+   },
+   {
+    "name": "cancel_mid_composition",
+    "language": "zh",
+    "windows_logged_phases": [
+     "start",
+     "update",
+     "update",
+     "cancel"
+    ],
+    "web_dom_phases": [
+     "start",
+     "update",
+     "update",
+     "update",
+     "cancel"
+    ],
+    "phases_match": false,
+    "value_mismatch_steps": 0,
+    "caret_mismatch_steps": 2,
+    "lost_or_duplicated": null,
+    "ok": false,
+    "steps": [
+     {
+      "op": "start",
+      "web_value": "",
+      "framework_composite": "",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 0,
+      "caret_match": true
+     },
+     {
+      "op": "update",
+      "web_value": "ni",
+      "framework_composite": "ni",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 2,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "nih",
+      "framework_composite": "nih",
+      "value_match": true,
+      "web_caret_cp": 2,
+      "framework_caret_cp": 3,
+      "caret_match": false
+     },
+     {
+      "op": "cancel",
+      "web_value": "",
+      "framework_composite": "",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 0,
+      "caret_match": true
+     }
+    ]
+   },
+   {
+    "name": "caret_nav_inside_composition",
+    "language": "zh",
+    "windows_logged_phases": [
+     "start",
+     "update",
+     "update",
+     "update",
+     "commit"
+    ],
+    "web_dom_phases": [
+     "start",
+     "update",
+     "update",
+     "update",
+     "update",
+     "commit"
+    ],
+    "phases_match": false,
+    "value_mismatch_steps": 0,
+    "caret_mismatch_steps": 2,
+    "lost_or_duplicated": null,
+    "ok": false,
+    "steps": [
+     {
+      "op": "start",
+      "web_value": "abc ",
+      "framework_composite": "abc ",
+      "value_match": true,
+      "web_caret_cp": 4,
+      "framework_caret_cp": 4,
+      "caret_match": true
+     },
+     {
+      "op": "update",
+      "web_value": "abc nihao",
+      "framework_composite": "abc nihao",
+      "value_match": true,
+      "web_caret_cp": 8,
+      "framework_caret_cp": 9,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "abc nihao",
+      "framework_composite": "abc nihao",
+      "value_match": true,
+      "web_caret_cp": 9,
+      "framework_caret_cp": 7,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "abc nihao",
+      "framework_composite": "abc nihao",
+      "value_match": true,
+      "web_caret_cp": 9,
+      "framework_caret_cp": 9,
+      "caret_match": true
+     },
+     {
+      "op": "commit",
+      "web_value": "abc 你好",
+      "framework_composite": "abc 你好",
+      "value_match": true,
+      "web_caret_cp": 6,
+      "framework_caret_cp": 6,
+      "caret_match": true
+     }
+    ]
+   },
+   {
+    "name": "rapid_zh_ja_switch",
+    "language": "zh/ja",
+    "windows_logged_phases": [
+     "start",
+     "update",
+     "cancel",
+     "start",
+     "update",
+     "update",
+     "commit"
+    ],
+    "web_dom_phases": [
+     "start",
+     "update",
+     "update",
+     "cancel",
+     "start",
+     "update",
+     "update",
+     "update",
+     "commit"
+    ],
+    "phases_match": false,
+    "value_mismatch_steps": 0,
+    "caret_mismatch_steps": 3,
+    "lost_or_duplicated": null,
+    "ok": false,
+    "steps": [
+     {
+      "op": "start",
+      "web_value": "",
+      "framework_composite": "",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 0,
+      "caret_match": true
+     },
+     {
+      "op": "update",
+      "web_value": "ni",
+      "framework_composite": "ni",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 2,
+      "caret_match": false
+     },
+     {
+      "op": "cancel",
+      "web_value": "",
+      "framework_composite": "",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 0,
+      "caret_match": true
+     },
+     {
+      "op": "start",
+      "web_value": "",
+      "framework_composite": "",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 0,
+      "caret_match": true
+     },
+     {
+      "op": "update",
+      "web_value": "ko",
+      "framework_composite": "ko",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 2,
+      "caret_match": false
+     },
+     {
+      "op": "update",
+      "web_value": "kon",
+      "framework_composite": "kon",
+      "value_match": true,
+      "web_caret_cp": 2,
+      "framework_caret_cp": 3,
+      "caret_match": false
+     },
+     {
+      "op": "commit",
+      "web_value": "今",
+      "framework_composite": "今",
+      "value_match": true,
+      "web_caret_cp": 1,
+      "framework_caret_cp": 1,
+      "caret_match": true
+     }
+    ]
+   },
+   {
+    "name": "delete_range_mid_composition",
+    "language": "zh",
+    "windows_logged_phases": [
+     "start",
+     "update",
+     "delete-range",
+     "commit"
+    ],
+    "web_dom_phases": [
+     "start",
+     "update",
+     "update",
+     "cancel"
+    ],
+    "phases_match": false,
+    "value_mismatch_steps": 2,
+    "caret_mismatch_steps": 3,
+    "lost_or_duplicated": null,
+    "ok": false,
+    "steps": [
+     {
+      "op": "start",
+      "web_value": "abc",
+      "framework_composite": "abc",
+      "value_match": true,
+      "web_caret_cp": 3,
+      "framework_caret_cp": 3,
+      "caret_match": true
+     },
+     {
+      "op": "update",
+      "web_value": "abcnihao",
+      "framework_composite": "abcnihao",
+      "value_match": true,
+      "web_caret_cp": 6,
+      "framework_caret_cp": 8,
+      "caret_match": false
+     },
+     {
+      "op": "delete-range",
+      "web_value": "abc",
+      "framework_composite": "nihao",
+      "value_match": false,
+      "web_caret_cp": 3,
+      "framework_caret_cp": 5,
+      "caret_match": false
+     },
+     {
+      "op": "commit",
+      "web_value": "abc你好",
+      "framework_composite": "你好",
+      "value_match": false,
+      "web_caret_cp": 5,
+      "framework_caret_cp": 2,
+      "caret_match": false
+     }
+    ]
+   },
+   {
+    "name": "focus_loss_mid_composition",
+    "language": "zh",
+    "windows_logged_phases": [
+     "start",
+     "update",
+     "cancel"
+    ],
+    "web_dom_phases": [
+     "start",
+     "update",
+     "commit"
+    ],
+    "phases_match": false,
+    "value_mismatch_steps": 1,
+    "caret_mismatch_steps": 1,
+    "lost_or_duplicated": {
+     "expected": "",
+     "actual": "nih"
+    },
+    "ok": false,
+    "steps": [
+     {
+      "op": "start",
+      "web_value": "",
+      "framework_composite": "",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 0,
+      "caret_match": true
+     },
+     {
+      "op": "update",
+      "web_value": "nih",
+      "framework_composite": "nih",
+      "value_match": true,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 3,
+      "caret_match": false
+     },
+     {
+      "op": "focus-loss",
+      "web_value": "nih",
+      "framework_composite": "",
+      "value_match": false,
+      "web_caret_cp": 0,
+      "framework_caret_cp": 0,
+      "caret_match": true
+     }
+    ]
+   }
+  ]
+ },
+ "c4": {
+  "statement": "Both arms run the same logical suite (insert/caret-move/click/drag/shift-click/dbl-click/undo) with the same values, the same click x-coordinates against the same current text, and must land in the same observable state (value, caret, selection) at every step — the model, not the mechanism, is shared.",
+  "pass": false,
+  "suites": [
+   {
+    "name": "latin_edit",
+    "steps_total": 9,
+    "steps_matched": 9,
+    "mismatches": [],
+    "note": null
+   },
+   {
+    "name": "multibyte_edit",
+    "steps_total": 5,
+    "steps_matched": 4,
+    "mismatches": [
+     {
+      "step": 4,
+      "op": "dbl-click",
+      "windows": {
+       "value": "日本語x",
+       "caret_cp": 2,
+       "sel_cp": [
+        1,
+        2
+       ]
+      },
+      "web": {
+       "value": "日本語x",
+       "caret_cp": 3,
+       "sel_cp": [
+        0,
+        3
+       ]
+      },
+      "value_match": true,
+      "caret_match": false,
+      "sel_match": false,
+      "match": false
+     }
+    ],
+    "note": "Dbl-click word rule differs: the browser dictionary-segments CJK (日本語 as one word); the spike session selects one ideograph. A shared-suite rule to spec, not a mechanism failure."
+   },
+   {
+    "name": "undo_granularity",
+    "steps_total": 4,
+    "steps_matched": 3,
+    "mismatches": [
+     {
+      "step": 3,
+      "op": "undo",
+      "windows": {
+       "value": "aHello world",
+       "caret_cp": 1,
+       "sel_cp": [
+        1,
+        1
+       ]
+      },
+      "web": {
+       "value": "Hello world",
+       "caret_cp": 0,
+       "sel_cp": [
+        0,
+        0
+       ]
+      },
+      "value_match": false,
+      "caret_match": false,
+      "sel_match": false,
+      "match": false
+     }
+    ],
+    "note": "Deliberate exposure: Windows session = single-level undo (v1 scope); the browser coalesces a typed burst into one undo unit. A behavior-contract item, not an authority-model failure."
+   }
+  ]
+ },
+ "letter_tracking": {
+  "string": "Hello world",
+  "css_letter_spacing_px": 1,
+  "dom_width_plain": 81.03125,
+  "dom_width_tracked": 92.03125,
+  "framework_width_plain": 81.03125,
+  "framework_width_tracked": 91.03125,
+  "convention": "M0b: spacing on every advance except the final glyph (trailing caret == run width); CSS letter-spacing: after every character including the final one"
+ },
+ "out_of_scope_flags": [
+  "RTL/bidi visual ordering: M0b-deferred M3 layout work — the corpus now carries a bidi string so the rtl flag gets exercised and the visual-order divergence is measured (expect c1/c2 mismatches on it), not silently covered.",
+  "Variant A on Web (framework authority over a hidden input, browser as event source) was NOT built this round — the round scope was Windows-GPU (framework authority) vs Web-DOM (native). The recommendation maps accordingly (see verdict).",
+  "Combining marks / ZWJ corpus entries (DESIGN §9.2 criterion 2) are now in the corpus (rig v2: decomposed e-acute, ZWJ technologist); the surrogate-pair string (\"héllo 👍\") covered the multi-unit case first.",
+  "A real OS IME was not drivable from this environment on either arm; both arms use scripted IME through the platform-native input path (Windows: ImeCompositionFeed per M0b; Web: CDP IME scripting, which routes through Chromium's text-input state machine)."
+ ],
+ "recommendation": {
+  "c1_windows": "FAIL",
+  "c2": "FAIL",
+  "c3": "FAIL",
+  "c4": "PASS_WITH_DOCUMENTED_DIVERGENCES",
+  "interpretation": "This round's rig is Windows-GPU (framework authority, the mechanism of variant (a)) vs Web-DOM native (the mechanism variant (b) would own on Web). DESIGN's third variant (framework authority ON Web via a hidden input) was explicitly out of this round's scope; the (a)-on-Web-specific risks it alone can measure (candidate anchoring fidelity over a hidden input, hit-test parity under framework-rendered text) are flagged as the residual open item below.",
+  "model_a_vs_b": {
+   "recommendation": "b (presenter-owned editing authority on Web; framework guarantees behavior via the shared editing-op suite)",
+   "argued_from": [
+    "C2 (hit-test parity): 235/238 sweep probes + 9/12 selection ops agree natively; geometry agrees to ≤0.5px; every mismatch is a spec-able rule detail (exact-midpoint tie-break ×3, browser word-selection semantics ×3), not an unqueryable/overridable-mechanism failure.",
+    "C3 (composition fidelity): in-progress composition state is fully visible to the framework on both arms (session buffer on Windows; field value + compositionupdate data + selection on Web); commits arrive in the native IME shape (compositionend-with-data); no lost or duplicated characters on any core scenario. Divergences are (i) the DOM expresses commit/cancel as update→end pairs (normalizable, the same class as §9.3 scroll-event normalization), (ii) delete-range-mid-composition is untestable through CDP scripting (rig gap, needs real-IME validation), (iii) focus-loss commits on the Web while the spike session cancels (contract item: adopt commit-on-focus-loss, matching every native platform).",
+    "C4 (one model): latin_edit matches exactly 9/9 — including the browser restoring the pre-undo selection exactly like the framework session. The two divergences (undo burst granularity; CJK double-click word rule) are shared-suite spec items, both fixable without changing which model wins.",
+    "C1 (IME geometry) is framework-arm evidence: the framework computes caret rects correct to ≤0.5 device px against two independent platform references — required for GPU backends under EITHER model, and (under (a)-on-Web) the load-bearing input for candidate anchoring. It does not directly discriminate (a)/(b) on Web in this round."
+   ],
+   "why_not_a_on_web": "Variant (a) on Web was not built this round (scope); its Web-specific risks (candidate anchoring fidelity over a hidden input, hit-test parity on framework-rendered text, ARIA-mediated a11y) remain unmeasured. Choosing (b) does not require risking them; choosing (a) would. The evidence therefore favors (b) — with the explicit caveat that (a)-on-Web remains buildable later; nothing in this verdict forecloses it, and the GPU-side editing model exists under either verdict (locked #24).",
+   "decision_rule_mapping": "DESIGN's rule (\"if A meets the criteria on Web, (a) wins; if A fails criteria B passes, (b) wins\") presumes both Web variants were run. This round measured B-on-Web only; B meets the criteria with documented, spec-able divergences. Under the rule's intent — pick the model whose Web mechanism empirically satisfies the behavior contract — (b) wins on Web; the (a) verdict would have required A-on-Web to also meet the criteria, which is unmeasured, and (a) additionally forfeits the natively-proven behavior in favor of reimplemented mechanism."
+  },
+  "residual_open_item": "If (a) were ever chosen for Web, its Web-specific fidelity (IME candidate anchoring over a framework-rendered composition surface fed by a hidden <input>) remains unmeasured by this round — the Windows arm proves the framework computes correct caret rects, not that a browser-driven hidden-input composition anchors candidates correctly. Under the (b) verdict this item is moot on Web. Second open item: IME delete-range (composition replacing a selection) was not drivable through CDP in this rig — needs one manual pass with a real OS IME before the DOM contract freezes.",
+  "locked5_impact": {
+   "change": "Locked #5's \"possibly editing sessions\" (pending the spike) becomes \"owns editing sessions on Web\": the Web presenter owns native editing state (browser caret/selection/IME/undo) in addition to browser-hosted scroll state (§9.3) and browser-laid-out text.",
+   "beyond_round_5": "Round 5 already conceded \"presenters are not stateless\" and flagged editing as the coming case; the spike confirms it and makes it permanent: the renderer contract should now name the second text path as a first-class clause (real <input> fields are a presenter-recognized special case), and the shared editing-operation suite (this round's criterion-4 rig) becomes a permanent cross-backend contract test — the mechanism that keeps the two editing implementations behaviorally in sync.",
+   "gpu_unaffected": "GPU backends own editing under either verdict (locked #24); this round's Windows arm (c1 geometry + session model + set_ime anchoring) is exactly the mechanism they will use."
+  },
+  "cross_backend_contract_gap": {
+   "finding": "The M0b letter-tracking convention (advance added to every glyph except the run's final one, trailing caret == run width) is a ShapedRun concern. The Web-DOM arm does not use ShapedRun at all — the convention does not apply there; the DOM arm's equivalent measurement (CSS letter-spacing) measurably diverges: it adds spacing after the final character too.",
+   "measured": {
+    "string": "Hello world",
+    "css_letter_spacing_px": 1,
+    "dom_width_plain": 81.03125,
+    "dom_width_tracked": 92.03125,
+    "framework_width_plain": 81.03125,
+    "framework_width_tracked": 91.03125,
+    "convention": "M0b: spacing on every advance except the final glyph (trailing caret == run width); CSS letter-spacing: after every character including the final one"
+   },
+   "consequence": "Under (b) with native fields the framework never measures tracked text for rendering, so the gap stays dormant on the DOM arm; under (a) (or any framework-measured tracked text on Web) the framework must NOT delegate to CSS letter-spacing — it must place glyphs itself or the trailing caret/width diverges by one tracking unit. Quantified: \"Hello world\" 16px, 1px tracking → DOM 92.03125px vs framework 91.03125px (+1.0px, exactly one tracking unit)."
+  }
+ }
+}

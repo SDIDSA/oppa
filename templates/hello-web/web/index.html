@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="icon" href="data:," />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hello, Oppa</title>
+<style>
+  body { margin: 0; background: #eee; font-family: sans-serif; }
+  /* Module viewport must match the harness (800x600) so client
+     coords map 1:1 after the container offset. */
+  #oppa-root { width: 800px; height: 600px; background: #fff; }
+  #oppa-status { padding: 8px 12px; color: #333; }
+</style>
+</head>
+<body>
+<div id="oppa-status">booting…</div>
+<div id="oppa-root" tabindex="0"></div>
+<script type="module" src="./bootstrap.js"></script>
+</body>
+</html>

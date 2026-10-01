@@ -1,0 +1,31 @@
+[package]
+name = "oppa-fps-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop FPS readout demo: white window, black centered text, live Vello renderer FPS (Windows)"
+
+[[bin]]
+name = "oppa-fps-demo"
+path = "src/main.rs"
+
+[dependencies]
+oppa = { path = "../oppa" }
+oppa-macros = { path = "../oppa-macros" }
+oppa-vello = { path = "../oppa-vello" }
+
+[target.'cfg(windows)'.dependencies]
+oppa-shell-win = { path = "../oppa-shell-win" }
+oppa-text-dwrite = { path = "../oppa-text-dwrite" }
+oppa-cpu = { path = "../oppa-cpu" }
+wgpu = "29"
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+]

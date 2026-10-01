@@ -1,0 +1,18 @@
+[package]
+name = "oppa-controls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "G2: shipped control catalog — Button, Checkbox, Toggle, Slider as component functions composing the core vocabulary (no new Tags)"
+
+[dependencies]
+oppa = { path = "../oppa" }
+# Round 14.1: generic `#[derive(Props)]` for the catalog's generic
+# props (zero-dep macro crate, same workspace).
+oppa-macros = { path = "../oppa-macros" }
+
+[dev-dependencies]
+oppa-app = { path = "../oppa-app" }
+# Round 8.2: plan-level selection bounds (shared FramePlan — what CPU
+# and Vello both paint; dev-only, zero product coupling).
+oppa-cpu = { path = "../oppa-cpu" }

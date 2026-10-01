@@ -1,0 +1,9 @@
+[package]
+name = "oppa-fonts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bundled font bytes for platform-independent rendering (same glyphs on Windows, Linux, Android, Web)"
+
+[lib]
+path = "src/lib.rs"

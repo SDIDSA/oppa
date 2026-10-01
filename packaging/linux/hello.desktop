@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hello, Oppa
+Comment=Minimal Oppa desktop app
+Exec=hello
+Icon=hello
+Terminal=false
+Categories=Utility;

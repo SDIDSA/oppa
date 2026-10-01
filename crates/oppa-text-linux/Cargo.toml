@@ -1,0 +1,13 @@
+[package]
+name = "oppa-text-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Linux TextService slice (rustybuzz core over system fonts, no system HarfBuzz linkage)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+oppa = { path = "../oppa" }
+oppa-text-rustybuzz = { path = "../oppa-text-rustybuzz" }

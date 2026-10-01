@@ -1,0 +1,15 @@
+[package]
+name = "oppa-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "G15: headless app-test seam — the pump + assert rig every framework test reinvents, productized (composes public API only, no new framework surface)"
+
+[dependencies]
+oppa = { path = "../oppa" }
+
+[dev-dependencies]
+oppa-controls = { path = "../oppa-controls" }
+oppa-cpu = { path = "../oppa-cpu" }
+oppa-fonts = { path = "../oppa-fonts" }
+oppa-text-rustybuzz = { path = "../oppa-text-rustybuzz" }

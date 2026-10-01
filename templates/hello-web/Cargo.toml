@@ -1,0 +1,18 @@
+[package]
+name = "hello-web"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Starter template: minimal Oppa web app (Round 29.2, decision 345)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+oppa = { path = "../../crates/oppa" }
+oppa-controls = { path = "../../crates/oppa-controls" }
+oppa-web = { path = "../../crates/oppa-web" }
+wasm-bindgen = "0.2"
+
+[workspace]

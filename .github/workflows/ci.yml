@@ -1,0 +1,27 @@
+# Oppa workspace gates (mirrors the per-round protocol in
+# docs/04-planning/production-readiness-plan.md: fmt, clippy,
+# wasm-target check, full workspace test suite). Plain `clippy`
+# (no -D warnings): one pre-existing `FpsApp` lint is on record.
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  gates:
+    runs-on: windows-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets
+      - name: wasm check
+        run: cargo check --target wasm32-unknown-unknown -p oppa -p oppa-controls -p oppa-dom -p oppa-web
+      - name: workspace tests
+        run: cargo test --workspace -j1

@@ -1,0 +1,17 @@
+[package]
+name = "oppa-reload"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Hot-reload harness: manifest scan, dylib swap, drain-before-unload, task cancellation (M2b)"
+
+[dependencies]
+oppa = { path = "../oppa" }
+libloading = "0.9"
+
+[dev-dependencies]
+oppa-macros = { path = "../oppa-macros" }
+# Fixture rlib: types + mount-time render fns for the real-dylib test.
+# (The test ALSO loads the fixture's cdylib artifacts for code — same
+# source, same rustc, so TypeIds and layouts agree across the boundary.)
+hot-fixture = { path = "fixture/hot-fixture" }

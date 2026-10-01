@@ -1,0 +1,26 @@
+[package]
+name = "oppa-shell-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Linux window shell (winit window + softbuffer CPU present; X11/Wayland via runtime dlopen, no dev headers)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+oppa = { path = "../oppa" }
+winit = { version = "0.30", default-features = false, features = ["x11", "x11-dl", "wayland", "wayland-dlopen", "rwh_06"] }
+softbuffer = "0.4"
+# X11 CLIPBOARD selection backend (Round 2.2, OQ-G3-1): already in
+# the lockfile via winit (pure-Rust X11 — no new packages, no C
+# headers, same dlopen story as the rest of this shell).
+x11rb = "0.13"
+# D-Bus AUTH identity for the portal client (Round 2.3, OQ-G12-1):
+# ubiquitous system crate, already in the lockfile — no new packages.
+libc = "0.2"
+
+[dev-dependencies]
+oppa-cpu = { path = "../oppa-cpu" }
+oppa-text-linux = { path = "../oppa-text-linux" }
+tiny-skia = "0.12"

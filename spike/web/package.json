@@ -1,0 +1,9 @@
+{
+  "name": "oppa-spike-web-arm",
+  "private": true,
+  "type": "module",
+  "description": "DESIGN 9.2 spike - Web-DOM arm harness (real <input> in a real browser, driven + recorded framework-side). Dev-only tooling; not part of the Rust workspace.",
+  "devDependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}

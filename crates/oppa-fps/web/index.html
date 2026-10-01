@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Oppa FPS (Web)</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; height: 100%; }
+  #oppa-stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #oppa-status {
+    position: fixed; left: 8px; top: 4px; z-index: 10;
+    font: 12px monospace; color: #444; background: #fff;
+  }
+</style>
+</head>
+<body>
+<div id="oppa-status">boot</div>
+<div id="oppa-stage"></div>
+<script type="module">
+  // Silent wasm traps (uncaught JS exceptions in bindings) skip
+  // the Rust panic hook — mirror them into the title so harness
+  // probes can see them.
+  window.addEventListener("error", (e) => {
+    document.title = "js-error: " + (e.message || e.error);
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    document.title = "js-rejection: " + (e.reason && e.reason.message ? e.reason.message : e.reason);
+  });
+</script>
+<script type="module">
+  import init from "./pkg/oppa_fps.js";
+  document.title = "js-loading";
+  await init();
+  document.title = "js-init-done";
+</script>
+</body>
+</html>

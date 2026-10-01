@@ -1,0 +1,13 @@
+[package]
+name = "oppa-shell-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "M10: Android platform shell — input classification into the shared InputEvent pipeline, lifecycle state machine, restart-only reload path (no dylib swap)"
+
+[dependencies]
+oppa = { path = "../oppa" }
+
+[dev-dependencies]
+oppa-macros = { path = "../oppa-macros" }
+oppa-cpu = { path = "../oppa-cpu" }
