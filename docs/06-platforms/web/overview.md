@@ -47,12 +47,14 @@ Sources: `12-archive/DESIGN.md` §§1–2, 9.2–9.3 (locked #2, #23, #27);
   (measured: ready, switch false→true→false through real pointer
   events, zero console errors).
 - **Browser compat (note, not a claim):** proven on headless
-  Chromium/Edge 154 (this box). The module uses baseline wasm
-  only (no threads, no SIMD, no exceptions — stock rustc output),
-  so any evergreen browser should load it; Firefox/Safari are
-  UNTESTED here (no binaries on the box) and stay open. Text
-  measurement in wasm stays serviceless (zero boxes — the
-  documented rule); fine-grained DOM patching is v2.
+  Chromium/Edge 154 (this box, re-baselined Phase 40b decision 382).
+  The module uses baseline wasm only (no threads, no SIMD, no
+  exceptions — stock rustc output), so any evergreen browser should
+  load it; Firefox full-leg automation is rig-limited (CDP-only
+  harness without BiDi/geckodriver) and Safari pass lacks Apple
+  hardware (both recorded Blocked). Text measurement in wasm stays
+  serviceless (zero boxes — the documented rule); fine-grained DOM
+  patching is v2.
 - **Packaging:** wasm build + wasm-bindgen + static serve — see
   [packaging](../packaging.md) (G4, decision 215).
 - **PWA story (G20, decision 376 — current):** the `hello-web`
@@ -68,6 +70,6 @@ Sources: `12-archive/DESIGN.md` §§1–2, 9.2–9.3 (locked #2, #23, #27);
   `hello_web.wasm` 3,445,522 bytes (~3.29 MiB); bindgen
   `pkg/hello_web_bg.wasm` 2,835,099 (~2.70 MiB) + glue
   28,550 — ~2.87 MB total served shell (supersedes the old 17 MB
-  figure; Firefox/Safari passes stay open — no binaries on the
-  box). The load-once-offline hand pass stays manual (needs a
-  browser session); no background-update or push story (open).
+  figure; Firefox full-leg automation and Safari passes stay
+  blocked). The load-once-offline hand pass stays manual (needs an
+  interactive browser session); no background-update or push story (open).

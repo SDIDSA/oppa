@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-01 (through Decision 381).
+Status: current. Last verified: 2026-10-01 (through Decision 382).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -124,11 +124,20 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   oppa-fps and oppa-fps-demo, DesktopPollHook type alias in oppa-app,
   needless borrows and unused import in oppa-web); clippy gate runs at
   zero warnings across all targets; CONTRIBUTING.md gate note updated.
+- Phase 40b (decision 382, gate green 2026-10-01): Verification sweep —
+  c3 CDP/Edge re-baseline exercised live against headless Edge
+  (`spike/web/harness.mjs`, `compare.mjs`, `dom_text.mjs`, `parity.mjs`,
+  `sink.mjs`, `webapp.mjs` all green; `bootstrap.js` state boot-sync);
+  Firefox full-leg automation blocked by CDP-only puppeteer harness
+  (BiDi/geckodriver tooling absent); PWA load-once-offline hand pass
+  blocked by interactive browser session; Safari passes blocked by
+  missing Apple hardware.
 
 ## Now (in progress)
 
-- Phase 40b: Verification sweep (c3 CDP/Edge re-baseline, Firefox
-  full-leg automation, PWA load-once-offline hand pass, Safari passes).
+- Phase 40c: Studio quiescence — instrument which has_demand source keeps
+  full TaskStudio dirty headlessly; fix if bug, document as architecture
+  if by design; bounded-frame tests only.
 
 ## Next (accepted, not started)
 
@@ -136,9 +145,7 @@ Ordered productization P1s: all closed — G7–G23 done through
 Phase 39b (catalog, cookbook/styling, data-dir, installers, PWA,
 value loop, reference apps).
 
-Accepted-carry: c3 CDP/Edge re-baseline whenever the harness is next
-exercised, Firefox full-leg automation (optional tooling), weak-GPU
-sustained-cost standing rule.
+Accepted-carry: weak-GPU sustained-cost standing rule.
 
 ## Blocked (with blocker)
 
@@ -148,7 +155,9 @@ sustained-cost standing rule.
 | Live human passes (IME composition manual, theme flips, menu/tooltip eyeball, close-veto app) | Needs a person at the keyboard |
 | macOS/iOS shells | No Apple hardware; excluded by design |
 | Weak-tier silicon validation (Mali-G52/Adreno-610 class) | Needs hardware wall |
-| Safari pass, Firefox full automation | Needs machine/browser session |
+| Firefox full-leg automation | Rig limitation: spike/web puppeteer harness is CDP-only; Firefox lacks CDP endpoint without BiDi/geckodriver tooling |
+| PWA load-once-offline hand pass | Needs an interactive browser session |
+| Safari pass | No Safari binary or Apple hardware on this machine |
 | Multi-window `DesktopLoop` (secondary `SurfaceId` windows) | Deferred by plan; per-surface granularity is out — re-decision required to revive |
 | Variable-height virtualized rows (prefix-sum index) | Deferred by plan — re-decision required to revive |
 | `cargo oppa reload-check` as a G9 substitute | Unlisted extra scope, not approved — G9 is the doc recipe |

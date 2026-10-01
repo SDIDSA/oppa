@@ -254,6 +254,7 @@ function paint(patchJson) {
 
 const app = await init().then(() => new WebApp());
 root.innerHTML = app.html();
+window.__oppaState = readChecked();
 window.__oppaReady = true;
 
 // Round 16.2 OS theme: follow the system light/dark flip live
