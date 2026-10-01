@@ -17,6 +17,16 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: spike/web/package-lock.json
+      - name: node deps
+        # Browser rows (oppa-dom m7_dom) shell out to node spike/web/*.mjs
+        # with a real Edge; deps install here, never committed.
+        run: npm ci
+        working-directory: spike/web
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy

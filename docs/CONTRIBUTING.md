@@ -15,7 +15,8 @@ cargo test --workspace -j1    # -j1; serial if GPU flakes
 ```
 
 First repo CI (`.github/workflows/ci.yml`) runs fmt + clippy + wasm check +
-workspace tests on push/PR.
+workspace tests on push/PR. Browser rows (`oppa-dom` m7_dom) additionally
+need `npm ci` in `spike/web` plus a real Edge (dev-only rig, never committed).
 
 ## Entry points
 

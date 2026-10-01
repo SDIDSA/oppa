@@ -22,6 +22,9 @@ emu*_*.txt
 wsl_*.txt
 *.log
 
+# Node (browser rig deps are installed via `npm ci` in spike/web, never committed)
+**/node_modules/
+
 # Android (local caches / device logs / build outputs — do not commit)
 **/.gradle/
 **/build/
