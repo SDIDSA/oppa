@@ -30,6 +30,7 @@ on a single UI thread. Workers hand results back through the `INPUT` queue.
 | Hot reload | `crates/oppa-reload/` | manifest-scan dylib harness; retire-don't-unload (true unload is v2 scope) |
 | Test harness | `crates/oppa-testkit/` | headless `Harness` + `DesktopLoop::type_text`, key/press helpers |
 | Support | `crates/oppa-image/`, `crates/oppa-fonts/`, `crates/oppa-linebreak/`, `crates/oppa-fps/` | image cache, font lookup, line breaking, fps demo |
+| Scaffolding | `crates/cargo-oppa/`, `templates/hello-desktop/`, `templates/hello-web/` | `cargo oppa new` (embedded templates, renamed packages, checkout-pinned path deps, loud refusals); the G9 reload recipe lives on `oppa-reload` rustdoc + `app_loop` |
 
 ## Seams (what is throwaway per-platform)
 

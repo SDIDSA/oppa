@@ -55,12 +55,18 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   zero-stdout host-level ring diagnostics; signal/collection
   write-through persistence over `KvStore` (seed-once, encode/decode;
   seed warns + initial, writes panic, corrupt snapshots seed empty).
+- Phase 37c (decision 365, gate green 2026-10-01): `cargo oppa new`
+  scaffolder (embedded templates, package rename, checkout-pinned
+  path deps, loud refusals — a generated desktop project compiles
+  against the live checkout); templates ride `child_auto`; G9 reload
+  recipe on `oppa-reload` rustdoc (+ `app_loop`).
 
 ## Now (in progress)
 
-- Phase 37c (`cargo-oppa` + reload recipe): `crates/cargo-oppa new`
-  scaffolding matching `templates/hello-*`; the G9 reload recipe
-  (docs + `oppa-reload` example wiring).
+- Phase 38 (Control Catalog, Cookbook, Styling, Packaging & PWA):
+  validation/drag/keyboard control contracts; new controls; G10/G11
+  cookbook recipes; theme/styling pass; desktop installers + PWA
+  packaging.
 
 ## Next (accepted, not started)
 

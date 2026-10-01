@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/oppa", "crates/oppa-macros", "crates/oppa-text-dwrite", "crates/spike-textedit", "crates/oppa-shell-win", "crates/oppa-reload", "crates/oppa-cpu", "crates/oppa-vello", "crates/oppa-dom", "crates/oppa-shell-android", "crates/oppa-atspi", "crates/oppa-uia", "crates/oppa-text-android", "crates/oppa-web", "crates/oppa-text-rustybuzz", "crates/oppa-text-linux", "crates/oppa-shell-linux", "crates/oppa-linebreak", "crates/oppa-fps-demo", "crates/oppa-fonts", "crates/oppa-fps", "crates/oppa-controls", "crates/oppa-image", "crates/oppa-testkit", "crates/oppa-app"]
+members = ["crates/oppa", "crates/oppa-macros", "crates/oppa-text-dwrite", "crates/spike-textedit", "crates/oppa-shell-win", "crates/oppa-reload", "crates/oppa-cpu", "crates/oppa-vello", "crates/oppa-dom", "crates/oppa-shell-android", "crates/oppa-atspi", "crates/oppa-uia", "crates/oppa-text-android", "crates/oppa-web", "crates/oppa-text-rustybuzz", "crates/oppa-text-linux", "crates/oppa-shell-linux", "crates/oppa-linebreak", "crates/oppa-fps-demo", "crates/oppa-fonts", "crates/oppa-fps", "crates/oppa-controls", "crates/oppa-image", "crates/oppa-testkit", "crates/oppa-app", "crates/cargo-oppa"]
 exclude = ["crates/oppa-reload/fixture/hot-fixture", "crates/oppa-android-app", "templates/hello-desktop", "templates/hello-web"]
 resolver = "2"
 

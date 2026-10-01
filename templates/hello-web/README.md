@@ -7,7 +7,11 @@ Proven shape (same harness the demo and sink ride).
 ## Use it
 
 ```powershell
-# Copy OUT of this repo (it only builds here via relative paths):
+# From an Oppa checkout (recommended — names the package, points
+# path deps at the checkout, rewrites this paragraph):
+cargo run -p cargo-oppa -- oppa new ~/my-web-app --web
+# Or copy out manually (then point the three path deps at your
+# Oppa checkout yourself):
 cp -r templates/hello-web ~/my-web-app
 cd ~/my-web-app
 # Point the three path deps at your Oppa checkout, then:
