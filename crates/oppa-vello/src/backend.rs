@@ -276,6 +276,17 @@ impl VelloBackend {
         pollster::block_on(probe_gles_adapter_async())
     }
 
+    /// Hardware-only adapter probe for the pixel-oracle rows: like
+    /// [`probe_adapter`](Self::probe_adapter), but software-emulated
+    /// adapters (WARP / Basic Render Driver, `DeviceType::Cpu`) are
+    /// refused loudly instead of returned — oracle pixels rendered
+    /// by a software rasterizer prove nothing about real GPUs, and
+    /// the software stack crashes under parallel test load
+    /// (STATUS_ACCESS_VIOLATION observed on headless CI).
+    pub fn probe_hardware_adapter() -> Result<String, String> {
+        pollster::block_on(probe_hardware_adapter_async())
+    }
+
     /// Ensures a live GPU context, requesting a real adapter (loud when
     /// none exists — the pixel oracle requires hardware, never silently
     /// degrades to a second software rasterizer).
@@ -931,6 +942,29 @@ async fn probe_adapter_async(force_fallback: bool) -> Result<String, String> {
             format!("no GPU adapter (fallback={force_fallback}) for the Vello pixel oracle: {e}")
         })?;
     let info = adapter.get_info();
+    Ok(format!(
+        "{} backend={:?} driver={} device={}",
+        info.name, info.backend, info.driver, info.device
+    ))
+}
+
+async fn probe_hardware_adapter_async() -> Result<String, String> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })
+        .await
+        .map_err(|e| format!("no GPU adapter for the Vello pixel oracle: {e}"))?;
+    let info = adapter.get_info();
+    if info.device_type == wgpu::DeviceType::Cpu {
+        return Err(format!(
+            "software-only adapter ({} backend={:?}) — pixel oracle requires hardware",
+            info.name, info.backend
+        ));
+    }
     Ok(format!(
         "{} backend={:?} driver={} device={}",
         info.name, info.backend, info.driver, info.device

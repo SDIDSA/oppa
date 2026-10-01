@@ -319,6 +319,12 @@ mod gpu {
 
     #[test]
     fn vello_pixel_sweep_exact_per_tick() {
+        // Hardware-oracle row: software-emulated adapters (WARP) prove no
+        // real-GPU pixels and crash under parallel load - skip loudly.
+        if let Err(e) = VelloBackend::probe_hardware_adapter() {
+            eprintln!("SKIP vello_pixel_sweep_exact_per_tick: {e}");
+            return;
+        }
         let mut h = mount_harness(150);
         let desc = oppa::SurfaceDesc {
             width_px: VW as u32,

@@ -17,6 +17,9 @@ cargo test --workspace --no-fail-fast   # CI runs parallel; use -j1 locally if G
 First repo CI (`.github/workflows/ci.yml`) runs fmt + clippy + wasm check +
 workspace tests on push/PR. Browser rows (`oppa-dom` m7_dom) additionally
 need `npm ci` in `spike/web` plus a real Edge (dev-only rig, never committed).
+Pixel-oracle rows require a hardware GPU and skip loudly on software-only
+adapters (WARP); environment-gated tests skip with `SKIP <name>: <reason>`,
+never fail and never pass silently.
 
 ## Entry points
 
