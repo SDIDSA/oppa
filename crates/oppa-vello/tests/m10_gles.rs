@@ -187,6 +187,15 @@ fn gles_oracle_holds_the_same_standard() {
     assert!(!plan.ops.is_empty());
 
     let mut vello = VelloBackend::new();
+    // No GL adapter on this box (headless CI): skip loudly — the
+    // sibling probe row owns the OPEN verdict and the Android-device
+    // row owns the pixels. A present adapter still runs the full
+    // oracle below, and transient driver errors still fail loudly
+    // through the retry gate.
+    if let Err(e) = VelloBackend::probe_gles_adapter() {
+        eprintln!("SKIP gles_oracle_holds_the_same_standard: {e}");
+        return;
+    }
     // One retry on transient driver errors (observed once as an
     // isolated full-workspace flake with 11+ green isolated runs —
     // same family as M6's driver-contention finding). Both attempts
