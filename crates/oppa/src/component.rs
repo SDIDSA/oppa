@@ -276,6 +276,12 @@ pub struct ImageCache {
 struct ImageCacheInner {
     map: HashMap<String, crate::vnode::ImageId>,
     reverse: HashMap<crate::vnode::ImageId, String>,
+    /// Pre-decoded static pixels (Phase 36 PR4, decision 359):
+    /// straight-alpha RGBA8 `(width, height, bytes)` per id, deposited
+    /// once via [`ImageCache::insert_pixels`] — every backend serves
+    /// from this one deposit (video stays out — animated frames never
+    /// land here).
+    pixels: HashMap<crate::vnode::ImageId, (u32, u32, Vec<u8>)>,
     next: u64,
 }
 
@@ -306,6 +312,51 @@ impl ImageCache {
     pub fn key_of(&self, id: crate::vnode::ImageId) -> Option<String> {
         self.inner.borrow().reverse.get(&id).cloned()
     }
+
+    /// Deposits pre-decoded static pixels under `key` (Phase 36 PR4,
+    /// decision 359 — the `oppa-image` RGBA8 shape): returns the
+    /// content-addressed id every backend serves from (CPU/Vello
+    /// `insert_image` twins pull via [`ImageCache::pixels_of`], the
+    /// DOM backend renders a data URI). Length must equal
+    /// `width × height × 4` (refuses loudly — a short buffer is a
+    /// decode bug, never a cropped image); zero sizes refuse loudly.
+    /// Re-depositing a key replaces its pixels (last wins, stated).
+    pub fn insert_pixels(
+        &self,
+        key: &str,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> crate::vnode::ImageId {
+        if width == 0 || height == 0 {
+            panic!("image cache: insert_pixels({key}) with zero size — refused, never silent");
+        }
+        if rgba.len() != width as usize * height as usize * 4 {
+            panic!(
+                "image cache: insert_pixels({key}): {} bytes != {width}x{height}x4 — refused, never silent",
+                rgba.len()
+            );
+        }
+        let mut inner = self.inner.borrow_mut();
+        if let Some(id) = inner.map.get(key).copied() {
+            inner.pixels.insert(id, (width, height, rgba));
+            return id;
+        }
+        inner.next += 1;
+        let id = crate::vnode::ImageId(inner.next);
+        inner.map.insert(key.to_string(), id);
+        inner.reverse.insert(id, key.to_string());
+        inner.pixels.insert(id, (width, height, rgba));
+        id
+    }
+
+    /// Pre-decoded pixels for an id (`(width, height, RGBA8)`), if
+    /// deposited (backends pull from here — see
+    /// [`ImageCache::insert_pixels`]). Cloned (pixels are mechanism
+    /// state — backends own their copy after deposit).
+    pub fn pixels_of(&self, id: crate::vnode::ImageId) -> Option<(u32, u32, Vec<u8>)> {
+        self.inner.borrow().pixels.get(&id).cloned()
+    }
 }
 
 /// Framework-owned scroll position: `ctx.scroll_offset()` (§4.2, §9.3).
@@ -330,6 +381,56 @@ impl ScrollOffset {
     /// rows; prefix-sum variable heights are v2).
     pub fn row(&self, row_h: f32) -> usize {
         (self.get() / row_h).floor().max(0.0) as usize
+    }
+}
+
+/// 2D scroll position value (Phase 36 PR2b, decision 354 — G15): the
+/// plain-data snapshot a [`ScrollOffset2D`] handle reads/writes.
+/// `Copy` so bodies destructure freely (`let ScrollXY { x, y } = off.get()`).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct ScrollXY {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Framework-owned 2D scroll position (Phase 36 PR2b, decision 354):
+/// one view over the instance's two offset signals (`scroll` +
+/// `scroll_x` — same residence, same keying as the 1D twins, so a
+/// body mixing `scroll_offset()` and `scroll_2d()` shares state,
+/// never forks it). 2D `ScrollArea` containers bind both feeds to
+/// this (see [`ComponentHost::bind_scroll_2d`]); 1D callers keep
+/// their handles untouched.
+#[derive(Clone)]
+pub struct ScrollOffset2D {
+    x: Signal<f32>,
+    y: Signal<f32>,
+}
+
+impl ScrollOffset2D {
+    pub fn get(&self) -> ScrollXY {
+        ScrollXY {
+            x: self.x.get(),
+            y: self.y.get(),
+        }
+    }
+
+    pub fn set(&self, pos: ScrollXY) {
+        self.x.set(pos.x);
+        self.y.set(pos.y);
+    }
+
+    /// Horizontal half-view (the `ctx.scroll_x()` twin — same signal).
+    pub fn x(&self) -> ScrollOffset {
+        ScrollOffset {
+            signal: self.x.clone(),
+        }
+    }
+
+    /// Vertical half-view (the `ctx.scroll_offset()` twin — same signal).
+    pub fn y(&self) -> ScrollOffset {
+        ScrollOffset {
+            signal: self.y.clone(),
+        }
     }
 }
 
@@ -537,6 +638,11 @@ struct HostInner {
     /// evaluated values through the resolve methods below. Core-side
     /// (lock #25 residence — evaluator internals are not contract).
     evaluator: RefCell<TransitionEvaluator>,
+    /// Zero-stdout diagnostic ring (Phase 37b, decision 363 — G17):
+    /// host-level, never global (hot crates stay ambient-free —
+    /// the `#[hot_crate]` lint sees no statics here). Nothing ever
+    /// prints; hosts drain for assertions and platform sinks.
+    diag: RefCell<crate::diag::RingLog>,
     /// TIME-drive registration flag (M8): one animation settles the
     /// evaluator while interpolations live; registered on the commit
     /// that creates them (TIME runs before EFFECTS, so upfront
@@ -810,6 +916,7 @@ impl ComponentHost {
             field_feeds: RefCell::new(HashMap::new()),
             fetch_gens: RefCell::new(HashMap::new()),
             evaluator: RefCell::new(TransitionEvaluator::new()),
+            diag: RefCell::new(crate::diag::RingLog::default_log()),
             trans_anim: Cell::new(false),
             close_requested_flag: Cell::new(false),
             longpress: RefCell::new(HashMap::new()),
@@ -1268,6 +1375,18 @@ impl ComponentHost {
             .and_then(|rec| rec.scroll_x.clone().map(|signal| ScrollOffset { signal }))
     }
 
+    /// Test hook for the 2D scroll seam (Phase 36 PR2b): the
+    /// instance's combined handle — `Some` exactly when the instance
+    /// created both halves (same signals the 1D twins return).
+    pub fn instance_scroll_2d(&self, instance: u64) -> Option<ScrollOffset2D> {
+        let inner = self.inner.instances.borrow();
+        let rec = inner.get(&instance)?;
+        Some(ScrollOffset2D {
+            x: rec.scroll_x.clone()?,
+            y: rec.scroll.clone()?,
+        })
+    }
+
     /// Binds a scroll-target node to a framework-owned offset signal
     /// (§9.3 INPUT feed, M7, decision 112): scroll events routed to
     /// `target` accumulate their `dy` into this signal at the INPUT
@@ -1299,6 +1418,23 @@ impl ComponentHost {
             .insert(target, offset.signal);
     }
 
+    /// Binds a scroll-target node to a framework-owned 2D offset
+    /// (Phase 36 PR2b, decision 354 — G15): `dy` accumulates into the
+    /// `y` half (the `bind_scroll` contract), `dx` into the `x` half
+    /// (the `bind_scroll_x` contract, clamped to the target's
+    /// `content_w` overflow). Re-binding replaces both feeds — one
+    /// call for 2D `ScrollArea` containers instead of two 1D binds.
+    pub fn bind_scroll_2d(&self, target: NodeId, offset: &ScrollOffset2D) {
+        self.inner
+            .scroll_feeds
+            .borrow_mut()
+            .insert(target, offset.y.clone());
+        self.inner
+            .scroll_x_feeds
+            .borrow_mut()
+            .insert(target, offset.x.clone());
+    }
+
     /// The offset signal bound to `target`, if any (diagnostics/tests).
     pub fn bound_scroll(&self, target: NodeId) -> Option<f32> {
         self.inner
@@ -1319,6 +1455,17 @@ impl ComponentHost {
             .get(&target)
             .cloned()
             .map(|sig| untrack(|| sig.get()))
+    }
+
+    /// Both offsets bound to `target`, if any (Phase 36 PR2b —
+    /// diagnostics/tests twin of the 1D pair; `None` unless both
+    /// halves are bound — a half-bound target is a wiring bug, never
+    /// a silent half-read).
+    pub fn bound_scroll_2d(&self, target: NodeId) -> Option<ScrollXY> {
+        Some(ScrollXY {
+            x: self.bound_scroll_x(target)?,
+            y: self.bound_scroll(target)?,
+        })
     }
 
     /// Binds a field node to the app-owned value signal
@@ -1445,12 +1592,13 @@ impl ComponentHost {
         };
         // Exactly one session feeds; zero or multi miss quietly
         // (documented above — the arm's doctrine, not an assert).
-        // A platform text feed moves the caret to the end (the
-        // session collapses there), so it resets the blink phase
-        // like every session op (Round 15.1, decision 312).
+        // The platform commit reports through `on_change` like a
+        // native insert (Phase 39a, decision 377 — round-5.4 parity),
+        // collapses the caret to the end (the feed carries none),
+        // and resets the blink phase like every session op (Round
+        // 15.1, decision 312).
         if let [sess] = self.edit_sessions_for(inst).as_slice() {
-            sess.content_signal().set(SharedString::from(value));
-            sess.note_caret_activity();
+            sess.apply_platform_value(value);
         }
     }
 
@@ -1929,6 +2077,31 @@ impl ComponentHost {
     /// no instance re-created).
     pub fn set_theme(&self, mode: ThemeMode) {
         self.theme().set(mode);
+    }
+
+    /// Pushes one diagnostic entry (Phase 37b, decision 363 — G17):
+    /// the zero-stdout ring (never prints — hosts drain for
+    /// assertions and platform sinks). Untracked (logging never
+    /// schedules — diagnostics observe, never drive).
+    pub fn diag_log(&self, level: crate::diag::LogLevel, message: impl Into<String>) {
+        self.inner.diag.borrow_mut().push(level, message);
+    }
+
+    /// Live diagnostic count (never exceeds capacity).
+    pub fn diag_len(&self) -> usize {
+        self.inner.diag.borrow().len()
+    }
+
+    /// Overwritten diagnostic count (exact).
+    pub fn diag_dropped(&self) -> u64 {
+        self.inner.diag.borrow().dropped()
+    }
+
+    /// Takes diagnostics at or above `floor`, leaving the log
+    /// otherwise intact (below-floor entries keep their sequence
+    /// numbers — filters never destroy, takes never rewind).
+    pub fn take_diag_logs(&self, floor: crate::diag::LogLevel) -> Vec<crate::diag::LogEntry> {
+        self.inner.diag.borrow_mut().take_at_or_above(floor)
     }
 
     /// Mobile / app lifecycle state signal (Round 18.3, decision 322):
@@ -2599,6 +2772,15 @@ impl ComponentHost {
                     .map(|b| (b.content_w - b.w).max(0.0))
                     .unwrap_or(0.0);
                 sig.update(|v| (v + dx).clamp(0.0, max_x));
+            } else if let Some((sig, max_x)) = self.owner_scroll_x_signal(target) {
+                // Phase 36 PR2b (decision 354): the Round 24.2
+                // self-wire transposed — unbound `dx` feeds the
+                // target's handler-owner instance `scroll_x` (created
+                // via `ctx.scroll_x()` / `ctx.scroll_2d()`), clamped
+                // to the `content_w` overflow like the bound feed.
+                // Targets with no Scroll handler (or no owner offset)
+                // keep the M5 dispatch-only behavior.
+                sig.update(|v| (v + dx).clamp(0.0, max_x));
             }
         }
     }
@@ -2636,6 +2818,41 @@ impl ComponentHost {
                 .map(|b| (b.content_h - b.h).max(0.0))?
         };
         Some((signal, max_y))
+    }
+
+    /// Resolves a scroll target's self-wired horizontal feed (Phase 36
+    /// PR2b, decision 354): the [`ComponentHost::owner_scroll_signal`]
+    /// twin transposed — the target's `Scroll` handler names its
+    /// declaring component instance, and that instance's `scroll_x`
+    /// offset is the feed when the body created one with
+    /// `ctx.scroll_x()` / `ctx.scroll_2d()`. Clamped to the target's
+    /// committed `[0, content_w - w]` (`content_w` overflow — narrow
+    /// content pins at rest). `None` under the same quiet conditions
+    /// as the vertical twin (the M5 dispatch-only rule).
+    fn owner_scroll_x_signal(&self, target: NodeId) -> Option<(Signal<f32>, f32)> {
+        let hid = {
+            let rec = self.inner.rec.borrow();
+            input::handler_of(&rec, target, EventKind::Scroll)?
+        };
+        let instance = self.inner.rt.handler_owner(hid)?;
+        let signal = {
+            self.inner
+                .instances
+                .borrow()
+                .get(&instance)?
+                .scroll_x
+                .clone()?
+        };
+        let max_x = {
+            self.inner
+                .rec
+                .borrow()
+                .get(target)?
+                .layout
+                .clone()
+                .map(|b| (b.content_w - b.w).max(0.0))?
+        };
+        Some((signal, max_x))
     }
 
     /// Streams one held Move into the pointer's drag-scroll state
@@ -3458,16 +3675,18 @@ impl ComponentHost {
                 let Some(focus) = self.focused_node() else {
                     return;
                 };
-                // Round 5.3 arrows: the focused owner's directional
-                // handler wins when declared (held keys repeat-step —
-                // no repeat suppression, standard); otherwise the
-                // generic Key handler below runs (existing ambient
-                // path, unchanged), else quiet.
+                // Round 5.3 arrows (+ Phase 38a Home/End): the focused
+                // owner's directional handler wins when declared (held
+                // keys repeat-step — no repeat suppression, standard);
+                // otherwise the generic Key handler below runs
+                // (existing ambient path, unchanged), else quiet.
                 let directional = match code {
                     input::keys::LEFT => Some(EventKind::KeyLeft),
                     input::keys::UP => Some(EventKind::KeyUp),
                     input::keys::RIGHT => Some(EventKind::KeyRight),
                     input::keys::DOWN => Some(EventKind::KeyDown),
+                    input::keys::HOME => Some(EventKind::KeyHome),
+                    input::keys::END => Some(EventKind::KeyEnd),
                     _ => None,
                 };
                 if let Some(kind) = directional {
@@ -4199,6 +4418,22 @@ impl Ctx {
         ScrollOffset { signal: sig }
     }
 
+    /// Framework-owned 2D scroll position (Phase 36 PR2b, decision
+    /// 354 — G15): one view over the instance's `scroll` + `scroll_x`
+    /// signals (gets-or-creates both — same residence, same keying as
+    /// the 1D twins, so mixing `scroll_offset()` and `scroll_2d()` in
+    /// one body shares state, never forks it). 2D `ScrollArea`
+    /// containers bind both feeds via
+    /// [`ComponentHost::bind_scroll_2d`].
+    pub fn scroll_2d(&self) -> ScrollOffset2D {
+        let y = self.scroll_offset();
+        let x = self.scroll_x();
+        ScrollOffset2D {
+            x: x.signal,
+            y: y.signal,
+        }
+    }
+
     /// App theme (Round 11.2, decision 306): `let t =
     /// ctx.theme();` then `t.tokens().primary` — tracked reads, so a
     /// toggle re-renders every themed control in place (instances,
@@ -4252,11 +4487,14 @@ impl Ctx {
     /// swap is discarded, never applied half-swapped). Refuses loudly
     /// on wasm (no threads there — the platform binding drives the
     /// same signal from the promise callback, decision 221).
+    /// Returns the task id (Phase 37b — cancel via
+    /// [`Ctx::cancel_fetch`]; ignoring the return keeps the exact
+    /// pre-37b call shape).
     pub fn spawn_fetch<T: Clone + Send + 'static>(
         &self,
         key: u64,
         fetch: impl FnOnce() -> Result<T, String> + Send + 'static,
-    ) {
+    ) -> TaskId {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (key, fetch);
@@ -4272,14 +4510,21 @@ impl Ctx {
             let rt = self.rt.clone();
             rt.spawn_task(move |scope| {
                 let result = fetch();
+                // Cancelled fetches reset to Idle (never a stuck
+                // Loading, never a late Ready over the reset).
+                let cancelled = scope.is_cancelled();
                 scope.submit(move |rt| {
                     rt.keyed_state::<FetchState<T>>(key, || FetchState::Idle)
-                        .set(match result {
-                            Ok(v) => FetchState::Ready(v),
-                            Err(e) => FetchState::Failed(e),
+                        .set(if cancelled {
+                            FetchState::Idle
+                        } else {
+                            match result {
+                                Ok(v) => FetchState::Ready(v),
+                                Err(e) => FetchState::Failed(e),
+                            }
                         });
                 });
-            });
+            })
         }
     }
 
@@ -4293,13 +4538,14 @@ impl Ctx {
     /// exhausted after N attempts)")` — greppable, never confusable
     /// with a first-try failure). `attempts == 0` panics loudly (a
     /// zero-try fetch is an authoring bug, never a silent no-op).
-    /// Same wasm refusal as `spawn_fetch`.
+    /// Same wasm refusal as `spawn_fetch`. Returns the task id
+    /// (Phase 37b — cancel via [`Ctx::cancel_fetch`]).
     pub fn spawn_fetch_with_retry<T: Clone + Send + 'static>(
         &self,
         key: u64,
         attempts: u32,
         fetch: impl FnMut() -> Result<T, String> + Send + 'static,
-    ) {
+    ) -> TaskId {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (key, attempts, fetch);
@@ -4332,14 +4578,20 @@ impl Ctx {
                         }
                     }
                 };
+                // Cancelled fetches reset to Idle (the `spawn_fetch` rule).
+                let cancelled = scope.is_cancelled();
                 scope.submit(move |rt| {
                     rt.keyed_state::<FetchState<T>>(key, || FetchState::Idle)
-                        .set(match result {
-                            Ok(v) => FetchState::Ready(v),
-                            Err(e) => FetchState::Failed(e),
+                        .set(if cancelled {
+                            FetchState::Idle
+                        } else {
+                            match result {
+                                Ok(v) => FetchState::Ready(v),
+                                Err(e) => FetchState::Failed(e),
+                            }
                         });
                 });
-            });
+            })
         }
     }
 
@@ -4355,7 +4607,8 @@ impl Ctx {
     /// fresh query). Fresh searches swap by clearing first
     /// (`collection.clear()` + load page 0 — the documented recipe,
     /// not a flag). `attempts == 0` panics loudly; same wasm
-    /// refusal as `spawn_fetch`.
+    /// refusal as `spawn_fetch`. Returns the task id (Phase 37b —
+    /// cancel via [`Ctx::cancel_fetch`]).
     pub fn spawn_fetch_page<T: Clone + Send + 'static>(
         &self,
         collection_key: u64,
@@ -4406,9 +4659,18 @@ impl Ctx {
                         }
                     }
                 };
+                // Cancelled page loads reset to Idle (the
+                // `spawn_fetch` rule — never a stuck Loading,
+                // never rows over the reset).
+                let cancelled = scope.is_cancelled();
                 scope.submit(move |rt| {
                     let cur = rt.keyed_state::<u64>(gen_key, || 0).get();
                     if cur != gen {
+                        return;
+                    }
+                    if cancelled {
+                        rt.keyed_state::<FetchState<Vec<T>>>(state_key, || FetchState::Idle)
+                            .set(FetchState::Idle);
                         return;
                     }
                     match result {
@@ -4435,10 +4697,145 @@ impl Ctx {
         fetch_key(name)
     }
 
+    /// Blessed fetch→render driver over a pluggable backend (Phase
+    /// 37b, decision 362 — G16): like [`Ctx::spawn_fetch`], but the
+    /// bytes come from a [`Fetcher`](crate::fetch::Fetcher)
+    /// (`ScriptedFetcher` doubles, app closures through
+    /// [`ClosureFetcher`](crate::fetch::ClosureFetcher), the wasm
+    /// platform binding outside threads). Refuses loudly on wasm
+    /// (same rule as `spawn_fetch`). Returns the task id (cancel via
+    /// [`Ctx::cancel_fetch`]).
+    pub fn spawn_fetch_with(
+        &self,
+        fetcher: std::sync::Arc<dyn crate::fetch::Fetcher>,
+        key: u64,
+        url: &str,
+    ) -> TaskId {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (fetcher, key, url);
+            panic!(
+                "spawn_fetch_with needs OS threads — unavailable on wasm; drive the \
+                 FetchState signal from the platform binding instead (promise \
+                 callback writes the keyed signal, then requests a frame — G7)"
+            );
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let url = url.to_string();
+            self.fetch_state::<String>(key).set(FetchState::Loading);
+            let rt = self.rt.clone();
+            rt.spawn_task(move |scope| {
+                let result = fetcher.fetch(&url);
+                // Cancelled fetches reset to Idle (the `spawn_fetch` rule).
+                let cancelled = scope.is_cancelled();
+                scope.submit(move |rt| {
+                    rt.keyed_state::<FetchState<String>>(key, || FetchState::Idle)
+                        .set(if cancelled {
+                            FetchState::Idle
+                        } else {
+                            match result {
+                                Ok(v) => FetchState::Ready(v),
+                                Err(e) => FetchState::Failed(e),
+                            }
+                        });
+                });
+            })
+        }
+    }
+
+    /// Cancels a fetch task and resets its state (Phase 37b, G16):
+    /// [`Ctx::cancel_task`] plus the `FetchState` back to `Idle`
+    /// (never a stuck `Loading`, never a late `Ready` over the
+    /// reset). Returns what `cancel_task` reported (false = already
+    /// completed or unknown — a completed `Ready`/`Failed` is kept,
+    /// never wiped). The recipe for abandoning a load.
+    pub fn cancel_fetch<T: Clone + Send + 'static>(&self, key: u64, id: TaskId) -> bool {
+        if !self.cancel_task(id) {
+            return false;
+        }
+        self.fetch_state::<T>(key).set(FetchState::Idle);
+        true
+    }
+
+    /// Signal-backed write-through persistence (Phase 37b, decision
+    /// 364): seeds `initial` from `store` under `key` on first run
+    /// (store wins when present and decodable), then hands a
+    /// [`Persisted`](crate::store::Persisted) handle whose reads
+    /// track and whose writes hit the signal AND the store
+    /// synchronously. Seed failures (backend read errors, undecodable
+    /// bytes) fall back to `initial` with a `Warn` diagnostic (boot
+    /// never crashes on corrupt settings — the fallback is
+    /// observable, never silent); write failures panic loudly (data
+    /// loss is never silent). Single-writer per key (this handle
+    /// owns the key — external writers between runs are last-read,
+    /// stated).
+    pub fn persisted<T: Clone + 'static>(
+        &self,
+        key: &str,
+        initial: T,
+        encode: impl Fn(&T) -> Vec<u8> + 'static,
+        decode: impl Fn(&[u8]) -> Option<T> + 'static,
+        store: std::rc::Rc<std::cell::RefCell<dyn crate::store::KvStore>>,
+    ) -> crate::store::Persisted<T> {
+        let seed = match store.borrow().get(key) {
+            Ok(Some(bytes)) => decode(&bytes).unwrap_or_else(|| {
+                self.host.diag_log(
+                    crate::diag::LogLevel::Warn,
+                    format!("persisted {key:?}: undecodable bytes — seeding initial"),
+                );
+                initial.clone()
+            }),
+            Ok(None) => initial.clone(),
+            Err(e) => {
+                self.host.diag_log(
+                    crate::diag::LogLevel::Warn,
+                    format!("persisted {key:?}: store read failed ({e}) — seeding initial"),
+                );
+                initial.clone()
+            }
+        };
+        // `signal` seeds once (later runs re-read the store but the
+        // seed is only consumed on first run — write-through keeps
+        // the store current, so re-reads agree anyway).
+        let signal = self.signal(seed);
+        crate::store::Persisted::new(signal, key, encode, store)
+    }
+
+    /// String specialization of [`Ctx::persisted`]: UTF-8 bytes
+    /// (invalid UTF-8 warns and seeds `initial`, like undecodable
+    /// bytes above).
+    pub fn persisted_string(
+        &self,
+        key: &str,
+        initial: &str,
+        store: std::rc::Rc<std::cell::RefCell<dyn crate::store::KvStore>>,
+    ) -> crate::store::Persisted<String> {
+        self.persisted(
+            key,
+            initial.to_string(),
+            |s: &String| s.as_bytes().to_vec(),
+            |b: &[u8]| String::from_utf8(b.to_vec()).ok(),
+            store,
+        )
+    }
+
+    /// Pushes one diagnostic entry (Phase 37b, decision 363 — G17):
+    /// the host-level zero-stdout ring (untracked — logging never
+    /// schedules). Reads drain through
+    /// [`ComponentHost::take_diag_logs`].
+    pub fn log(&self, level: crate::diag::LogLevel, message: impl Into<String>) {
+        self.host.diag_log(level, message);
+    }
+
     /// Inline child component with its own instance scope (state keying).
     /// Scheduling stays the running effect's in M2 (see module docs).
     /// `name` is the component's symbol (hot-reload identity); `key`
     /// disambiguates siblings (slot keys, §4.2).
+    ///
+    /// Zero-boilerplate twins are [`Ctx::child_auto`] (static children)
+    /// and [`Ctx::child_keyed`] (keyed siblings) — same instances,
+    /// same state, no manual strings or ordinals.
     ///
     /// M8 (finding F6): the child's run is tagged with the CHILD
     /// instance for handler-owner attribution (the M5 router resolves
@@ -4482,6 +4879,49 @@ impl Ctx {
         // already stamped theirs — only `None`s are filled).
         crate::vnode::stamp_handler_owner(&vnode, id);
         vnode
+    }
+
+    /// Zero-boilerplate static child (Phase 37a, decision 360): the
+    /// instance is keyed on `(Location::caller(), ordinal)` — stable
+    /// for stable bodies (the §5.1 re-seed rule covers body edits),
+    /// with the call site as the hot-reload symbol. Static children
+    /// drop manual string/ordinal args (`ctx.child_auto(&p, Comp)`
+    /// replaces `ctx.child("path::Comp", 1, &p, Comp)`).
+    ///
+    /// No `TypeId` anywhere in the keying (different `TypeId`s across
+    /// the rlib↔dylib boundary would fork reload state — the symbol
+    /// stays a source string, stable across the boundary). Keyed
+    /// siblings (loops, slots) take [`Ctx::child_keyed`]; the manual
+    /// [`Ctx::child`] form stays for hand-rolled symbols.
+    #[track_caller]
+    pub fn child_auto<P: Props>(&self, props: &P, render: fn(&Ctx, &P) -> VNode) -> VNode {
+        let base = call_site_hash!();
+        let site = self.next_site(base);
+        let loc = std::panic::Location::caller();
+        let name = format!("auto:{}:{}#{}", loc.file(), loc.line(), site.ordinal);
+        let key = site
+            .hash
+            .wrapping_add((site.ordinal as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        self.child(&name, key, props, render)
+    }
+
+    /// Zero-boilerplate keyed child (Phase 37a, decision 360): the
+    /// explicit `key` disambiguates siblings (loop indices, slot ids —
+    /// same contract as [`Ctx::child`]'s key), the call site names the
+    /// hot-reload symbol. `ctx.child_keyed(i, &p, Row)` replaces
+    /// `ctx.child("Row", i, &p, Row)`. Same-site duplicate keys share
+    /// one instance (keys must be unique per site — the React rule,
+    /// stated).
+    #[track_caller]
+    pub fn child_keyed<P: Props>(
+        &self,
+        key: u64,
+        props: &P,
+        render: fn(&Ctx, &P) -> VNode,
+    ) -> VNode {
+        let loc = std::panic::Location::caller();
+        let name = format!("keyed:{}:{}", loc.file(), loc.line());
+        self.child(&name, key, props, render)
     }
 
     /// Executes a render closure, catching unwinding panics.
@@ -4589,9 +5029,21 @@ impl Ctx {
     }
 
     /// Current preparation stage of a task (`Done` once its body
-    /// returned, `None` for unknown or dropped ids).
+    /// returned, `Cancelled` for cancelled-before-running, `None`
+    /// for unknown or dropped ids).
     pub fn task_stage(&self, id: TaskId) -> Option<TaskStage> {
         self.rt.task_stage(id)
+    }
+
+    /// Cancels a task by id (Phase 37b, decision 362 — G16): parked
+    /// or queued tasks never run (dependents still unblock);
+    /// running tasks observe it cooperatively (see
+    /// [`TaskScope::is_cancelled`](crate::worker::TaskScope::is_cancelled));
+    /// completed or unknown ids report false. Returns true exactly
+    /// when the id named a live task. Fetch drivers pair this with a
+    /// `FetchState::Idle` reset — see [`Ctx::cancel_fetch`].
+    pub fn cancel_task(&self, id: TaskId) -> bool {
+        self.rt.cancel_task(id)
     }
 
     /// Settled layout box for an effect (one-frame-delayed feedback): tracks
@@ -5318,5 +5770,208 @@ mod tests {
             (3, 2, 3),
             "set re-runs every reader"
         );
+    }
+
+    #[derive(Clone)]
+    struct TwoDProps;
+    impl Props for TwoDProps {}
+
+    /// 2D scroll area: 200×40 viewport over a 300×200 sheet (x bound
+    /// `[0, 100]`, y bound `[0, 160]`), owned through one 2D handle.
+    fn twod_comp(ctx: &Ctx, _: &TwoDProps) -> VNode {
+        let _both = ctx.scroll_2d();
+        crate::vnode::ScrollArea("sheet")
+            .style(crate::style::Style::new().size(200, 40))
+            .on_scroll(|| {})
+            .child(
+                crate::vnode::Div("sheet-wide")
+                    .style(crate::style::Style::new().size(300, 200))
+                    .build(),
+            )
+    }
+
+    #[test]
+    fn scroll_2d_shares_state_with_the_1d_twins() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let handle = host.mount("TwoD", TwoDProps, twod_comp);
+        host.run_until_idle();
+        let root = handle.root_instance();
+        let both = host.instance_scroll_2d(root).expect("2D handle");
+        // Same signals, never forked: 1D writes read back 2D and back.
+        let y = host.instance_scroll(root).expect("y twin");
+        let x = host.instance_scroll_x(root).expect("x twin");
+        y.set(12.0);
+        x.set(34.0);
+        assert_eq!(both.get(), ScrollXY { x: 34.0, y: 12.0 });
+        both.set(ScrollXY { x: 1.0, y: 2.0 });
+        assert_eq!((x.get(), y.get()), (1.0, 2.0));
+        assert_eq!(both.x().get(), 1.0);
+        assert_eq!(both.y().get(), 2.0);
+    }
+
+    #[test]
+    fn bind_scroll_2d_feeds_both_axes_and_reports_both() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let handle = host.mount("TwoD", TwoDProps, twod_comp);
+        host.run_until_idle();
+        let root = handle.root_instance();
+        let both = host.instance_scroll_2d(root).expect("2D handle");
+        let sheet = crate::find_retained_by_debug(&host, "sheet")[0];
+        host.bind_scroll_2d(sheet, &both);
+        assert_eq!(
+            host.bound_scroll_2d(sheet),
+            Some(ScrollXY { x: 0.0, y: 0.0 })
+        );
+        host.inject_input(crate::input::InputEvent::Scroll {
+            target: sheet,
+            dx: 30.0,
+            dy: 50.0,
+        });
+        host.run_until_idle();
+        assert_eq!(both.get(), ScrollXY { x: 30.0, y: 50.0 });
+        assert_eq!(
+            host.bound_scroll_2d(sheet),
+            Some(ScrollXY { x: 30.0, y: 50.0 })
+        );
+        // Half-bound targets report None (a half-wired 2D area is a
+        // wiring bug, never a silent half-read).
+        let host2 = ComponentHost::new();
+        host2.set_viewport(800.0, 600.0);
+        host2.mount("TwoD", TwoDProps, twod_comp);
+        host2.run_until_idle();
+        let sheet2 = crate::find_retained_by_debug(&host2, "sheet")[0];
+        assert_eq!(host2.bound_scroll_2d(sheet2), None);
+    }
+
+    #[test]
+    fn unbound_dx_self_wires_to_the_owner_x_offset() {
+        // Round 24.2 transposed (decision 354): no `bind_scroll_x`
+        // anywhere, but the target's Scroll owner holds a `scroll_x`
+        // offset — `dx` feeds it, clamped to the `content_w`
+        // overflow; narrow content pins at rest.
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let handle = host.mount("TwoD", TwoDProps, twod_comp);
+        host.run_until_idle();
+        let root = handle.root_instance();
+        let both = host.instance_scroll_2d(root).expect("2D handle");
+        let sheet = crate::find_retained_by_debug(&host, "sheet")[0];
+        assert_eq!(host.bound_scroll_x(sheet), None, "no bound feed");
+        host.inject_input(crate::input::InputEvent::Scroll {
+            target: sheet,
+            dx: 30.0,
+            dy: 0.0,
+        });
+        host.run_until_idle();
+        assert_eq!(both.get().x, 30.0, "owner x self-wires");
+        assert_eq!(both.get().y, 0.0, "dy untouched");
+        host.inject_input(crate::input::InputEvent::Scroll {
+            target: sheet,
+            dx: 500.0,
+            dy: 0.0,
+        });
+        host.run_until_idle();
+        assert_eq!(both.get().x, 100.0, "clamps to content_w - w");
+    }
+
+    /// Phase 36 PR4 (decision 359): pre-decoded pixels deposit once
+    /// and pull back byte-exact; short buffers, zero sizes, and
+    /// unknown ids refuse loudly.
+    #[test]
+    fn image_cache_pixels_deposit_once_and_pull_exact() {
+        let cache = crate::ImageCache::new();
+        let rgba = vec![255u8; 2 * 2 * 4];
+        let id = cache.insert_pixels("dot", 2, 2, rgba.clone());
+        assert_eq!(cache.pixels_of(id), Some((2, 2, rgba)));
+        // Same key re-deposit replaces (last wins, same id).
+        let id2 = cache.insert_pixels("dot", 1, 1, vec![0u8; 4]);
+        assert_eq!(id, id2);
+        assert_eq!(cache.pixels_of(id), Some((1, 1, vec![0u8; 4])));
+        // Bare load() keys carry no pixels (URL path, unchanged).
+        let url = cache.load("img/a.png");
+        assert_eq!(cache.pixels_of(url), None);
+        assert_eq!(cache.key_of(url).as_deref(), Some("img/a.png"));
+    }
+
+    #[test]
+    #[should_panic(expected = "bytes !=")]
+    fn image_cache_short_buffer_refuses_loudly() {
+        crate::ImageCache::new().insert_pixels("short", 2, 2, vec![0u8; 15]);
+    }
+
+    #[test]
+    #[should_panic(expected = "zero size")]
+    fn image_cache_zero_size_refuses_loudly() {
+        crate::ImageCache::new().insert_pixels("zero", 0, 2, vec![]);
+    }
+
+    #[derive(Clone)]
+    struct KidProps {
+        seed: u32,
+    }
+    impl Props for KidProps {}
+
+    fn kid_comp(ctx: &Ctx, props: &KidProps) -> VNode {
+        let s = ctx.signal(props.seed);
+        // Publish the instance signal value into the debug label so
+        // the test reads state identity off the retained tree.
+        crate::vnode::Div(format!("kid-{}", s.get()).as_str()).build()
+    }
+
+    #[derive(Clone)]
+    struct AutoRootProps;
+    impl Props for AutoRootProps {}
+
+    fn auto_root_comp(ctx: &Ctx, _: &AutoRootProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        crate::vnode::Div("auto-root").children([
+            ctx.child_auto(&KidProps { seed: 1 }, kid_comp),
+            ctx.child_auto(&KidProps { seed: 2 }, kid_comp),
+            ctx.child_keyed(7, &KidProps { seed: 3 }, kid_comp),
+            ctx.child_keyed(8, &KidProps { seed: 4 }, kid_comp),
+        ])
+    }
+
+    /// Phase 37a (decision 360): `child_auto` siblings hold distinct
+    /// instances with isolated state (no manual strings/ordinals),
+    /// and `child_keyed` siblings key by the explicit key.
+    #[test]
+    fn child_auto_and_keyed_hold_distinct_state() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        host.mount("AutoRoot", AutoRootProps, auto_root_comp);
+        host.run_until_idle();
+        for want in ["kid-1", "kid-2", "kid-3", "kid-4"] {
+            assert_eq!(
+                crate::find_retained_by_debug(&host, want).len(),
+                1,
+                "one live {want}"
+            );
+        }
+    }
+
+    /// Phase 37a: auto/keyed instances survive re-renders (stable
+    /// call-site keying — same body, same instances, no re-seed).
+    #[test]
+    fn child_auto_instances_survive_reruns() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let handle = host.mount("AutoRoot", AutoRootProps, auto_root_comp);
+        host.run_until_idle();
+        let before: Vec<crate::arena::NodeId> = ["kid-1", "kid-2", "kid-3", "kid-4"]
+            .iter()
+            .flat_map(|d| crate::find_retained_by_debug(&host, d))
+            .collect();
+        assert_eq!(before.len(), 4);
+        // Re-run the root (props unchanged — force via set_props).
+        handle.set_props(AutoRootProps);
+        host.run_until_idle();
+        let after: Vec<crate::arena::NodeId> = ["kid-1", "kid-2", "kid-3", "kid-4"]
+            .iter()
+            .flat_map(|d| crate::find_retained_by_debug(&host, d))
+            .collect();
+        assert_eq!(before, after, "stable bodies re-key identically");
     }
 }

@@ -291,6 +291,11 @@ root.addEventListener("pointermove", (ev) => {
 // ride the same channel (multi-line values flow verbatim).
 root.addEventListener("input", (ev) => {
   const t = ev.target;
+  // Q4 composition scope (Phase 39a, decision 379 — the hello-web
+  // template twin): preedit never forwards; the commit flows.
+  if (ev.isComposing) {
+    return;
+  }
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA") && t.dataset.pid) {
     paint(app.text(t.dataset.pid, t.value));
   }

@@ -182,6 +182,18 @@ impl VelloBackend {
         self.images.remove(&id).is_some()
     }
 
+    /// Deposits one cache entry's pre-decoded pixels (Phase 36 PR4,
+    /// decision 359 — the CPU `insert_cached` twin): pulls from the
+    /// [`ImageCache`](oppa::ImageCache), loud when absent.
+    pub fn insert_cached(&mut self, cache: &oppa::ImageCache, id: ImageId) {
+        let Some((width, height, rgba)) = cache.pixels_of(id) else {
+            panic!(
+                "oppa-vello: insert_cached {id:?}: no pre-decoded pixels in the cache — deposit with insert_pixels first (static pre-decoded only)"
+            );
+        };
+        self.insert_image(id, width, height, rgba);
+    }
+
     pub fn atlas(&self) -> &GlyphAtlas {
         &self.atlas
     }

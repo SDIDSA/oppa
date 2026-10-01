@@ -199,6 +199,8 @@ fn toggle_serves_and_drives_through_uia() {
             press_at(&host2, x, y);
         })),
         value_for: None,
+        on_invoke: None,
+        on_set_value: None,
     };
 
     // Properties through the real interface (all COM calls are
@@ -275,8 +277,9 @@ fn toggle_serves_and_drives_through_uia() {
 
 // ---------------------------------------------------------------------------
 // G13 catalog leg: checkbox Toggle round-trips through COM;
-// button/slider serve control types (+ button documents the
-// Invoke-pattern OQ by refusing loudly).
+// button/slider serve control types (Invoke/RangeValue patterns
+// serve since decision 352 — proven in `phase36_actions.rs`; the
+// Toggle-refusal rows below pin "no silent wrong pattern").
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Props)]
@@ -404,6 +407,8 @@ fn catalog_serves_and_drives_through_uia() {
             press_at(&host2, x, y);
         })),
         value_for: None,
+        on_invoke: None,
+        on_set_value: None,
     };
     // Tree refresh after AT-driven flips (same as the Fixture).
     let mut refresh = || {
@@ -430,7 +435,8 @@ fn catalog_serves_and_drives_through_uia() {
         refresh();
         assert_eq!(tog.ToggleState().expect("state"), ToggleState_On);
 
-        // Button: Button type; Toggle pattern refuses (Invoke is OQ-G2-2).
+        // Button: Button type; Toggle pattern refuses (Invoke serves —
+        // decision 352, proven in `phase36_actions.rs`).
         let bsimple: IRawElementProviderSimple =
             OppaProvider::new(tree.clone(), btn, btn, actions.clone()).into();
         let bct = bsimple
@@ -439,7 +445,10 @@ fn catalog_serves_and_drives_through_uia() {
         assert_eq!(read_i4(&bct), UIA_ButtonControlTypeId.0);
         assert!(bsimple.GetPatternProvider(UIA_TogglePatternId).is_err());
 
-        // Slider: Slider type + name (RangeValue is OQ-G2-2).
+        // Slider: Slider type + name (RangeValue serves when
+        // `value_num` is set — decision 352, proven in
+        // `phase36_actions.rs`; this fixture's slider sets text
+        // only, so the pattern stays refused here).
         let ssimple: IRawElementProviderSimple =
             OppaProvider::new(tree.clone(), sld, sld, actions.clone()).into();
         let sct = ssimple

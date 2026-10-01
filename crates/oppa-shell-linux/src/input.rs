@@ -420,6 +420,16 @@ impl LinuxShell {
             }
             LinuxEvent::Wheel { x_dp, y_dp, dx, dy } => {
                 self.stats.mouse += 1;
+                // Phase 36 PR2b (decision 354): Shift+wheel rolls
+                // horizontally (the native convention, the Windows
+                // `wheel_event` twin) — a Shift-held purely-vertical
+                // tick reroutes as `dx`; device-native `dx` rides
+                // untouched, and unshifted ticks pass through exactly.
+                let (dx, dy) = if self.modifiers.shift && dx == 0.0 {
+                    (dy, 0.0)
+                } else {
+                    (dx, dy)
+                };
                 self.cmds.push(LinuxCmd::Scroll {
                     x: px(x_dp),
                     y: px(y_dp),
@@ -1055,6 +1065,50 @@ mod tests {
                 dx: 0.0,
                 dy: 60.0
             }]
+        );
+    }
+
+    #[test]
+    fn shift_wheel_reroutes_vertical_as_horizontal() {
+        // Phase 36 PR2b (decision 354): a Shift-held purely-vertical
+        // tick arrives as `dx` (native convention); device-native
+        // `dx` rides untouched under Shift.
+        let mut shell = shell();
+        shell.push_event(LinuxEvent::ModifiersChanged {
+            shift: true,
+            ctrl: false,
+            alt: false,
+            meta: false,
+        });
+        shell.push_event(LinuxEvent::Wheel {
+            x_dp: 10.0,
+            y_dp: 12.0,
+            dx: 0.0,
+            dy: 30.0,
+        });
+        shell.push_event(LinuxEvent::Wheel {
+            x_dp: 10.0,
+            y_dp: 12.0,
+            dx: 6.0,
+            dy: 30.0,
+        });
+        let (cmds, _) = pump(&mut shell);
+        assert_eq!(
+            cmds,
+            vec![
+                LinuxCmd::Scroll {
+                    x: 20.0,
+                    y: 24.0,
+                    dx: 60.0,
+                    dy: 0.0
+                },
+                LinuxCmd::Scroll {
+                    x: 20.0,
+                    y: 24.0,
+                    dx: 12.0,
+                    dy: 60.0
+                },
+            ]
         );
     }
 

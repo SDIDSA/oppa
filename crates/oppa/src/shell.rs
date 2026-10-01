@@ -63,6 +63,12 @@ pub enum EventKind {
     KeyUp,
     KeyRight,
     KeyDown,
+    /// Home/End keys (Phase 38a, decision 367 — the Slider jump
+    /// precedent): fired on the focused owner's `on_key_home` /
+    /// `on_key_end` when declared; otherwise the generic `Key`
+    /// handler runs (the arrow precedent, unchanged), else quiet.
+    KeyHome,
+    KeyEnd,
     /// Pointer drag move (Round 5.3, OQ-G2-1 — fired on every Move
     /// while the node is the pointer's capture owner; the position
     /// rides [`ComponentHost::pointer_position`](crate::component::ComponentHost::pointer_position),

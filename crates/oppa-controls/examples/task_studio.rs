@@ -1,10 +1,13 @@
 //! Task Studio reference app (Round 24.1, decision 335; live OS
-//! integration Round 26.2, decision 342): a real window running the
-//! studio screen -- task grid, search/sort, inspector, context
-//! actions, tooltips, theme toggle, export buttons -- with the full
-//! close/export loop owned through `run_desktop_with`: a dirty-gated
-//! veto raises the save modal, and the poll hook writes the modal's
-//! export through the native save dialog, then asks for close.
+//! integration Round 26.2, decision 342; Phase 39b, decision 380):
+//! a real window running the studio screen — task grid, search/sort,
+//! inspector (with empty-title validation), context actions,
+//! tooltips, theme toggle, export buttons, menubar (File/View
+//! duplicating toolbar actions), grid|inspector Splitter, RichText
+//! status + Canvas done-meter — with the full close/export loop
+//! owned through `run_desktop_with`: a dirty-gated veto raises the
+//! save modal, and the poll hook writes the modal's export through
+//! the native save dialog, then asks for close.
 //!
 //! Run with `cargo run -p oppa-controls --example task_studio`.
 

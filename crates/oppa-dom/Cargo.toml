@@ -11,6 +11,9 @@ oppa = { path = "../oppa" }
 # dirty-subtree FramePlans — same plans, same damage discipline as both
 # rasterizers; no raster/DOM code is shared.
 oppa-cpu = { path = "../oppa-cpu" }
+# Static image bytes (Phase 36 PR4): pre-decoded cache pixels encode
+# to PNG data URIs for `<img>` (no URL round-trip for statics).
+oppa-image = { path = "../oppa-image" }
 
 [dev-dependencies]
 oppa-macros = { path = "../oppa-macros" }

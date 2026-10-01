@@ -220,6 +220,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-oppa"
+version = "0.1.0"
+
+[[package]]
 name = "cc"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1462,6 +1466,7 @@ dependencies = [
  "oppa",
  "oppa-controls",
  "oppa-cpu",
+ "oppa-image",
  "oppa-macros",
  "oppa-text-dwrite",
  "oppa-vello",

@@ -23,6 +23,9 @@ pub fn render_page(title: &str, backend: &DomBackend, sheet: &StyleSheet) -> Str
     // theme) — CSS inheritance carries both to every non-inked node,
     // explicit `color:` still wins, and the parity corpus measures
     // the same contract the rasterizers paint.
+    // Phase 36 PR3: registered `@font-face` blocks ride the same
+    // `<style>` (once per page — the browser shapes display text
+    // with the measured bytes, closing the decision-81 drift).
     let tokens = oppa::ThemeTokens::of(backend.theme_mode());
     let chrome = format!(
         "background:{};color:{};",
@@ -31,9 +34,10 @@ pub fn render_page(title: &str, backend: &DomBackend, sheet: &StyleSheet) -> Str
     );
     format!(
         "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{title}</title>\n\
-         <style>\n{base}{sheet}</style>\n</head>\n<body style=\"{chrome}\">\n{body}</body>\n</html>\n",
+         <style>\n{fonts}{base}{sheet}</style>\n</head>\n<body style=\"{chrome}\">\n{body}</body>\n</html>\n",
         sheet = sheet.render(),
         base = base_css(),
+        fonts = backend.font_face_css(),
     )
 }
 

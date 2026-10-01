@@ -1,0 +1,10 @@
+{
+  "name": "oppa web — toggle demo",
+  "short_name": "oppa-web",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eeeeee",
+  "theme_color": "#2266cc",
+  "description": "Oppa DOM-backend dev rig (PWA smoke only — ship from the hello-web template)."
+}

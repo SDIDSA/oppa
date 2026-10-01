@@ -27,9 +27,7 @@ fn hello(ctx: &Ctx, _props: &()) -> VNode {
                 text: SharedString::from(format!("Clicked {} times", count.get())),
                 style: Text::body_secondary,
             }),
-            ctx.child(
-                "hello::Click",
-                1,
+            ctx.child_auto(
                 &ButtonProps::new("Click me", move || pressed.set(pressed.get() + 1))
                     .debug("hello-button"),
                 Button,

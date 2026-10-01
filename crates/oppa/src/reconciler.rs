@@ -63,6 +63,12 @@ pub struct RetainedNode {
     pub style: StyleId,
     pub text: Option<std::sync::Arc<str>>,
     pub text_hint: Option<TextClass>,
+    /// Span table for multi-span text (Phase 36 PR3, decision 355):
+    /// `Some` exactly on `Tag::Text` nodes built from
+    /// [`VNode::RichText`](crate::vnode::VNode) — each span shapes
+    /// with its own weight and paints with its own ink. Diffed like
+    /// text (`TEXT|PAINT`); `None` elsewhere.
+    pub rich_text: Option<Vec<crate::vnode::TextSpan>>,
     /// Image source for `Tag::Image` nodes (round 4.4): the cache id
     /// whose key names the image (URL on web, cache key natively).
     /// Diffed — a src change re-renders. `None` elsewhere.
@@ -71,6 +77,11 @@ pub struct RetainedNode {
     /// data plus its fill/stroke. Diffed — a payload change repaints
     /// (never re-lays-out). `None` elsewhere.
     pub path: Option<crate::vnode::PathSpec>,
+    /// Canvas payload for `Tag::Canvas` nodes (Phase 36 PR4, decision
+    /// 358): retained vector ops in local space. Diffed — a payload
+    /// change repaints (never re-lays-out: geometry comes from the
+    /// style box). `None` elsewhere.
+    pub canvas: Option<crate::vnode::CanvasSpec>,
     pub semantics: Option<Semantics>,
     pub handlers: Vec<(EventKind, HandlerId)>,
     pub pass_dirty: PassMask,
@@ -109,6 +120,9 @@ pub enum DiffOp {
         /// Vector payload changed (decision 291 — always rides
         /// `PAINT`; path data never affects layout).
         path_changed: bool,
+        /// Canvas payload changed (Phase 36 PR4, decision 358 —
+        /// always rides `PAINT`; spec ops never affect layout).
+        canvas_changed: bool,
         semantics_changed: bool,
         handlers_changed: bool,
     },
@@ -387,8 +401,10 @@ impl Reconciler {
                     style: styles.intern(Style::default()),
                     text: Some(text.clone()),
                     text_hint: None,
+                    rich_text: None,
                     image: None,
                     path: None,
+                    canvas: None,
                     semantics: None,
                     handlers: Vec::new(),
                 });
@@ -405,6 +421,40 @@ impl Reconciler {
                 // nothing — unobservable while no consumer read paint
                 // masks). The documented Add mapping covers all fresh
                 // nodes, so text leaves get the same bits.
+                self.arena.get_mut(id.gen()).pass_dirty =
+                    PassMask::STRUCTURE | PassMask::LAYOUT | PassMask::PAINT;
+                id
+            }
+            VNode::RichText(rich) => {
+                // Multi-span leaf (Phase 36 PR3): same retained shape
+                // as a text leaf (`Tag::Text`, joined bytes) plus the
+                // span table — backends key off the tag, layout shapes
+                // per span. Same dirty bits as text leaves (the M4 F2
+                // rule — fresh nodes feed every pass).
+                let joined: std::sync::Arc<str> = rich.joined_text().into();
+                let id = self.alloc_node(NewNode {
+                    parent,
+                    tag: Tag::Text,
+                    debug: "rich",
+                    key: None,
+                    style: styles.intern(Style::default()),
+                    text: Some(joined),
+                    text_hint: Some(rich.style),
+                    rich_text: Some(rich.spans.clone()),
+                    image: None,
+                    path: None,
+                    canvas: None,
+                    semantics: None,
+                    handlers: Vec::new(),
+                });
+                let index = self.child_index(parent, id);
+                diff.ops.push(DiffOp::Add {
+                    id,
+                    parent,
+                    index,
+                    tag: Tag::Text,
+                    key: None,
+                });
                 self.arena.get_mut(id.gen()).pass_dirty =
                     PassMask::STRUCTURE | PassMask::LAYOUT | PassMask::PAINT;
                 id
@@ -430,8 +480,10 @@ impl Reconciler {
                     style: style_id,
                     text: None,
                     text_hint: e.text_hint,
+                    rich_text: None,
                     image: e.image,
                     path: e.path.clone(),
+                    canvas: e.canvas.clone(),
                     semantics: e.semantics.clone(),
                     handlers: handler_ids,
                 });
@@ -465,8 +517,10 @@ impl Reconciler {
             style: p.style,
             text: p.text,
             text_hint: p.text_hint,
+            rich_text: p.rich_text,
             image: p.image,
             path: p.path,
+            canvas: p.canvas,
             semantics: p.semantics,
             handlers: p.handlers,
             pass_dirty: PassMask::EMPTY,
@@ -529,6 +583,32 @@ impl Reconciler {
                         text_changed: true,
                         image_changed: false,
                         path_changed: false,
+                        canvas_changed: false,
+                        semantics_changed: false,
+                        handlers_changed: false,
+                    });
+                }
+            }
+            (VNode::RichText(a), VNode::RichText(b)) => {
+                // Span tables diff like text (a span change re-shapes
+                // and repaints; geometry re-derives through the TEXT
+                // dirty path like every text change — never a silent
+                // stale span).
+                if a != b {
+                    let joined: std::sync::Arc<str> = b.joined_text().into();
+                    let n = self.arena.get_mut(id.gen());
+                    n.text = Some(joined);
+                    n.text_hint = Some(b.style);
+                    n.rich_text = Some(b.spans.clone());
+                    n.pass_dirty |= PassMask::TEXT | PassMask::PAINT;
+                    diff.ops.push(DiffOp::Update {
+                        id,
+                        mask: PassMask::TEXT | PassMask::PAINT,
+                        style_changed: false,
+                        text_changed: true,
+                        image_changed: false,
+                        path_changed: false,
+                        canvas_changed: false,
                         semantics_changed: false,
                         handlers_changed: false,
                     });
@@ -561,6 +641,15 @@ impl Reconciler {
                     self.arena.get_mut(id.gen()).path = b.path.clone();
                     mask |= PassMask::PAINT;
                     path_changed = true;
+                }
+                // Canvas payloads diff like paths (Phase 36 PR4,
+                // decision 358): a spec change repaints, never
+                // re-lays-out (geometry comes from the style box).
+                let mut canvas_changed = false;
+                if self.arena.get(id.gen()).canvas != b.canvas {
+                    self.arena.get_mut(id.gen()).canvas = b.canvas.clone();
+                    mask |= PassMask::PAINT;
+                    canvas_changed = true;
                 }
 
                 let old_style = styles.intern(a.style.clone());
@@ -623,6 +712,7 @@ impl Reconciler {
                         text_changed,
                         image_changed,
                         path_changed,
+                        canvas_changed,
                         semantics_changed,
                         handlers_changed,
                     });
@@ -750,8 +840,10 @@ struct NewNode<'a> {
     style: StyleId,
     text: Option<std::sync::Arc<str>>,
     text_hint: Option<TextClass>,
+    rich_text: Option<Vec<crate::vnode::TextSpan>>,
     image: Option<crate::vnode::ImageId>,
     path: Option<crate::vnode::PathSpec>,
+    canvas: Option<crate::vnode::CanvasSpec>,
     semantics: Option<Semantics>,
     handlers: Vec<(EventKind, HandlerId)>,
 }
@@ -765,6 +857,7 @@ fn position_of(ids: &[NodeId], id: NodeId) -> Option<usize> {
 fn compatible(old: &VNode, new: &VNode) -> bool {
     match (old, new) {
         (VNode::Text(_), VNode::Text(_)) => true,
+        (VNode::RichText(_), VNode::RichText(_)) => true,
         (VNode::Element(a), VNode::Element(b)) => a.tag == b.tag,
         _ => false,
     }
@@ -820,6 +913,20 @@ fn style_layout_bits(s: &Style) -> impl Eq + '_ {
             s.margin_left,
             s.margin_right,
         ),
+        // Phase 36 PR2a (decision 353): flex shares, clamps, and
+        // grid templates/spans all move layout — a fourth row (the
+        // tuple-nesting precedent above; `Vec<GridTrack>` is `Eq`).
+        (
+            s.flex_grow,
+            s.flex_shrink,
+            s.min_w,
+            s.min_h,
+            s.max_w,
+            s.max_h,
+            s.col_span,
+            s.row_span,
+        ),
+        (s.grid_cols.clone(), s.grid_rows.clone()),
     )
 }
 
@@ -882,5 +989,54 @@ mod tests {
         );
         assert_eq!(rec.retained_count(), n0, "no nodes created or destroyed");
         assert!(d.suppress_transitions);
+    }
+
+    /// Phase 36 PR3: `RichText` mounts as a `Tag::Text` node carrying
+    /// the joined bytes plus the span table; span edits diff in place
+    /// (`TEXT|PAINT`, no structure ops); identical spans diff empty.
+    #[test]
+    fn rich_text_mounts_joined_and_diffs_spans_in_place() {
+        use crate::vnode::{RichText, TextSpan};
+        let (rt, mut styles) = setup();
+        let mut rec = Reconciler::new();
+        let rich = |spans: Vec<TextSpan>| -> VNode {
+            Div("w").child(VNode::RichText(RichText::new(spans)))
+        };
+        let d1 = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            rich(vec![TextSpan::new("ab"), TextSpan::new("cd")]),
+        );
+        assert!(d1.structure_ops() > 0, "mount creates structure");
+        let text = rec.find_by_debug("rich");
+        assert_eq!(text.len(), 1, "rich leaf retained");
+        let n = rec.get(text[0]).expect("rich node");
+        assert_eq!(n.tag, crate::vnode::Tag::Text);
+        assert_eq!(n.text.as_deref(), Some("abcd"));
+        assert_eq!(
+            n.rich_text.as_ref().map(|s| s.len()),
+            Some(2),
+            "span table retained"
+        );
+        // Identical spans: empty diff.
+        let d2 = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            rich(vec![TextSpan::new("ab"), TextSpan::new("cd")]),
+        );
+        assert!(d2.is_empty(), "identical spans diff empty");
+        // Edited span: TEXT|PAINT update, no structure ops.
+        let d3 = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            rich(vec![TextSpan::new("ab"), TextSpan::new("ce")]),
+        );
+        assert_eq!(d3.structure_ops(), 0);
+        assert_eq!(d3.update_ops(), 1);
+        let n = rec.get(text[0]).expect("rich node");
+        assert_eq!(n.text.as_deref(), Some("abce"), "joined bytes follow");
     }
 }

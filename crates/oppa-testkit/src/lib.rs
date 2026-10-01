@@ -332,7 +332,7 @@ mod tests {
         assert!(!px.is_empty(), "form paints pixels");
 
         let tabs = oppa::find_retained_by_debug(app.host(), "tab-item");
-        assert_eq!(tabs.len(), 4, "four tab buttons mount");
+        assert_eq!(tabs.len(), 5, "five tab buttons mount");
 
         // Layout: the chips Row is a fresh mount (Row replaces the
         // form's Div at position 0 — incompatible tags replace).
@@ -409,7 +409,7 @@ mod tests {
         );
         // Layout tab on: chips + cards mount under Dark.
         let tabs = oppa::find_retained_by_debug(app.host(), "tab-item");
-        assert_eq!(tabs.len(), 4, "four tab buttons mount");
+        assert_eq!(tabs.len(), 5, "five tab buttons mount");
         press_node(app.host(), tabs[1]);
         assert_finite_boxes(app.host());
         // Runner-equivalent publish (DesktopLoop::repaint does this
@@ -625,7 +625,7 @@ mod tests {
         dejavu(&app);
         app.mount("KitchenSink", (), KitchenSinkApp);
         let tabs = oppa::find_retained_by_debug(app.host(), "tab-item");
-        assert_eq!(tabs.len(), 4, "four tab buttons mount");
+        assert_eq!(tabs.len(), 5, "five tab buttons mount");
         press_node(app.host(), tabs[0]);
         let (mut cpu, surf) = painter();
         let mut cursor = 0;
@@ -797,6 +797,10 @@ mod tests {
                     checked: checked.clone(),
                     enabled: true,
                     on_change: None,
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
             },
             render_check,

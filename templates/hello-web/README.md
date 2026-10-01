@@ -7,7 +7,11 @@ Proven shape (same harness the demo and sink ride).
 ## Use it
 
 ```powershell
-# Copy OUT of this repo (it only builds here via relative paths):
+# From an Oppa checkout (recommended — names the package, points
+# path deps at the checkout, rewrites this paragraph):
+cargo run -p cargo-oppa -- oppa new ~/my-web-app --web
+# Or copy out manually (then point the three path deps at your
+# Oppa checkout yourself):
 cp -r templates/hello-web ~/my-web-app
 cd ~/my-web-app
 # Point the three path deps at your Oppa checkout, then:
@@ -25,6 +29,12 @@ machine-local install, never committed). `web/pkg/` generated
 output is yours, never committed. `OPPA_RENDERER` does not apply on
 web (the browser owns pixels); the module viewport is fixed at
 800x600 to match the harness.
+
+PWA shell (G20): `web/manifest.json` + `web/sw.js` (cache-first,
+versioned `CACHE` per release) ship with the template and are
+registered/linked out of the box — serve over http(s) (workers
+refuse `file://`), load once online, reload offline. Icons are
+your branding (none ships).
 
 Next steps: [contributing](../../docs/CONTRIBUTING.md) (gates + entry
 points), [architecture](../../docs/ARCHITECTURE.md) (web backend + shells),

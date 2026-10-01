@@ -24,5 +24,5 @@
 pub mod roles;
 pub mod tree;
 
-pub use roles::{atspi_role, atspi_states};
-pub use tree::{AtspiEvent, AtspiNode, AtspiTree};
+pub use roles::{atspi_actions, atspi_role, atspi_states, atspi_value};
+pub use tree::{AtspiAction, AtspiActionError, AtspiEvent, AtspiInvokeFn, AtspiNode, AtspiTree};

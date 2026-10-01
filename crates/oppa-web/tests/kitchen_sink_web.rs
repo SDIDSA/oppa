@@ -221,7 +221,7 @@ fn sink_select_opens_and_picks_through_bindings() {
     assert!(html.contains("Mint"), "pick renders, {html}");
 }
 
-/// All four tabs render through tab presses; the modal confirms;
+/// All five tabs render through tab presses; the modal confirms;
 /// the platform tab picks and counts; every stage paints new
 /// pixels (no two stages share a frame).
 #[test]
@@ -235,7 +235,7 @@ fn sink_all_tabs_modal_and_platform_with_new_pixels() {
 
     // Layout tab (index 1): chips row + effect cards.
     let tabs = find_retained_by_debug(app.host(), "tab-item");
-    assert_eq!(tabs.len(), 4, "four tab buttons mount");
+    assert_eq!(tabs.len(), 5, "five tab buttons mount");
     let b = app.host().committed_box(tabs[1]).expect("tab laid out");
     let html = app
         .click(b.x + b.w / 2.0, b.y + b.h / 2.0)

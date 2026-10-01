@@ -19,6 +19,22 @@ pub struct UiaNode {
     pub checked: Option<bool>,
     pub selected: Option<bool>,
     pub disabled: bool,
+    /// Form-validation marks (decision 352 — G7): `invalid`
+    /// (`IsDataValidForForm`, inverted) and `required`
+    /// (`IsRequiredForForm`). Default off — absent validation emits
+    /// stock-valid, never a silent drop.
+    pub invalid: bool,
+    pub required: bool,
+    /// Error text (decision 352 — G7): `FullDescription` (`""` when
+    /// absent — validators stay app-side, the payload only
+    /// announces).
+    pub error_message: String,
+    /// Numeric range (decision 352 — G18): RangeValue `Value` /
+    /// `Minimum` / `Maximum` (`None` = no value interface — the
+    /// pattern gates on `value_num`, never an invented number).
+    pub value_num: Option<f32>,
+    pub min_value: Option<f32>,
+    pub max_value: Option<f32>,
     pub bounds: (f32, f32, f32, f32),
 }
 
@@ -50,6 +66,17 @@ impl UiaTree {
                     checked: e.semantics.checked,
                     selected: e.semantics.selected,
                     disabled: e.semantics.disabled,
+                    invalid: e.semantics.invalid,
+                    required: e.semantics.required,
+                    error_message: e
+                        .semantics
+                        .error_message
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_string(),
+                    value_num: e.semantics.value_num.map(|n| n.get()),
+                    min_value: e.semantics.min_value.map(|n| n.get()),
+                    max_value: e.semantics.max_value.map(|n| n.get()),
                     bounds: (e.x, e.y, e.w, e.h),
                 },
             );
@@ -128,5 +155,40 @@ mod tests {
             Some(true)
         );
         assert!(tree.get(NodeId::new(2, 0)).is_none());
+    }
+
+    #[test]
+    fn phase36_validation_and_range_mirror() {
+        let mut tree = UiaTree::new();
+        let diff = SemanticsDiff {
+            upserted: vec![
+                entry(
+                    (1, 0),
+                    Semantics::text_field()
+                        .label("Age")
+                        .invalid(true)
+                        .required(true)
+                        .error_message("err-age"),
+                ),
+                entry(
+                    (2, 0),
+                    Semantics::slider()
+                        .label("Volume")
+                        .value_num(50.0)
+                        .min_value(0.0)
+                        .max_value(100.0),
+                ),
+            ],
+            removed: vec![],
+        };
+        tree.apply(&diff, &|_| None);
+        let field = tree.get(NodeId::new(1, 0)).expect("field mirrored");
+        assert!(field.invalid);
+        assert!(field.required);
+        assert_eq!(field.error_message, "err-age");
+        let slider = tree.get(NodeId::new(2, 0)).expect("slider mirrored");
+        assert_eq!(slider.value_num, Some(50.0));
+        assert_eq!(slider.min_value, Some(0.0));
+        assert_eq!(slider.max_value, Some(100.0));
     }
 }

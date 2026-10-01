@@ -222,6 +222,21 @@ impl CpuBackend {
         self.images.remove(&id).is_some()
     }
 
+    /// Deposits one cache entry's pre-decoded pixels (Phase 36 PR4,
+    /// decision 359 — the static image path): pulls `(width, height,
+    /// RGBA8)` from the [`ImageCache`](oppa::ImageCache) and inserts
+    /// (same validation, same premultiplication). Loud when the cache
+    /// holds no pixels for the id (undeposited statics never paint
+    /// placeholders — the RImg refusal moves here, to deposit time).
+    pub fn insert_cached(&mut self, cache: &oppa::ImageCache, id: ImageId) {
+        let Some((width, height, rgba)) = cache.pixels_of(id) else {
+            panic!(
+                "oppa-cpu: insert_cached {id:?}: no pre-decoded pixels in the cache — deposit with insert_pixels first (static pre-decoded only)"
+            );
+        };
+        self.insert_image(id, width, height, rgba);
+    }
+
     pub fn paints_total(&self) -> u64 {
         self.paints_total
     }
@@ -298,6 +313,145 @@ fn paint_of(c: oppa::Color, opacity: f32) -> Paint<'static> {
     p.set_color(ts_color(c, opacity));
     p.anti_alias = true;
     p
+}
+
+/// Box-blurred solid shadow into `target` (Phase 36 PR4, decision
+/// 356): fills the rect solid on a transparent layer, runs two
+/// separable box passes (radius `r` each — the gaussian
+/// approximation the Vello/CSS arms pair with tol-banded, never
+/// pixel-exact), and composites the layer back with `draw_pixmap`.
+/// Returns false when nothing paints (degenerate rect or zero
+/// alpha — quiet, like every other degenerate op).
+#[allow(clippy::too_many_arguments)]
+fn paint_box_blurred_shadow(
+    target: &mut Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    color: oppa::Color,
+    alpha: f32,
+    mask: Option<&tiny_skia::Mask>,
+) -> bool {
+    if w <= 0.0 || h <= 0.0 || alpha <= 0.0 {
+        return false;
+    }
+    let k = radius.ceil().max(1.0) as usize;
+    // Two-pass coverage needs the kernel diameter plus one on every
+    // side (a 3r spread stays inside; larger radii clip the far tail
+    // — stated bound, the oracle bands it).
+    let m = (k * 2 + 1) as i32;
+    let lw = (w.ceil() as i32 + 2 * m).max(1);
+    let lh = (h.ceil() as i32 + 2 * m).max(1);
+    if lw > 4096 || lh > 4096 {
+        panic!(
+            "cpu: blurred shadow layer {lw}x{lh} exceeds the 4096px bound — refused, never silent"
+        );
+    }
+    let Some(mut layer) = Pixmap::new(lw as u32, lh as u32) else {
+        return false;
+    };
+    let fill = {
+        let mut p = Paint::default();
+        p.set_color(ts_color(color, alpha));
+        p.anti_alias = false;
+        p
+    };
+    // Solid rect at the layer origin + margin (integer-aligned: the
+    // layer is a scratch space, snapping here never moves paint).
+    let rx = m;
+    let ry = m;
+    let rw = w.ceil() as i32;
+    let rh = h.ceil() as i32;
+    if let Some(rc) = Rect::from_xywh(rx as f32, ry as f32, rw as f32, rh as f32) {
+        layer.fill_rect(rc, &fill, Transform::identity(), None);
+    }
+    box_blur_in_place(&mut layer, k);
+    box_blur_in_place(&mut layer, k);
+    target.draw_pixmap(
+        x.floor() as i32 - m,
+        y.floor() as i32 - m,
+        layer.as_ref(),
+        &PixmapPaint {
+            opacity: 1.0,
+            ..PixmapPaint::default()
+        },
+        Transform::identity(),
+        mask,
+    );
+    true
+}
+
+/// One separable box-blur pass over premultiplied pixels (sliding
+/// window, edge-extended): radius `k` in device px.
+fn box_blur_in_place(pixmap: &mut Pixmap, k: usize) {
+    let (w, h) = (pixmap.width() as usize, pixmap.height() as usize);
+    if w == 0 || h == 0 || k == 0 {
+        return;
+    }
+    let n = 2 * k + 1;
+    // Horizontal pass.
+    let mut tmp = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let mut acc = [0u32; 4];
+        for dx in 0..n {
+            let sx = dx.min(w - 1).saturating_sub(k);
+            let p = &pixmap.pixels()[y * w + sx.min(w - 1)];
+            acc[0] += p.red() as u32;
+            acc[1] += p.green() as u32;
+            acc[2] += p.blue() as u32;
+            acc[3] += p.alpha() as u32;
+        }
+        for x in 0..w {
+            let o = (y * w + x) * 4;
+            tmp[o] = (acc[0] / n as u32) as u8;
+            tmp[o + 1] = (acc[1] / n as u32) as u8;
+            tmp[o + 2] = (acc[2] / n as u32) as u8;
+            tmp[o + 3] = (acc[3] / n as u32) as u8;
+            let out_x = x.saturating_sub(k);
+            let in_x = (x + k + 1).min(w - 1);
+            let out_p = &pixmap.pixels()[y * w + out_x];
+            let in_p = &pixmap.pixels()[y * w + in_x];
+            acc[0] = acc[0] - out_p.red() as u32 + in_p.red() as u32;
+            acc[1] = acc[1] - out_p.green() as u32 + in_p.green() as u32;
+            acc[2] = acc[2] - out_p.blue() as u32 + in_p.blue() as u32;
+            acc[3] = acc[3] - out_p.alpha() as u32 + in_p.alpha() as u32;
+        }
+    }
+    // Vertical pass (reads horizontal output, writes back).
+    let mut back = vec![0u8; w * h * 4];
+    for x in 0..w {
+        let mut acc = [0u32; 4];
+        let at = |yy: usize| &tmp[(yy * w + x) * 4..(yy * w + x) * 4 + 4];
+        for dy in 0..n {
+            let sy = dy.min(h - 1).saturating_sub(k);
+            let p = at(sy);
+            acc[0] += p[0] as u32;
+            acc[1] += p[1] as u32;
+            acc[2] += p[2] as u32;
+            acc[3] += p[3] as u32;
+        }
+        for y in 0..h {
+            let o = (y * w + x) * 4;
+            back[o] = (acc[0] / n as u32) as u8;
+            back[o + 1] = (acc[1] / n as u32) as u8;
+            back[o + 2] = (acc[2] / n as u32) as u8;
+            back[o + 3] = (acc[3] / n as u32) as u8;
+            let out_y = y.saturating_sub(k);
+            let in_y = (y + k + 1).min(h - 1);
+            let out_p = at(out_y);
+            let in_p = at(in_y);
+            acc[0] = acc[0] - out_p[0] as u32 + in_p[0] as u32;
+            acc[1] = acc[1] - out_p[1] as u32 + in_p[1] as u32;
+            acc[2] = acc[2] - out_p[2] as u32 + in_p[2] as u32;
+            acc[3] = acc[3] - out_p[3] as u32 + in_p[3] as u32;
+        }
+    }
+    for (dst, src) in pixmap.pixels_mut().iter_mut().zip(back.chunks_exact(4)) {
+        *dst = tiny_skia::PremultipliedColorU8::from_rgba(src[0], src[1], src[2], src[3])
+            .unwrap_or(tiny_skia::PremultipliedColorU8::TRANSPARENT);
+    }
 }
 
 /// Pixel inside every active clip rect (all `PushClip`s are rects, so
@@ -663,17 +817,44 @@ fn replay(
                 h,
                 dx,
                 dy,
+                blur_radius,
                 color,
                 ..
             } => {
-                if let Some(rc) = rect_of(x + dx, y + dy, *w, *h) {
-                    surface.pixmap.fill_rect(
-                        rc,
-                        &paint_of(*color, alpha),
-                        Transform::identity(),
+                if *blur_radius <= 0.0 {
+                    // Offset solid (the pre-PR4 shape, pixel-exact).
+                    if let Some(rc) = rect_of(x + dx, y + dy, *w, *h) {
+                        surface.pixmap.fill_rect(
+                            rc,
+                            &paint_of(*color, alpha),
+                            Transform::identity(),
+                            mask_ref,
+                        );
+                        executed += 1;
+                    }
+                } else {
+                    // Box-blurred shadow (Phase 36 PR4, decision 356):
+                    // solid rect into a layer pixmap, two separable box
+                    // passes (horizontal + vertical), composited back.
+                    // Radius in device px; non-finite refuses loudly.
+                    if !blur_radius.is_finite() {
+                        panic!(
+                            "cpu: shadow blur_radius non-finite ({blur_radius}) — never paints silently"
+                        );
+                    }
+                    if paint_box_blurred_shadow(
+                        &mut surface.pixmap,
+                        x + dx,
+                        y + dy,
+                        *w,
+                        *h,
+                        *blur_radius,
+                        *color,
+                        alpha,
                         mask_ref,
-                    );
-                    executed += 1;
+                    ) {
+                        executed += 1;
+                    }
                 }
             }
             DrawOp::Text {

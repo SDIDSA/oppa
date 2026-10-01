@@ -134,6 +134,12 @@ fn boot_shell(
 ) {
     let mut dom = DomBackend::new(1.0);
     dom.set_images(images);
+    // Phase 36 PR3 (decision 355): the browser shapes display text
+    // with the bundled DejaVu bytes — the same bytes the host
+    // measures with — closing the decision-81 display-vs-measure
+    // drift at the page level (residual browser-shaper differences
+    // are stated tolerance, not contract).
+    dom.register_font(oppa_fonts::DEJAVU_SANS_FAMILY, oppa_fonts::DEJAVU_SANS);
     let surface = dom
         .create_surface(oppa::SurfaceDesc {
             width_px: VW as u32,

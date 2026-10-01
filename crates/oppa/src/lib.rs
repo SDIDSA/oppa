@@ -1,7 +1,25 @@
+//! Oppa core: reactive signals → components → retained tree →
+//! layout → display lists → backends (see `docs/ARCHITECTURE.md`;
+//! contracts in `docs/SPEC.md`, state in `docs/STATE.md`).
+//!
+//! Cookbook + styling (G10–G11) live on the control catalog
+//! (`oppa-controls` rustdocs: text-field binding,
+//! `VirtualList`/`Collection` paging, images/menus recipes, plus
+//! the current `ctx.theme()` / `host.set_theme` styling reference
+//! and token table) — one fact lives in one place, linked here,
+//! never copied (Constraint 9).
+//!
+//! App services at a glance: [`fetch`] (pluggable [`Fetcher`](fetch::Fetcher)
+//! with `cancel_fetch` → `Idle`); [`store`] (sync [`KvStore`](store::KvStore),
+//! [`FsSandbox`](store::FsSandbox), [`app_data_dir`] (G23), and write-through
+//! [`Persisted`](store::Persisted)); [`dialog`] (request/poll file dialogs);
+//! [`nav`] (`NavStack` with deep-link syntax plus the BackPress chain).
+
 pub mod arena;
 pub mod clipboard;
 pub mod clock;
 pub mod component;
+pub mod diag;
 pub mod dialog;
 pub mod editing;
 pub mod fetch;
@@ -34,15 +52,19 @@ pub use clipboard::{Clipboard, ClipboardError, InMemoryClipboard};
 pub use clock::{Clock, MockClock, SystemClock};
 pub use component::{
     find_retained_by_debug, BackOutcome, ComponentHost, Ctx, ImageCache, InstanceSnapshot,
-    MountHandle, OpaqueProps, Props, RenderFn, ScrollOffset, Store, Theme, TimerId,
+    MountHandle, OpaqueProps, Props, RenderFn, ScrollOffset, ScrollOffset2D, ScrollXY, Store,
+    Theme, TimerId,
 };
+pub use diag::{LogEntry, LogLevel, RingLog};
 pub use dialog::{
     FileDialog, FileDialogOptions, FileFilter, FilePickerOptions, FolderDialog,
     FolderDialogOptions, PickError, SaveFileDialog, ScriptedDialog, ScriptedFolderDialog,
     ScriptedSaveDialog,
 };
 pub use editing::{EditSession, EditState, PasteOutcome, CARET_BLINK_PERIOD_SECS, EDIT_UNDO_DEPTH};
-pub use fetch::{fetch_key, page_gen_key, page_key, FetchState};
+pub use fetch::{
+    fetch_key, page_gen_key, page_key, ClosureFetcher, FetchState, Fetcher, ScriptedFetcher,
+};
 pub use handlers::{HandlerFn, HandlerId, HandlerRegistry};
 pub use hash::SymbolHash;
 pub use ime::{
@@ -54,9 +76,10 @@ pub use input::{
 };
 pub use interner::{Interner, StyleId};
 pub use layout::{
-    order_visual, scrollbar_max_offset, scrollbar_thumb, LaidCluster, LaidGlyph, LaidLine, LaidRun,
-    LayoutBox, LayoutEngine, LayoutLedger, LayoutStats, LayoutTextConfig, MeasuredText,
-    OrderedCluster, ScrollbarThumb, SCROLLBAR_HIT_PX, SCROLLBAR_MIN_THUMB_PX, SCROLLBAR_TRACK_PX,
+    order_visual, scrollbar_max_offset, scrollbar_thumb, scrollbar_thumb_x, LaidCluster, LaidGlyph,
+    LaidLine, LaidRun, LayoutBox, LayoutEngine, LayoutLedger, LayoutStats, LayoutTextConfig,
+    MeasuredText, OrderedCluster, ScrollbarThumb, ScrollbarThumbX, SCROLLBAR_HIT_PX,
+    SCROLLBAR_MIN_THUMB_PX, SCROLLBAR_TRACK_PX,
 };
 pub use nav::{NavError, NavStack, PopOutcome, ReplaceOutcome, Route};
 pub use pass_mask::PassMask;
@@ -69,15 +92,17 @@ pub use render::{
     SemanticsDiff, SemanticsEntry, SemanticsSnapshot, SurfaceDesc, SurfaceId, CARET_WIDTH_PX, INK,
     SELECTION_FILL,
 };
-pub use semantics::{Role, Semantics};
+pub use semantics::{Num, Role, Semantics};
 pub use shell::{AppLifecycleState, Event, EventKind, PlatformShell};
 pub use store::{
-    Collection, CollectionPage, CollectionQuery, CollectionWriter, FsSandbox, InMemoryFs,
-    InMemoryKv, KvStore, NativeFs, Row, RowFilter, RowId, RowSort, StoreError,
+    app_data_dir, Collection, CollectionPage, CollectionQuery, CollectionWriter, FsSandbox,
+    InMemoryFs, InMemoryKv, KvStore, NativeFs, PersistReport, Persisted, Row, RowFilter, RowId,
+    RowSort, StoreError,
 };
 pub use style::{
-    AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, IntoPx, JustifyContent,
-    LinearGradient, MsExt, Px, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens, Transition,
+    AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack, IntoPx,
+    JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, Px, Shadow,
+    Style, StyleBuilder, ThemeMode, ThemeTokens, Transition,
 };
 pub use system_theme::{ScriptedThemeSource, SystemThemeSource};
 pub use text::{
@@ -87,9 +112,10 @@ pub use text::{
 };
 pub use transition::{ease_at, AnimProp, TransitionEvaluator};
 pub use vnode::{
-    stamp_handler_owner, Children, Column, Custom, Div, Element, ElementBuilder, ImageId, Img,
-    Path, PathSpec, Portal, Row, ScrollArea, SharedString, Stack, StrokeDesc, Tag, Text, TextArea,
-    TextBuilder, TextClass, TextField, VNode,
+    stamp_handler_owner, Canvas, CanvasOp, CanvasSpec, Children, Column, Custom, Div, Element,
+    ElementBuilder, Grid, ImageId, Img, Path, PathSpec, Portal, RichText, Row, ScrollArea,
+    SharedString, Stack, StrokeDesc, Tag, Text, TextArea, TextBuilder, TextClass, TextField,
+    TextSpan, VNode,
 };
 pub use window::{ScriptedWindowControl, WindowCall, WindowControl, WindowIcon};
 pub use worker::{HotGeneration, TaskId, TaskScope, TaskStage, WorkerQueue, WorkerResult};

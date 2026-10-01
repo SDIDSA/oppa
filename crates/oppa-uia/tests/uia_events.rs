@@ -550,6 +550,8 @@ fn toggle_flip_raises_property_changed_through_hwnd() {
             press_at(&host2, center.0, center.1);
         })),
         value_for: None,
+        on_invoke: None,
+        on_set_value: None,
     };
     // Host a LOGGING delegate around the APP ROOT provider: shows
     // exactly which validation calls UIA makes before accepting

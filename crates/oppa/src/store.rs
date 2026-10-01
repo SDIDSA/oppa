@@ -23,16 +23,23 @@
 //!   and joined under the sandbox root — absolute paths and `..`
 //!   refuse loudly as `InvalidPath`. The jail is lexical (symlinks
 //!   inside the sandbox can still point out — documented bound,
-//!   OQ-G5-4), never a silent escape.
+//!   OQ-G5-4), never a silent escape: sandbox roots must be
+//!   canonicalized by the app when link traversal matters
+//!   (`std::fs::canonicalize` at open — the seam checks syntax,
+//!   the OS resolves links, stated split, never conflated).
+//! - **Per-platform roots.** [`app_data_dir`] resolves the OS data
+//!   dir for an app name (`%APPDATA%` on Windows, macOS
+//!   `Library/Application Support`, `$XDG_DATA_HOME` or
+//!   `~/.local/share` elsewhere; wasm refuses loudly — no
+//!   filesystem, `localStorage` covers it). Pair it with
+//!   [`NativeFs`] for the settings/cache home (G23).
 //! - **Loud failures.** [`StoreError`] names every refusal;
 //!   `Backend(String)` carries the OS message. Missing reads are
 //!   `Ok(None)` / `Err(NotFound)` (query, not failure — same split
 //!   as the clipboard's empty-`Ok(None)`).
 //!
-//! Out of scope: network fetch (OQ-G5-5), shell data-dir exposure
-//! (roots are app-chosen `PathBuf`s this round — per-platform
-//! conventions live in the decision doc), symlinks, file locking,
-//! watching.
+//! Out of scope: network fetch (OQ-G5-5), symlinks beyond the
+//! lexical bound above, file locking, watching.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -40,7 +47,7 @@ use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
-use crate::reactive::{untrack, Runtime};
+use crate::reactive::{untrack, Runtime, Signal};
 use crate::worker::TaskScope;
 
 /// Storage failure (loud by construction — see
@@ -237,6 +244,69 @@ impl NativeFs {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Per-platform data dir (G23)
+// ---------------------------------------------------------------------------
+
+/// Resolves the OS app-data dir for `app_name` (G23 — the
+/// settings/cache home to pair with [`NativeFs`]).
+///
+/// Conventions (no new deps — `std::env` only):
+/// Windows reads `%APPDATA%`, macOS joins
+/// `~/Library/Application Support`, other native targets read
+/// `$XDG_DATA_HOME` else `~/.local/share`. wasm refuses loudly
+/// ([`StoreError::Unsupported`] — no filesystem there;
+/// `localStorage` covers it, stated).
+///
+/// `app_name` is a single path segment (empty names, separators,
+/// drive prefixes, and `..` refuse loudly as `InvalidKey` —
+/// a jail escape at the root would defeat [`FsSandbox`]).
+/// Missing home variables surface as `Backend` (environment
+/// failure, never a silent fallback dir).
+pub fn app_data_dir(app_name: &str) -> Result<PathBuf, StoreError> {
+    if app_name.is_empty() {
+        return Err(StoreError::InvalidKey(app_name.to_string()));
+    }
+    if app_name.contains(['/', '\\'])
+        || app_name.contains("..")
+        || Path::new(app_name).is_absolute()
+        || app_name.contains(':')
+    {
+        return Err(StoreError::InvalidKey(app_name.to_string()));
+    }
+    if cfg!(target_arch = "wasm32") {
+        return Err(StoreError::Unsupported("app_data_dir on wasm"));
+    }
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| StoreError::Backend("APPDATA is not set".to_string()))?
+    } else if cfg!(target_os = "macos") {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| StoreError::Backend("HOME is not set".to_string()))?;
+        home.join("Library/Application Support")
+    } else {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            let xdg = PathBuf::from(xdg);
+            if xdg.is_absolute() {
+                xdg
+            } else {
+                return Err(StoreError::InvalidKey(format!(
+                    "XDG_DATA_HOME is not absolute: {}",
+                    xdg.display()
+                )));
+            }
+        } else {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or_else(|| StoreError::Backend("HOME is not set".to_string()))?;
+            home.join(".local/share")
+        }
+    };
+    Ok(base.join(app_name))
+}
+
 impl FsSandbox for NativeFs {
     fn read(&self, path: &str) -> Result<Vec<u8>, StoreError> {
         let full = jailed(&self.root, path)?;
@@ -346,7 +416,29 @@ struct CollectionState<T> {
     values: Rc<RefCell<HashMap<RowId, T>>>,
     slots: Rc<RefCell<HashMap<RowId, crate::reactive::Signal<Option<T>>>>>,
     next_id: u64,
+    /// Write-through persistence hook (Phase 37b, decision 364):
+    /// installed by [`Collection::persist`], fired by
+    /// [`CollectionState::note_write`] after every mutation path
+    /// (ingest/update/update_row/remove/clear, writer submits,
+    /// fetch-page applies — the state level catches them all,
+    /// never one method's twin). `None` is the unpersisted norm.
+    persister: Option<Rc<PersistHook<T>>>,
 }
+
+/// One collection's write-through hook: snapshot under `key` after
+/// every mutation (shared through the state — every handle on the
+/// key writes through the same hook, last install wins).
+struct PersistHook<T> {
+    key: String,
+    encode: EncodeRows<T>,
+    store: Rc<RefCell<dyn KvStore>>,
+}
+
+/// Row-snapshot encoder (whole collection, commit order → bytes).
+type EncodeRows<T> = Rc<dyn Fn(&[T]) -> Vec<u8>>;
+
+/// Value encoder (one persisted signal value → bytes).
+type EncodeValue<T> = Rc<dyn Fn(&T) -> Vec<u8>>;
 
 impl<T> Default for CollectionState<T> {
     fn default() -> Self {
@@ -355,6 +447,7 @@ impl<T> Default for CollectionState<T> {
             values: Rc::new(RefCell::new(HashMap::new())),
             slots: Rc::new(RefCell::new(HashMap::new())),
             next_id: 0,
+            persister: None,
         }
     }
 }
@@ -372,6 +465,34 @@ impl<T: Clone> CollectionState<T> {
             out.push(Row { id, value });
         }
         out
+    }
+
+    /// Fires the write-through hook after a mutation (Phase 37b):
+    /// snapshots values in commit order, encodes, stores. A store
+    /// failure panics loudly (silent loss is never an option —
+    /// the in-memory rows stay, so the panic names the key and the
+    /// retry is the next mutation).
+    fn note_write(&self) {
+        let Some(hook) = self.persister.clone() else {
+            return;
+        };
+        let values = self.values.borrow();
+        let ordered: Vec<T> = self
+            .order
+            .iter()
+            .filter_map(|id| values.get(id).cloned())
+            .collect();
+        drop(values);
+        let bytes = (hook.encode)(&ordered);
+        hook.store
+            .borrow_mut()
+            .set(&hook.key, bytes)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "collection write-through on {:?} failed: {e} — refused, never silent loss",
+                    hook.key
+                )
+            });
     }
 }
 
@@ -435,6 +556,7 @@ impl<T: Clone + 'static> Collection<T> {
         let mut out = Vec::new();
         self.signal().update(|mut s| {
             out = s.ingest(values);
+            s.note_write();
             s
         });
         out
@@ -456,6 +578,7 @@ impl<T: Clone + 'static> Collection<T> {
                 }
                 hit = true;
             }
+            s.note_write();
             s
         });
         hit
@@ -485,6 +608,7 @@ impl<T: Clone + 'static> Collection<T> {
                 .clone()
         };
         slot.set(Some(value));
+        state.note_write();
         true
     }
 
@@ -523,6 +647,7 @@ impl<T: Clone + 'static> Collection<T> {
                     slot.set(None);
                 }
             }
+            s.note_write();
             s
         });
         hit
@@ -537,6 +662,7 @@ impl<T: Clone + 'static> Collection<T> {
             for (_, slot) in s.slots.borrow_mut().drain() {
                 slot.set(None);
             }
+            s.note_write();
             s
         });
     }
@@ -623,17 +749,69 @@ impl<T: Clone + 'static> Collection<T> {
         rt.keyed_state::<CollectionState<T>>(key, CollectionState::default)
             .update(|mut s| {
                 out = s.ingest(rows).into_iter().map(|r| r.id).collect();
+                s.note_write();
                 s
             });
         out
     }
+
+    /// Write-through persistence for a collection (Phase 37b,
+    /// decision 364): seeds from `store` under `key` when this
+    /// collection is empty (fresh boot — row ids re-mint, values
+    /// survive; identity never crosses a restart, stated), then
+    /// installs the write-through hook (every later mutation —
+    /// ingest/update/remove/clear, writer submits, fetch-page
+    /// applies — snapshots values in commit order through
+    /// `encode`). Reinstalls replace (last wins, stated).
+    ///
+    /// Backend read failures return `Err` loudly (nothing seeds —
+    /// the collection stays as it was). Corrupt snapshots seed
+    /// empty (`decode` is infallible — authors map corruption to
+    /// `vec![]`; the bytes are replaced on the next write,
+    /// last-writer-wins, stated).
+    pub fn persist(
+        &self,
+        key: &str,
+        encode: impl Fn(&[T]) -> Vec<u8> + 'static,
+        decode: impl Fn(&[u8]) -> Vec<T> + 'static,
+        store: Rc<RefCell<dyn KvStore>>,
+    ) -> Result<PersistReport, StoreError> {
+        let mut seeded_rows = 0usize;
+        if self.is_empty() {
+            if let Some(bytes) = store.borrow().get(key)? {
+                let rows = decode(&bytes);
+                seeded_rows = rows.len();
+                // Persister installs after (seeding never
+                // writes back — no echo, no error mask).
+                self.ingest(rows);
+            }
+        }
+        let hook = PersistHook {
+            key: key.to_string(),
+            encode: Rc::new(encode),
+            store,
+        };
+        self.signal().update(|mut s| {
+            s.persister = Some(Rc::new(hook));
+            s
+        });
+        Ok(PersistReport { seeded_rows })
+    }
+}
+
+/// What one [`Collection::persist`] call seeded (plain data —
+/// test-assertable, never a silent empty).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PersistReport {
+    /// Rows decoded from the store (0 = no snapshot, or corrupt —
+    /// see `persist`).
+    pub seeded_rows: usize,
 }
 
 /// Keep predicate over row payloads (shared alias — the query
 /// struct and the control props name one type, never two
 /// spellings of the same closure).
 pub type RowFilter<T> = Rc<dyn Fn(&T) -> bool>;
-
 /// Stable ordering over row payloads (applied after filtering).
 pub type RowSort<T> = Rc<dyn Fn(&T, &T) -> std::cmp::Ordering>;
 
@@ -683,9 +861,77 @@ impl CollectionWriter {
             rt.keyed_state::<CollectionState<T>>(key, CollectionState::default)
                 .update(|mut s| {
                     s.ingest(rows);
+                    s.note_write();
                     s
                 });
         });
+    }
+}
+
+/// Signal-backed persisted value (Phase 37b, decision 364):
+/// reads track through the inner signal (bodies render it like any
+/// state); writes go to the signal AND the store synchronously
+/// (write-through — a crash loses nothing committed). Created per
+/// run through [`Ctx::persisted`](crate::component::Ctx::persisted)
+/// (cheap handle clone — the signal persists in the instance).
+#[derive(Clone)]
+pub struct Persisted<T: Clone + 'static> {
+    signal: Signal<T>,
+    key: String,
+    store: Rc<RefCell<dyn KvStore>>,
+    encode: EncodeValue<T>,
+}
+
+impl<T: Clone + 'static> Persisted<T> {
+    /// Builds the handle (see
+    /// [`Ctx::persisted`](crate::component::Ctx::persisted) — bodies
+    /// never call this directly; the seed discipline lives there).
+    pub fn new(
+        signal: Signal<T>,
+        key: &str,
+        encode: impl Fn(&T) -> Vec<u8> + 'static,
+        store: Rc<RefCell<dyn KvStore>>,
+    ) -> Self {
+        Self {
+            signal,
+            key: key.to_string(),
+            store,
+            encode: Rc::new(encode),
+        }
+    }
+
+    /// Tracked read (subscribes like the inner signal).
+    pub fn get(&self) -> T {
+        self.signal.get()
+    }
+
+    /// Write-through set: signal first, then the store. A store
+    /// failure panics loudly (data loss is never silent — the
+    /// signal already holds the value, so the panic names the key
+    /// and the backend error, and the next run re-reads the
+    /// in-memory value).
+    pub fn set(&self, value: T) {
+        let bytes = (self.encode)(&value);
+        self.signal.set(value);
+        self.store
+            .borrow_mut()
+            .set(&self.key, bytes)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "persisted set on {:?} failed: {e} — refused, never silent loss",
+                    self.key
+                )
+            });
+    }
+
+    /// The inner signal (effect wiring, snapshots — same value).
+    pub fn signal(&self) -> Signal<T> {
+        self.signal.clone()
+    }
+
+    /// The store key (diagnostics).
+    pub fn key(&self) -> &str {
+        &self.key
     }
 }
 
@@ -1000,5 +1246,262 @@ mod tests {
         assert_eq!(slot.get(), Some("A".to_string()));
         assert_eq!(c.lookup(rows[0].id), Some("A".to_string()));
         assert!(!c.update(RowId(99), "z".to_string()));
+    }
+
+    /// Phase 37b (decision 364): `persisted_string` writes through
+    /// (signal + store agree synchronously), reseeds across hosts
+    /// from the same store (fresh boot reads committed values), and
+    /// falls back to initial with a `Warn` diagnostic on corrupt
+    /// bytes (boot never crashes on bad settings).
+    #[test]
+    fn persisted_string_writes_through_and_reseeds() {
+        use crate::component::{ComponentHost, Ctx, Props};
+        use crate::vnode::{Div, VNode};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        #[derive(Clone)]
+        struct PersistProbe {
+            store: Rc<RefCell<dyn KvStore>>,
+            stash: Rc<RefCell<Option<Persisted<String>>>>,
+        }
+        impl Props for PersistProbe {}
+        fn persist_render(ctx: &Ctx, p: &PersistProbe) -> VNode {
+            // The store handle is app-owned (props); the seed
+            // discipline (store wins when present and decodable)
+            // lives in `persisted_string`.
+            let handle = ctx.persisted_string("theme", "light", p.store.clone());
+            *p.stash.borrow_mut() = Some(handle);
+            Div("probe").build()
+        }
+        let store: Rc<RefCell<dyn KvStore>> = Rc::new(RefCell::new(InMemoryKv::new()));
+        let stash: Rc<RefCell<Option<Persisted<String>>>> = Rc::new(RefCell::new(None));
+        let host = ComponentHost::new();
+        host.mount(
+            "Persist",
+            PersistProbe {
+                store: store.clone(),
+                stash: stash.clone(),
+            },
+            persist_render,
+        );
+        host.run_until_idle();
+        let handle = stash.borrow().clone().expect("handle");
+        assert_eq!(handle.get(), "light", "empty store seeds initial");
+        handle.set("dark".to_string());
+        assert_eq!(
+            store.borrow().get("theme").expect("reads"),
+            Some(b"dark".to_vec()),
+            "write-through hits the store synchronously"
+        );
+        // Fresh boot (new host, same store) reseeds committed values.
+        let stash2: Rc<RefCell<Option<Persisted<String>>>> = Rc::new(RefCell::new(None));
+        let host2 = ComponentHost::new();
+        host2.mount(
+            "Persist",
+            PersistProbe {
+                store: store.clone(),
+                stash: stash2.clone(),
+            },
+            persist_render,
+        );
+        host2.run_until_idle();
+        assert_eq!(
+            stash2.borrow().clone().expect("handle").get(),
+            "dark",
+            "reseed reads committed values"
+        );
+        // Corrupt bytes fall back with a Warn (never a crash).
+        store
+            .borrow_mut()
+            .set("theme", vec![0xFF, 0xFE])
+            .expect("writes");
+        let stash3: Rc<RefCell<Option<Persisted<String>>>> = Rc::new(RefCell::new(None));
+        let host3 = ComponentHost::new();
+        host3.mount(
+            "Persist",
+            PersistProbe {
+                store: store.clone(),
+                stash: stash3.clone(),
+            },
+            persist_render,
+        );
+        host3.run_until_idle();
+        assert_eq!(
+            stash3.borrow().clone().expect("handle").get(),
+            "light",
+            "corrupt seeds initial"
+        );
+        assert_eq!(host3.diag_len(), 1, "fallback is observable");
+        let warns = host3.take_diag_logs(crate::diag::LogLevel::Warn);
+        assert_eq!(warns.len(), 1);
+        assert!(warns[0].message.contains("undecodable"));
+    }
+
+    /// Phase 37b: failing stores refuse loudly on write (never
+    /// silent loss — the signal holds the value, the panic names
+    /// the key).
+    #[test]
+    #[should_panic(expected = "persisted set")]
+    fn persisted_write_failure_panics_loudly() {
+        use crate::component::ComponentHost;
+        struct FailKv;
+        impl KvStore for FailKv {
+            fn get(&self, _key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+                Ok(None)
+            }
+            fn set(&mut self, _key: &str, _value: Vec<u8>) -> Result<(), StoreError> {
+                Err(StoreError::Backend("disk gone".to_string()))
+            }
+            fn remove(&mut self, _key: &str) -> Result<(), StoreError> {
+                Ok(())
+            }
+            fn clear(&mut self) -> Result<(), StoreError> {
+                Ok(())
+            }
+        }
+        let store: Rc<RefCell<dyn KvStore>> = Rc::new(RefCell::new(FailKv));
+        let host = ComponentHost::new();
+        let sig = host.runtime().signal("v".to_string());
+        let persisted = Persisted::new(sig, "k", |s: &String| s.as_bytes().to_vec(), store);
+        persisted.set("w".to_string());
+    }
+
+    /// Phase 37b (decision 364): collections seed from the store on
+    /// a fresh runtime (ids re-mint, values survive) and write
+    /// through every mutation path (ingest/update/remove/clear);
+    /// corrupt snapshots seed empty and are replaced on the next
+    /// write (last-writer-wins, stated).
+    #[test]
+    fn collection_persist_seeds_and_writes_through() {
+        use crate::component::ComponentHost;
+        let encode = |rows: &[String]| rows.join("\n").into_bytes();
+        let decode = |bytes: &[u8]| {
+            String::from_utf8(bytes.to_vec())
+                .map(|s| {
+                    if s.is_empty() {
+                        Vec::new()
+                    } else {
+                        s.split('\n').map(|r| r.to_string()).collect()
+                    }
+                })
+                .unwrap_or_default()
+        };
+        let store: Rc<RefCell<dyn KvStore>> = Rc::new(RefCell::new(InMemoryKv::new()));
+        let host = ComponentHost::new();
+        let c: Collection<String> = Collection::new(
+            &host.runtime(),
+            crate::fetch::fetch_key("test:persist-coll"),
+        );
+        let report = c
+            .persist("tasks", encode, decode, store.clone())
+            .expect("persists");
+        assert_eq!(report.seeded_rows, 0, "no snapshot seeds nothing");
+        c.ingest(vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            store.borrow().get("tasks").expect("reads"),
+            Some(b"a\nb".to_vec()),
+            "ingest writes through"
+        );
+        let rows = c.rows();
+        assert!(c.update(rows[0].id, "A".to_string()));
+        assert_eq!(
+            store.borrow().get("tasks").expect("reads"),
+            Some(b"A\nb".to_vec()),
+            "update writes through"
+        );
+        assert!(c.remove(rows[1].id));
+        assert_eq!(
+            store.borrow().get("tasks").expect("reads"),
+            Some(b"A".to_vec()),
+            "remove writes through"
+        );
+        c.clear();
+        assert_eq!(
+            store.borrow().get("tasks").expect("reads"),
+            Some(Vec::new()),
+            "clear writes through (empty snapshot, not deletion)"
+        );
+        // Fresh runtime, same store: values reseed (ids re-mint).
+        let host2 = ComponentHost::new();
+        store
+            .borrow_mut()
+            .set("tasks", b"x\ny".to_vec())
+            .expect("writes");
+        let c2: Collection<String> = Collection::new(
+            &host2.runtime(),
+            crate::fetch::fetch_key("test:persist-coll"),
+        );
+        let report2 = c2
+            .persist("tasks", encode, decode, store.clone())
+            .expect("persists");
+        assert_eq!(report2.seeded_rows, 2);
+        assert_eq!(
+            c2.rows()
+                .iter()
+                .map(|r| r.value.clone())
+                .collect::<Vec<_>>(),
+            vec!["x".to_string(), "y".to_string()],
+            "values survive, ids re-mint"
+        );
+        // Corrupt snapshots seed empty (bytes replaced on next write).
+        store
+            .borrow_mut()
+            .set("tasks", vec![0xFF, 0xFE])
+            .expect("writes");
+        let host3 = ComponentHost::new();
+        let c3: Collection<String> = Collection::new(
+            &host3.runtime(),
+            crate::fetch::fetch_key("test:persist-coll"),
+        );
+        let report3 = c3
+            .persist("tasks", encode, decode, store.clone())
+            .expect("persists");
+        assert_eq!(report3.seeded_rows, 0, "corrupt seeds empty");
+        assert!(c3.is_empty());
+        c3.ingest(vec!["z".to_string()]);
+        assert_eq!(
+            store.borrow().get("tasks").expect("reads"),
+            Some(b"z".to_vec()),
+            "next write replaces corrupt bytes"
+        );
+    }
+
+    /// Phase 38d (decision 373, G23): app names that could escape
+    /// the root refuse before any env is read (no env writes here —
+    /// validation is env-free, so parallel tests stay deterministic).
+    #[test]
+    fn app_data_dir_refuses_root_escapes() {
+        assert_eq!(app_data_dir(""), Err(StoreError::InvalidKey(String::new())));
+        for bad in [
+            "a/b",
+            "a\\b",
+            "..",
+            "../evil",
+            "a/../evil",
+            "/abs",
+            "C:/x",
+            "C:",
+        ] {
+            assert_eq!(
+                app_data_dir(bad),
+                Err(StoreError::InvalidKey(bad.to_string())),
+                "{bad:?} must not become a root segment"
+            );
+        }
+    }
+
+    /// Phase 38d (decision 373, G23): the resolved dir ends with
+    /// the app name (env reads only — no mutation, so parallel
+    /// tests stay deterministic; home variables are set on every
+    /// native target, wasm refuses by cfg and never runs here).
+    #[test]
+    fn app_data_dir_ends_with_app_name() {
+        let dir = app_data_dir("oppa-probe").expect("data dir resolves natively");
+        assert_eq!(
+            dir.file_name().and_then(|s| s.to_str()),
+            Some("oppa-probe"),
+            "the app name is the final segment: {}",
+            dir.display()
+        );
     }
 }

@@ -56,12 +56,24 @@ box), **manual** (ran once by hand, follow the steps exactly),
   wasm32-unknown-unknown -p <app>`, then `wasm-bindgen --target web`
   (CLI pinned 0.2.128 to match the lockfile, machine-local install),
   serve the app dir (raw `python -m http.server` suffices). `web/pkg/`
-  (17 MB generated bundle) is deliberately untracked — regenerate
-  per above, never commit.
-- **Offline skeleton (manual recipe):** [`packaging/web/sw.js`](../../packaging/web/sw.js)
-  (cache-first for `index.html` + `bootstrap.js` + `pkg/`,
-  versioned `CACHE` bump per release) + the one-line
-  `serviceWorker.register` in `bootstrap.js`. Verify by hand:
+  (generated bundle) is deliberately untracked — regenerate
+  per above, never commit. Verified on this box 2026-10-01
+  (`hello-web`): raw `hello_web.wasm` 3,445,522 bytes (~3.29 MiB);
+  `wasm-bindgen 0.2.128` emits `pkg/hello_web.js` (28,550) +
+  `pkg/hello_web_bg.wasm` (2,835,099, ~2.70 MiB) — ~2.87 MB total
+  served shell (the old 17 MB figure is superseded by this
+  weighing; budget follow-ups ride real app growth from here).
+- **PWA shell (proven wiring, manual offline pass):**
+  `templates/hello-web/web/` ships `manifest.json` (name, shell
+  colors, `standalone` display — icons are app branding, none
+  ships) + `sw.js` (cache-first for `index.html` + `manifest.json`
+  + `bootstrap.js` + `pkg/`, versioned `CACHE` bump per release,
+  bundle names following the package stem through `cargo oppa
+  new`) with the one-line `serviceWorker.register` in the
+  template `bootstrap.js` and the manifest link in `index.html`.
+  The dev rig (`crates/oppa-web/web/`) links its own manifest for
+  smoke but registers no worker (it stays network-fresh by
+  design — stale caches would mask dev builds). Verify by hand:
   build, serve over http(s) (workers refuse `file://`), load once
   online, reload offline — the app boots. No background-update or
   push story (open); version is the Cargo version baked at build time.
@@ -70,14 +82,28 @@ box), **manual** (ran once by hand, follow the steps exactly),
 
 - **Blessed (proven):** `cargo build --release` — a single exe
   (shell + backends statically linked; no runtime deps beyond the OS).
+  Verified on this box 2026-10-01: `cargo build --release -p
+  cargo-oppa` → `target/release/cargo-oppa.exe`, 203,776 bytes,
+  prints its usage (loud refusal on bad subcommands — the gate
+  below ran against this exact binary).
+- **Tarball (proven mechanics):** standard `tar` over the release
+  exe — verified on this box 2026-10-01 (`bsdtar 3.8.8`):
+  `tar -czf cargo-oppa-win64.tar.gz cargo-oppa.exe` → 95,959
+  bytes, `tar -tzf` lists the exe cleanly. Same mechanics wrap an
+  app exe (Linux `tar` is the same format story — GNU vs bsdtar
+  interop is the platform's, not new framework code).
 - **Version resource (manual recipe):**
   [`packaging/windows/hello.rc`](../../packaging/windows/hello.rc)
   (`VS_VERSION_INFO` tracking the Cargo version; `rc hello.rc` →
   link the `.res` via `cargo:rustc-link-arg` in a `build.rs`).
   Icons: add an `IDI_ICON1 ICON "app.ico"` line once you have your
   own `.ico` — none ships (app branding, not framework code).
-- Installer story (**open**): no MSIX/MSI automation exists; use
-  standard tooling when needed. Version is the Cargo version.
+  `rc.exe` is absent on this box, so the compile step stays a
+  recipe, not a verified output.
+- Installer story (**open**): no MSIX/MSI automation exists
+  (`msiexec.exe` is only the install engine — authoring needs
+  tooling this box does not have); use standard tooling when
+  needed. Version is the Cargo version.
 
 ## Linux
 
@@ -88,8 +114,10 @@ box), **manual** (ran once by hand, follow the steps exactly),
   [`packaging/linux/deb-metadata.toml.example`](../../packaging/linux/deb-metadata.toml.example)
   (copy the `[package.metadata.deb]` block into your app's
   `Cargo.toml`; binary + [`hello.desktop`](../../packaging/linux/hello.desktop)
-  payload) + `cargo deb`. Tarball wrapping stays standard tooling
-  (open, no recipe).
+  payload) + `cargo deb`. No `cargo-deb`/`dpkg` on this box, so the
+  wrap step stays a recipe, not a verified output.
+- Tarball wrapping: standard `tar` (mechanics proven — see the
+  Windows tarball verification above; same format story).
 - Dev-env note (this box): WSL stops distros between calls (keep
   background children alive with sleeps/PS jobs); Wayland+WSLg kills
   winit clients ~1s after map (environmental, Weston RDP rail) — the

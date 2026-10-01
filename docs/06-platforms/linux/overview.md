@@ -3,7 +3,7 @@
 Status: shell + text slice current (v1 remainder, Gap 4); AT-SPI
 emitter layer current, live-bus closed (M10/v1-closure). Sources:
 `12-archive/DESIGN.md` §§6, 8; `12-archive/BUILD-ORDER.md`
-(M4/M10); `04-planning/state.md` §7; `04-planning/rounds.md`.
+(M4/M10); [`STATE.md`](../../STATE.md).
 
 - **Framework behavior:** full pipeline ownership; Vello GPU backend
   + CPU fallback, same as Windows.

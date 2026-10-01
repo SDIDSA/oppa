@@ -26,6 +26,17 @@ use std::sync::Arc;
 /// the Slider announcement shape).
 /// Decision 337 adds Status for the Toast control: label (the
 /// message), no states — announced politely, never focused.
+/// Decision 352 (Phase 36 PR1) adds Tree + TreeItem for the Tree
+/// control (expanded/selected signals, chevrons, arrow keys) and
+/// MenuItem for menu rows (migrated off `ListItem` so AT-action
+/// patterns attach to the real affordance: Invoke on UIA,
+/// `menu item` on DOM/AT-SPI).
+/// Decision 352 (Phase 36 PR1) adds form-validation + numeric-range
+/// payload state (G7/G18): `invalid`/`required`/`error_message`
+/// (validators stay app-side; the payload only announces) and
+/// `value_num`/`min_value`/`max_value` (the numeric half of the
+/// Slider/ProgressBar announcement — `value_text` stays the human
+/// half; backends expose both, never one silently).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Role {
     #[default]
@@ -52,6 +63,41 @@ pub enum Role {
     TabList,
     ComboBox,
     ProgressBar,
+    /// Expandable hierarchy container (Phase 36 PR1, decision 352):
+    /// the Tree control's root. Label (+ `disabled`); no
+    /// checked/selected/value states on the container itself — each
+    /// row carries `TreeItem` (see [`Semantics::tree_item`]).
+    Tree,
+    /// Hierarchy row (Phase 36 PR1, decision 352): label +
+    /// `.selected(state)` (+ `disabled`); expansion rides the
+    /// UIA ExpandCollapse pattern and `aria-expanded` on DOM
+    /// (driven by the control's expanded signal — no payload bool,
+    /// so visual state cannot drift from announced state).
+    TreeItem,
+    /// Menu row (Phase 36 PR1, decision 352): label (+ `disabled`);
+    /// the MenuItem control carries it (migrated off `ListItem`).
+    /// Activation is the press handler, exposed as UIA Invoke and
+    /// AT-SPI `click` — the first role beyond Button with an
+    /// Invoke-class action.
+    MenuItem,
+}
+
+/// Numeric range value as exact f32 bits (the [`Px`](crate::style::Px)
+/// precedent: styles hash by exact bits so payloads stay
+/// `Eq + Hash`). Slider/ProgressBar bounds (`min_value`/`max_value`)
+/// and current (`value_num`) — the machine half of the range
+/// announcement (`value_text` stays the human half).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct Num(u32);
+
+impl Num {
+    pub fn of(v: f32) -> Self {
+        Self(v.to_bits())
+    }
+
+    pub fn get(self) -> f32 {
+        f32::from_bits(self.0)
+    }
 }
 
 /// Inline semantics payload: `.semantics(Semantics::switch()...)`.
@@ -69,6 +115,27 @@ pub struct Semantics {
     /// zero-dependency (no float-to-exact-decimal story — the control
     /// formats the text, the payload carries it opaquely).
     pub value_text: Option<Arc<str>>,
+    /// Form-validation state (Phase 36 PR1, decision 352 — G7): the
+    /// control sets these from its `invalid`/`required` props;
+    /// validators stay app-side, the payload only announces.
+    /// `invalid` renders `aria-invalid` (+ AT-SPI `invalid` state,
+    /// UIA `IsRequiredForForm` stays on `required` — no field shares
+    /// another's fate). `error_message` names the error node
+    /// (`aria-errormessage` on DOM; accessible description
+    /// elsewhere). Both default off/empty — absent optionals emit
+    /// nothing, like every other payload field.
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<Arc<str>>,
+    /// Numeric range bounds (Phase 36 PR1, decision 352 — G18):
+    /// `value_num` is the current value, `min_value`/`max_value`
+    /// the bounds (DOM `aria-valuenow/min/max`, UIA RangeValue,
+    /// AT-SPI Value). `None` emits nothing — the human half
+    /// (`value_text`) keeps working alone, and text-less numeric
+    /// payloads never invent a human string.
+    pub value_num: Option<Num>,
+    pub min_value: Option<Num>,
+    pub max_value: Option<Num>,
 }
 
 impl Semantics {
@@ -233,8 +300,85 @@ impl Semantics {
         }
     }
 
+    /// Tree-container payload (Phase 36 PR1, decision 352): label
+    /// (+ `disabled`); the Tree control's root carries it. No
+    /// checked/selected/value states on the container — each row
+    /// carries [`Semantics::tree_item`].
+    pub fn tree() -> Self {
+        Self {
+            role: Role::Tree,
+            ..Self::default()
+        }
+    }
+
+    /// Tree-row payload (Phase 36 PR1, decision 352):
+    /// `.selected(state)` + label (+ `disabled`); expansion rides
+    /// the UIA ExpandCollapse pattern / DOM `aria-expanded` off the
+    /// control's expanded signal — never a payload bool, so visual
+    /// state cannot drift from announced state.
+    pub fn tree_item(selected: bool) -> Self {
+        Self {
+            role: Role::TreeItem,
+            selected: Some(selected),
+            ..Self::default()
+        }
+    }
+
+    /// Menu-row payload (Phase 36 PR1, decision 352): label (+
+    /// `disabled`); the MenuItem control carries it. Activation is
+    /// the press handler (UIA Invoke / AT-SPI `click`).
+    pub fn menu_item() -> Self {
+        Self {
+            role: Role::MenuItem,
+            ..Self::default()
+        }
+    }
+
     pub fn value_text(mut self, v: &str) -> Self {
         self.value_text = Some(Arc::from(v));
+        self
+    }
+
+    /// Form-validation mark (Phase 36 PR1, decision 352 — G7):
+    /// failed validation; pairs with [`Semantics::error_message`].
+    pub fn invalid(mut self, v: bool) -> Self {
+        self.invalid = v;
+        self
+    }
+
+    /// Form-validation mark (Phase 36 PR1, decision 352 — G7):
+    /// the field must be filled before submit.
+    pub fn required(mut self, v: bool) -> Self {
+        self.required = v;
+        self
+    }
+
+    /// Form-validation mark (Phase 36 PR1, decision 352 — G7): the
+    /// error node's identity (DOM `aria-errormessage`; accessible
+    /// description on other legs). Validators stay app-side.
+    pub fn error_message(mut self, v: &str) -> Self {
+        self.error_message = Some(Arc::from(v));
+        self
+    }
+
+    /// Numeric current value (Phase 36 PR1, decision 352 — G18):
+    /// DOM `aria-valuenow`, UIA RangeValue `Value`, AT-SPI Value
+    /// current. Pairs with [`Semantics::min_value`] /
+    /// [`Semantics::max_value`]; `value_text` stays the human half.
+    pub fn value_num(mut self, v: f32) -> Self {
+        self.value_num = Some(Num::of(v));
+        self
+    }
+
+    /// Numeric range floor (Phase 36 PR1, decision 352 — G18).
+    pub fn min_value(mut self, v: f32) -> Self {
+        self.min_value = Some(Num::of(v));
+        self
+    }
+
+    /// Numeric range ceiling (Phase 36 PR1, decision 352 — G18).
+    pub fn max_value(mut self, v: f32) -> Self {
+        self.max_value = Some(Num::of(v));
         self
     }
 }
@@ -278,5 +422,46 @@ mod tests {
         let p = Semantics::progressbar("68 percent").label("Storage");
         assert_eq!(p.role, Role::ProgressBar);
         assert_eq!(p.value_text.as_deref(), Some("68 percent"));
+    }
+
+    #[test]
+    fn phase36_tree_menuitem_shapes() {
+        let t = Semantics::tree().label("Files");
+        assert_eq!(t.role, Role::Tree);
+        assert_eq!(t.label.as_deref(), Some("Files"));
+        let ti = Semantics::tree_item(true).label("src");
+        assert_eq!((ti.role, ti.selected), (Role::TreeItem, Some(true)));
+        let m = Semantics::menu_item().label("Copy").disabled(true);
+        assert_eq!(m.role, Role::MenuItem);
+        assert!(m.disabled);
+    }
+
+    #[test]
+    fn phase36_validation_and_range_shapes() {
+        let s = Semantics::text_field()
+            .label("Age")
+            .invalid(true)
+            .required(true)
+            .error_message("err-age");
+        assert!(s.invalid);
+        assert!(s.required);
+        assert_eq!(s.error_message.as_deref(), Some("err-age"));
+        // Absent by default — no noise for plain fields.
+        let plain = Semantics::text_field();
+        assert!(!plain.invalid);
+        assert!(!plain.required);
+        assert_eq!(plain.error_message, None);
+        assert_eq!(plain.value_num, None);
+        let r = Semantics::slider()
+            .label("Volume")
+            .value_text("50 percent")
+            .value_num(50.0)
+            .min_value(0.0)
+            .max_value(100.0);
+        assert_eq!(r.value_num, Some(Num::of(50.0)));
+        assert_eq!(r.min_value, Some(Num::of(0.0)));
+        assert_eq!(r.max_value, Some(Num::of(100.0)));
+        // Bit-exact round-trip (the Px precedent).
+        assert_eq!(r.value_num.expect("set").get(), 50.0);
     }
 }

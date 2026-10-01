@@ -123,8 +123,30 @@ pub enum HtmlKind {
         /// CSS-px view size (`viewBox="0 0 w h"`).
         view: (f32, f32),
     },
+    /// Inline `<svg>` with retained children (Phase 36 PR4, decision
+    /// 358 — the `Tag::Canvas` leaf; void, sized by geometry like
+    /// `<img>`). `inner` is the pre-rendered shape markup (rects,
+    /// paths, texts in authoring px, 1:1 like `Vector`); laid canvas
+    /// text does NOT double-render as spans (the node carries no text
+    /// payload — `text_runs` slices empty, so spans stay empty).
+    Canvas {
+        /// Escaped-at-render inner SVG markup (built at derive).
+        inner: String,
+        /// CSS-px view size (`viewBox="0 0 w h"`).
+        view: (f32, f32),
+    },
     /// Marked hole (`div[data-external]`, Custom id carried).
     External(u64),
+}
+
+/// One text run inside a DOM element (Phase 36 PR3): the fallback
+/// family, the run text, and the span ink as `#rrggbb` (`None` =
+/// inherit — no `color:` declaration, the node's own ink wins).
+#[derive(Clone, PartialEq, Debug)]
+pub struct DomRun {
+    pub family: String,
+    pub ink: Option<String>,
+    pub text: String,
 }
 
 /// One DOM element (presenter-side, keyed by [`NodeId`]).
@@ -140,8 +162,12 @@ pub struct DomElement {
     pub inline_font: String,
     /// Span content / input value (raw; escaped at render).
     pub text: String,
-    /// Per-run `(family, text)` segmentation (fallback runs → inner spans).
-    pub runs: Vec<(String, String)>,
+    /// Per-run segmentation (fallback runs → inner spans): family
+    /// plus the run text plus the span ink (`None` = inherit — the
+    /// node's own ink, the `resolve_ink` rule). Phase 36 PR3 merges
+    /// on `(family, ink)` so multi-ink paragraphs render one `<span>`
+    /// per ink run with an honest `color:` declaration.
+    pub runs: Vec<DomRun>,
     /// ARIA + foreign attributes (deterministic order).
     pub attrs: Vec<(String, String)>,
     /// Retained child order (fields: empty — absorbed).
@@ -177,6 +203,13 @@ pub struct DomElement {
     /// `transition:none` for exactly that commit, so recycled slots
     /// never phantom-animate on Web either.
     pub no_transition: bool,
+    /// Stepped keyframe values (Phase 36 PR4, decision 357): the live
+    /// keyframe track's evaluated `background-color`/`opacity`,
+    /// re-declared inline every frame while the track runs (the Q4
+    /// stepped path — plain tweens keep the CSS mapping and leave
+    /// this empty). Empty when no keyframe track is live (unkeyframed
+    /// markup byte-identical).
+    pub inline_kf: String,
 }
 
 /// Per-sync accounting (the static-frame instrument).
@@ -500,6 +533,21 @@ pub struct DomBackend {
     /// nodes, never thousands).
     snap: HashMap<NodeId, DomElement>,
     snap_roots: Vec<NodeId>,
+    /// Registered web fonts (Phase 36 PR3, decision 355): family →
+    /// raw sfnt bytes, served to the page as `@font-face` data URIs
+    /// so the browser shapes with the same bytes the framework
+    /// measured with (decision-81 parity). Re-registering a family
+    /// replaces its bytes (last wins, stated).
+    fonts: Vec<(String, Vec<u8>)>,
+    /// Keyframe tracker for the stepped path (Phase 36 PR4, decision
+    /// 357): fed per diff by the paint hook (same diffs, same order
+    /// as the host evaluator — deterministic twins), sampled at
+    /// `kf_now` during derive. Plain tweens never consult it (they
+    /// keep the CSS mapping).
+    kf_eval: oppa::TransitionEvaluator,
+    /// Frame time of the last tracked commit (the hook's clock —
+    /// track and sample share it, never skew).
+    kf_now: f64,
 }
 
 impl DomBackend {
@@ -524,6 +572,9 @@ impl DomBackend {
             last_patched_theme: Some(ThemeMode::Light),
             snap: HashMap::new(),
             snap_roots: Vec::new(),
+            fonts: Vec::new(),
+            kf_eval: oppa::TransitionEvaluator::new(),
+            kf_now: 0.0,
         }
     }
 
@@ -536,6 +587,43 @@ impl DomBackend {
     /// retained id resolves).
     pub fn set_images(&mut self, images: ImageCache) {
         self.images = images;
+    }
+
+    /// Registers one web font (Phase 36 PR3, decision 355): the
+    /// browser serves `family` from these sfnt bytes (data-URI
+    /// `@font-face`, see [`DomBackend::font_face_css`]) — the same
+    /// bytes the framework measured with, closing the decision-81
+    /// display-vs-measure drift. Re-registering a family replaces
+    /// its bytes (last wins). Empty bytes refuse loudly (a packaging
+    /// bug, never a silent fallback).
+    pub fn register_font(&mut self, family: &str, ttf_bytes: &[u8]) {
+        if ttf_bytes.is_empty() {
+            panic!(
+                "dom: register_font({family}) with empty bytes — refused, never a silent fallback"
+            );
+        }
+        if let Some(slot) = self.fonts.iter_mut().find(|(f, _)| f == family) {
+            slot.1 = ttf_bytes.to_vec();
+        } else {
+            self.fonts.push((family.to_string(), ttf_bytes.to_vec()));
+        }
+    }
+
+    /// `@font-face` CSS for every registered font (Phase 36 PR3):
+    /// one block per family, bytes inline as base64 data URIs
+    /// (emitted once per page boot, never per patch — the page shell
+    /// injects it before any text renders). Empty with no fonts
+    /// (unregistered trees render exactly as before).
+    pub fn font_face_css(&self) -> String {
+        let mut out = String::new();
+        for (family, bytes) in &self.fonts {
+            out.push_str(&format!(
+                "@font-face{{font-family:\"{}\";src:url(data:font/ttf;base64,{}) format(\"truetype\");}}\n",
+                family.replace('"', ""),
+                base64_encode(bytes),
+            ));
+        }
+        out
     }
 
     pub fn element(&self, id: NodeId) -> Option<&DomElement> {
@@ -619,16 +707,23 @@ impl DomBackend {
             // Round 4.4: image sources must resolve (unregistered or
             // id-less images refuse loudly here — the old blanket
             // refusal naming the exact node instead of failing the
-            // whole sync silently later).
+            // whole sync silently later). Phase 36 PR4: pre-decoded
+            // cache pixels resolve too (static path — a key OR pixels
+            // satisfies the gate; derive prefers pixels).
             if node.tag == Tag::Image
                 && node
                     .image
-                    .and_then(|image_id| self.images.key_of(image_id))
+                    .and_then(|image_id| {
+                        self.images
+                            .pixels_of(image_id)
+                            .map(|_| ())
+                            .or_else(|| self.images.key_of(image_id).map(|_| ()))
+                    })
                     .is_none()
             {
                 return Err(BackendError::UnsupportedOp(format!(
-                    "Image on {id:?} (image {:?}): no cache key — register the source \
-                     with ImageCache::load first (hand-built Image elements carry \
+                    "Image on {id:?} (image {:?}): no cache key or pixels — register the source \
+                     with ImageCache::load (URLs) or insert_pixels (statics) first (hand-built Image elements carry \
                      nothing to resolve)",
                     node.image
                 )));
@@ -714,7 +809,10 @@ impl DomBackend {
                 let holder = placeholder_attr(&el.placeholder);
                 format!(
                     "<input type=\"text\" data-pid=\"{pid}\"{class} style=\"{}\" value=\"{}\"{holder}{}>{}",
-                    esc(&format!("{}{}{}", el.inline_geom, el.inline_font, no_trans)),
+                    esc(&format!(
+                        "{}{}{}{}",
+                        el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                    )),
                     esc(&el.text),
                     attrs,
                     self.render_decorations(el),
@@ -724,7 +822,10 @@ impl DomBackend {
                 let holder = placeholder_attr(&el.placeholder);
                 format!(
                     "<textarea data-pid=\"{pid}\"{class} style=\"{}\"{holder}{attrs}>{}</textarea>{}",
-                    esc(&format!("{}{}{}", el.inline_geom, el.inline_font, no_trans)),
+                    esc(&format!(
+                        "{}{}{}{}",
+                        el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                    )),
                     esc(&el.text),
                     self.render_decorations(el),
                 )
@@ -733,7 +834,7 @@ impl DomBackend {
                 let spacer = self.render_spacer(el);
                 format!(
                     "<div data-pid=\"{pid}\"{class} style=\"{}overflow:auto;\"{}>{spacer}</div>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans)),
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf)),
                     attrs
                 )
             }
@@ -747,7 +848,7 @@ impl DomBackend {
                 // special cases).
                 format!(
                     "<img data-pid=\"{pid}\"{class} style=\"{}\" src=\"{}\" alt=\"{}\"{attrs}>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans)),
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf)),
                     esc(src),
                     esc(alt),
                 )
@@ -770,7 +871,7 @@ impl DomBackend {
                     .unwrap_or_default();
                 format!(
                     "<svg data-pid=\"{pid}\"{class} style=\"{}\" viewBox=\"0 0 {} {}\"{attrs}><path d=\"{}\" fill=\"{fill}\" stroke=\"{stroke}\"{stroke_w} stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans)),
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf)),
                     css_num(view.0),
                     css_num(view.1),
                     esc(data),
@@ -780,26 +881,41 @@ impl DomBackend {
                 let inner = self.render_children(el);
                 format!(
                     "<div data-pid=\"{pid}\"{class} style=\"{}\" data-external=\"custom:{cid}\"{attrs}>{inner}</div>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans))
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf))
                 )
             }
             HtmlKind::Text => {
                 // Own content first, then framework children (the
                 // Text-wrapper shape: hint-only parents contribute no
-                // text of their own, payload children do).
+                // text of their own, payload children do). Live
+                // keyframe values ride inline (the stepped path).
                 let mut inner = self.render_runs(el);
                 inner.push_str(&self.render_children(el));
                 format!(
-                    "<span data-pid=\"{pid}\"{class} style=\"{}{}\"{attrs}>{inner}</span>",
+                    "<span data-pid=\"{pid}\"{class} style=\"{}{}{}\"{attrs}>{inner}</span>",
                     esc(&el.inline_geom),
-                    esc(&el.inline_font)
+                    esc(&el.inline_font),
+                    esc(&el.inline_kf)
+                )
+            }
+            HtmlKind::Canvas { inner, view } => {
+                // Retained canvas (decision 358): pre-rendered inner
+                // SVG at the committed box (void — no children).
+                format!(
+                    "<svg data-pid=\"{pid}\"{class} style=\"{}\" viewBox=\"0 0 {} {}\"{attrs}>{inner}</svg>",
+                    esc(&format!(
+                        "{}{}{}{}",
+                        el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                    )),
+                    css_num(view.0),
+                    css_num(view.1),
                 )
             }
             HtmlKind::Block => {
                 let inner = self.render_children(el);
                 format!(
                     "<div data-pid=\"{pid}\"{class} style=\"{}\"{attrs}>{inner}</div>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans))
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf))
                 )
             }
         }
@@ -1059,27 +1175,36 @@ impl DomBackend {
         let no_trans = transition_inline(el);
         let (style, mut attrs, value) = match &el.kind {
             HtmlKind::Field => (
-                format!("{}{}{}", el.inline_geom, el.inline_font, no_trans),
+                format!(
+                    "{}{}{}{}",
+                    el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                ),
                 el.attrs.clone(),
                 Some(el.text.clone()),
             ),
             HtmlKind::Area => (
-                format!("{}{}{}", el.inline_geom, el.inline_font, no_trans),
+                format!(
+                    "{}{}{}{}",
+                    el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                ),
                 el.attrs.clone(),
                 Some(el.text.clone()),
             ),
             HtmlKind::Scroll => (
-                format!("{}{}overflow:auto;", el.inline_geom, no_trans),
+                format!(
+                    "{}{}{}overflow:auto;",
+                    el.inline_geom, no_trans, el.inline_kf
+                ),
                 el.attrs.clone(),
                 None,
             ),
             HtmlKind::Text => (
-                format!("{}{}", el.inline_geom, el.inline_font),
+                format!("{}{}{}", el.inline_geom, el.inline_font, el.inline_kf),
                 el.attrs.clone(),
                 None,
             ),
             _ => (
-                format!("{}{}", el.inline_geom, no_trans),
+                format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf),
                 el.attrs.clone(),
                 None,
             ),
@@ -1186,15 +1311,22 @@ impl DomBackend {
     }
 
     fn render_runs(&self, el: &DomElement) -> String {
-        if el.runs.len() <= 1 {
+        // Plain text fast path: at most one run and no span ink (an
+        // inked single run still needs its `<span>` — otherwise the
+        // color drops silently).
+        if el.runs.len() <= 1 && el.runs.iter().all(|r| r.ink.is_none()) {
             return esc(&el.text);
         }
         let mut out = String::new();
-        for (family, text) in &el.runs {
+        for run in &el.runs {
+            let mut style = format!("font-family:{};", css_family(&run.family));
+            if let Some(ink) = &run.ink {
+                style.push_str(&format!("color:{ink};"));
+            }
             out.push_str(&format!(
                 "<span style=\"{}\">{}</span>",
-                esc(&format!("font-family:{};", css_family(family))),
-                esc(text)
+                esc(&style),
+                esc(&run.text)
             ));
         }
         out
@@ -1267,11 +1399,15 @@ impl DomBackend {
                 // Round 4.4: real `<img>` (src resolved — `sync`
                 // refuses unregistered ids loudly before derive, so
                 // the lookup below cannot miss; alt honors the
-                // semantics label, else empty).
+                // semantics label, else empty). Phase 36 PR4
+                // (decision 359): pre-decoded cache pixels win over
+                // the key string (data-URI PNG — the static path);
+                // bare keys keep rendering as URLs (round-4.4 rule,
+                // unchanged).
                 Tag::Image => {
                     let src = node
                         .image
-                        .and_then(|image_id| self.images.key_of(image_id))
+                        .and_then(|image_id| image_src(&self.images, image_id))
                         .expect("sync refused unregistered images");
                     let alt = node
                         .semantics
@@ -1331,7 +1467,30 @@ impl DomBackend {
                         view: (vw, vh),
                     }
                 }
-                Tag::Div | Tag::Row | Tag::Column | Tag::Stack | Tag::Portal => HtmlKind::Block,
+                // Retained canvas (Phase 36 PR4, decision 358): the spec
+                // lowers to inline SVG children (rects/paths/texts in
+                // authoring px, 1:1 like `Vector`). Laid canvas text
+                // does NOT double-render as spans (the node carries no
+                // text payload — `text_runs` slices empty). Missing
+                // specs refuse loudly (never a silent hole).
+                Tag::Canvas => {
+                    let spec = node.canvas.clone().unwrap_or_else(|| {
+                        panic!("dom sync: Canvas node {id:?} without a canvas payload — refused, never a silent hole")
+                    });
+                    let dpr = self.dpr.max(f32::EPSILON);
+                    let (vw, vh) = node
+                        .layout
+                        .as_ref()
+                        .map(|b| (b.w / dpr, b.h / dpr))
+                        .unwrap_or((0.0, 0.0));
+                    HtmlKind::Canvas {
+                        inner: canvas_inner_svg(&spec),
+                        view: (vw, vh),
+                    }
+                }
+                Tag::Div | Tag::Row | Tag::Column | Tag::Stack | Tag::Portal | Tag::Grid => {
+                    HtmlKind::Block
+                }
             }
         };
         let is_root = rec.root() == Some(id);
@@ -1395,16 +1554,30 @@ impl DomBackend {
                 let (text, runs, font) = text_runs(rec, id, self.dpr);
                 (text, runs, font, String::new())
             }
+            HtmlKind::Canvas { .. } => {
+                // Canvas `<text>` inherits the element font (the
+                // `text_runs` pattern — family + size from the first
+                // laid line; the node carries no text payload).
+                (
+                    String::new(),
+                    Vec::new(),
+                    canvas_font(rec, id, self.dpr),
+                    String::new(),
+                )
+            }
             _ => (String::new(), Vec::new(), String::new(), String::new()),
         };
         let children = match &kind {
-            // Inputs, areas, images, and vectors are void-shaped (value/text
-            // content/src/`d` carry the payload); external holes keep
-            // their framework children (v1 hole is a marked box, not
-            // a true void element — stated).
-            HtmlKind::Field | HtmlKind::Area | HtmlKind::Image { .. } | HtmlKind::Vector { .. } => {
-                Vec::new()
-            }
+            // Inputs, areas, images, vectors, and canvases are
+            // void-shaped (value/text content/src/`d`/spec carry the
+            // payload); external holes keep their framework children
+            // (v1 hole is a marked box, not a true void element —
+            // stated).
+            HtmlKind::Field
+            | HtmlKind::Area
+            | HtmlKind::Image { .. }
+            | HtmlKind::Vector { .. }
+            | HtmlKind::Canvas { .. } => Vec::new(),
             _ => node
                 .children
                 .iter()
@@ -1422,6 +1595,20 @@ impl DomBackend {
         let (caret_rect, caret_ink) = match self.caret_decoration(id, origin) {
             Some((r, hex)) => (Some(r), hex),
             None => (None, String::new()),
+        };
+        // Stepped keyframe values (Phase 36 PR4): the live track's
+        // evaluated paint, re-declared inline while it runs (empty
+        // otherwise — unkeyframed markup byte-identical).
+        let inline_kf = match self.kf_eval.resolve_keyframe(id, self.kf_now) {
+            Some((bg, op)) => {
+                let mut s = String::new();
+                if let Some(c) = bg {
+                    s.push_str(&format!("background-color:{};", dom_hex(c)));
+                }
+                s.push_str(&format!("opacity:{};", css_num(op)));
+                s
+            }
+            None => String::new(),
         };
         DomElement {
             node: id,
@@ -1442,6 +1629,7 @@ impl DomBackend {
             // the touched set of the sync that consumed it (see above),
             // so the flag clears on the next re-derive by comparison.
             no_transition: false,
+            inline_kf,
         }
     }
 
@@ -1473,6 +1661,27 @@ impl DomBackend {
     /// The current page-chrome theme (diagnostics/tests).
     pub fn theme_mode(&self) -> ThemeMode {
         self.theme
+    }
+
+    /// Feeds committed diffs to the keyframe tracker (Phase 36 PR4,
+    /// decision 357): the paint hook calls this every frame with the
+    /// frame's diffs (possibly none) — settling runs unconditionally
+    /// so diff-less animation frames still retire tracks (otherwise
+    /// stepped values would stick past the settle), then each diff
+    /// tracks in order with the frame clock. Same diffs, same order,
+    /// same clock as the host evaluator — deterministic twins.
+    pub fn track_animation(
+        &mut self,
+        diffs: &[oppa::TreeDiff],
+        rec: &oppa::Reconciler,
+        styles: &oppa::interner::Interner<oppa::Style>,
+        now: f64,
+    ) {
+        self.kf_eval.settle(now);
+        for diff in diffs {
+            self.kf_eval.track_commit(diff, rec, styles, now);
+        }
+        self.kf_now = now;
     }
 
     /// Caret bar decoration for the field `id` itself (Round 15.1):
@@ -1586,6 +1795,31 @@ fn positioned_origin(rec: &Reconciler, id: NodeId) -> (f32, f32) {
     (0.0, 0.0)
 }
 
+/// Measured font style for a canvas element (Phase 36 PR4): family +
+/// size from the first laid line's first run (the `text_runs`
+/// pattern) — canvas `<text>` inherits it. Empty when nothing laid
+/// (no text ops, or unmeasured — never an invented family).
+fn canvas_font(rec: &Reconciler, id: NodeId, dpr: f32) -> String {
+    let Some(n) = rec.get(id) else {
+        return String::new();
+    };
+    let lines = n.layout.as_ref().map(|b| b.lines.as_slice()).unwrap_or(&[]);
+    let Some(line) = lines.first() else {
+        return String::new();
+    };
+    let Some(run) = line.runs.first() else {
+        return String::new();
+    };
+    if line.em_size <= 0.0 {
+        return String::new();
+    }
+    format!(
+        "font-family:{};font-size:{}px;",
+        css_family(&run.family),
+        css_num(line.em_size / dpr.max(f32::EPSILON))
+    )
+}
+
 /// Measured font style for a verdict-(b) input (family + size from
 /// the value-carrying descendant's committed lines): the input renders
 /// the framework-measured text, so caret geometry and IME anchoring
@@ -1674,20 +1908,117 @@ fn placeholder_attr(hint: &str) -> String {
     }
 }
 
+/// Canvas spec → inner SVG markup (Phase 36 PR4, decision 358):
+/// rects/paths lower directly (authoring px, 1:1 like `Vector`);
+/// text ops lower to `<text>` with their size/fill at the op origin
+/// (family inherits the element's inline font — see `derive`,
+/// which seeds it from the first laid line, the `text_runs`
+/// pattern). Pure over the spec (headless-testable).
+fn canvas_inner_svg(spec: &oppa::CanvasSpec) -> String {
+    use oppa::CanvasOp;
+    let mut out = String::new();
+    for op in &spec.ops {
+        match op {
+            CanvasOp::Rect { x, y, w, h, color } => {
+                out.push_str(&format!(
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>",
+                    css_num(x.get()),
+                    css_num(y.get()),
+                    css_num(w.get()),
+                    css_num(h.get()),
+                    dom_hex(*color),
+                ));
+            }
+            CanvasOp::RRect {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                color,
+            } => {
+                out.push_str(&format!(
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" fill=\"{}\"/>",
+                    css_num(x.get()),
+                    css_num(y.get()),
+                    css_num(w.get()),
+                    css_num(h.get()),
+                    css_num(radius.get()),
+                    dom_hex(*color),
+                ));
+            }
+            CanvasOp::Path { data, fill, stroke } => {
+                out.push_str(&format!(
+                    "<path d=\"{}\" fill=\"{}\" stroke=\"{}\"{} stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+                    esc(data),
+                    fill.map(dom_hex).unwrap_or_else(|| "none".to_string()),
+                    stroke.map(|s| dom_hex(s.color)).unwrap_or_else(|| "none".to_string()),
+                    stroke.map(|s| format!(" stroke-width=\"{}\"", css_num(s.width))).unwrap_or_default(),
+                ));
+            }
+            CanvasOp::Text {
+                text,
+                size_px,
+                ink,
+                x,
+                y,
+                ..
+            } => {
+                out.push_str(&format!(
+                    "<text x=\"{}\" y=\"{}\" font-size=\"{}\" fill=\"{}\">{}</text>",
+                    css_num(x.get()),
+                    css_num(y.get()),
+                    css_num(*size_px as f32),
+                    dom_hex(*ink),
+                    esc(text),
+                ));
+            }
+        }
+    }
+    out
+}
 /// Span content + per-run segmentation + measured font style for a text
 /// node: the OWN payload runs through the committed lines' byte ranges
 /// (the layout's segmentation, never re-measured here). Wrapper Text
 /// nodes (hint, no payload — the `Text`-struct shape) render their
 /// children only, never the descendant string again (duplicating it
 /// would double content and dirty parents on every value change).
-fn text_runs(rec: &Reconciler, id: NodeId, dpr: f32) -> (String, Vec<(String, String)>, String) {
+fn text_runs(rec: &Reconciler, id: NodeId, dpr: f32) -> (String, Vec<DomRun>, String) {
     let Some(n) = rec.get(id) else {
         return (String::new(), Vec::new(), String::new());
     };
     let payload: String = n.text.clone().map(|t| t.to_string()).unwrap_or_default();
     let lines = n.layout.as_ref().map(|b| b.lines.as_slice()).unwrap_or(&[]);
     let em = lines.first().map(|l| l.em_size).unwrap_or(0.0);
-    let mut runs: Vec<(String, String)> = Vec::new();
+    let runs = merge_text_runs(lines, &payload);
+    let text = if runs.is_empty() {
+        payload
+    } else {
+        runs.iter()
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    let inline_font = if em > 0.0 {
+        let family = runs.first().map(|r| r.family.clone()).unwrap_or_default();
+        format!(
+            "font-family:{};font-size:{}px;white-space:pre;",
+            css_family(&family),
+            css_num(em / dpr.max(f32::EPSILON))
+        )
+    } else {
+        String::new()
+    };
+    (text, runs, inline_font)
+}
+
+/// Merges committed line runs into render runs (Phase 36 PR3):
+/// slices the payload by each non-empty run's byte range, joins
+/// consecutive same-`(family, ink)` runs back into one `<span>`
+/// (fallback boundaries split, and so do span-ink boundaries).
+/// Pure over lines + payload (headless-testable, never re-measured).
+fn merge_text_runs(lines: &[oppa::LaidLine], payload: &str) -> Vec<DomRun> {
+    let mut runs: Vec<DomRun> = Vec::new();
     for line in lines {
         for run in &line.runs {
             if run.glyphs.is_empty() {
@@ -1700,31 +2031,20 @@ fn text_runs(rec: &Reconciler, id: NodeId, dpr: f32) -> (String, Vec<(String, St
             if slice.is_empty() {
                 continue;
             }
+            let ink = run.ink.map(dom_hex);
             match runs.last_mut() {
-                Some(last) if last.0 == run.family => last.1.push_str(&slice),
-                _ => runs.push((run.family.clone(), slice)),
+                Some(last) if last.family == run.family && last.ink == ink => {
+                    last.text.push_str(&slice)
+                }
+                _ => runs.push(DomRun {
+                    family: run.family.clone(),
+                    ink,
+                    text: slice,
+                }),
             }
         }
     }
-    let text = if runs.is_empty() {
-        payload
-    } else {
-        runs.iter()
-            .map(|(_, t)| t.as_str())
-            .collect::<Vec<_>>()
-            .join("")
-    };
-    let inline_font = if em > 0.0 {
-        let family = runs.first().map(|(f, _)| f.clone()).unwrap_or_default();
-        format!(
-            "font-family:{};font-size:{}px;white-space:pre;",
-            css_family(&family),
-            css_num(em / dpr.max(f32::EPSILON))
-        )
-    } else {
-        String::new()
-    };
-    (text, runs, inline_font)
+    runs
 }
 
 /// Absolute geometry inline style. Root = relative container (no
@@ -1817,6 +2137,46 @@ fn css_num(v: f32) -> String {
     } else {
         format!("{v}")
     }
+}
+
+/// Image `src` resolution (round 4.4 + Phase 36 PR4, decision 359):
+/// pre-decoded cache pixels win as a PNG data URI (static path);
+/// otherwise the cache key renders as the URL (round-4.4 rule);
+/// `None` when the cache knows neither (refuse loudly downstream).
+/// Pure over the cache (headless-testable — no retained reads).
+fn image_src(images: &oppa::ImageCache, id: oppa::ImageId) -> Option<String> {
+    images
+        .pixels_of(id)
+        .and_then(|(w, h, rgba)| oppa_image::encode_png_rgba(w, h, &rgba).ok())
+        .map(|png| format!("data:image/png;base64,{}", base64_encode(&png)))
+        .or_else(|| images.key_of(id))
+}
+
+/// Minimal base64 encoder (Phase 36 PR3): standard alphabet, `=`
+/// padding — just enough for `@font-face` data URIs, kept inline so
+/// the backend adds no dependency for one call site.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let mut n: u32 = 0;
+        for (i, b) in chunk.iter().enumerate() {
+            n |= (*b as u32) << (16 - 8 * i);
+        }
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// Hex fill/stroke for vector paths (the stylesheet's `fmt_hex`
@@ -1915,6 +2275,7 @@ impl RendererBackend for DomBackend {
                             caret_rect: None,
                             caret_ink: String::new(),
                             no_transition: false,
+                            inline_kf: String::new(),
                         },
                     );
                     match parent {
@@ -2018,5 +2379,211 @@ impl RendererBackend for DomBackend {
 impl Default for DomBackend {
     fn default() -> Self {
         Self::new(1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_encodes_rfc_vectors() {
+        assert_eq!(super::base64_encode(b""), "");
+        assert_eq!(super::base64_encode(b"f"), "Zg==");
+        assert_eq!(super::base64_encode(b"fo"), "Zm8=");
+        assert_eq!(super::base64_encode(b"foo"), "Zm9v");
+        assert_eq!(super::base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(super::base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(super::base64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(super::base64_encode(&[0x00, 0x01, 0x00, 0x00]), "AAEAAA==");
+    }
+
+    #[test]
+    fn register_font_replaces_and_emits_face_once_per_family() {
+        let mut dom = DomBackend::new(1.0);
+        assert_eq!(dom.font_face_css(), "", "unregistered trees emit nothing");
+        dom.register_font("DejaVu Sans", &[0x00, 0x01, 0x00, 0x00]);
+        let css = dom.font_face_css();
+        assert!(
+            css.contains("@font-face") && css.contains("DejaVu Sans"),
+            "face block names the family: {css}"
+        );
+        assert!(
+            css.contains("data:font/ttf;base64,AAEAAA=="),
+            "bytes ride a data URI: {css}"
+        );
+        // Re-registering replaces (last wins — one block per family).
+        dom.register_font("DejaVu Sans", &[0x01, 0x02, 0x03]);
+        assert_eq!(dom.font_face_css().matches("@font-face").count(), 1);
+        assert!(dom.font_face_css().contains("AQID"));
+    }
+
+    #[test]
+    #[should_panic(expected = "empty bytes")]
+    fn register_font_refuses_empty_bytes() {
+        DomBackend::new(1.0).register_font("DejaVu Sans", &[]);
+    }
+
+    #[test]
+    fn render_page_carries_registered_faces_in_style() {
+        use crate::css::StyleSheet;
+        let mut dom = DomBackend::new(1.0);
+        dom.register_font("DejaVu Sans", &[0x00, 0x01, 0x00, 0x00]);
+        let sheet = StyleSheet::new(1.0);
+        let page = crate::page::render_page("t", &dom, &sheet);
+        assert!(
+            page.contains("@font-face") && page.contains("DejaVu Sans"),
+            "full pages carry the face blocks"
+        );
+    }
+
+    #[test]
+    fn inked_runs_render_color_spans_and_merge_like_kinds() {
+        // Direct DomRun coverage (the `text_runs` merge rule):
+        // same (family, ink) joins; ink splits; None inherits.
+        let el = DomElement {
+            node: oppa::NodeId::new(1, 0),
+            kind: HtmlKind::Block,
+            classes: Vec::new(),
+            inline_geom: String::new(),
+            inline_font: String::new(),
+            text: "ab".to_string(),
+            runs: vec![DomRun {
+                family: "DejaVu Sans".to_string(),
+                ink: Some("#ff0000".to_string()),
+                text: "ab".to_string(),
+            }],
+            attrs: Vec::new(),
+            children: Vec::new(),
+            spacer_h: None,
+            sel_rects: Vec::new(),
+            caret_rect: None,
+            caret_ink: String::new(),
+            placeholder: String::new(),
+            no_transition: false,
+            inline_kf: String::new(),
+        };
+        let dom = DomBackend::new(1.0);
+        let html = dom.render_runs(&el);
+        assert!(
+            html.contains("<span") && html.contains("color:#ff0000;") && html.contains(">ab<"),
+            "single inked run keeps its span: {html}"
+        );
+        // Plain single run stays bare text (no span noise).
+        let plain = DomElement {
+            runs: Vec::new(),
+            text: "ab".to_string(),
+            ..el.clone()
+        };
+        assert_eq!(dom.render_runs(&plain), "ab");
+    }
+
+    fn laid_run(bytes: (usize, usize), family: &str, ink: Option<oppa::Color>) -> oppa::LaidRun {
+        oppa::LaidRun {
+            byte_range: bytes,
+            rtl: false,
+            glyphs: vec![oppa::LaidGlyph {
+                glyph_id: 0,
+                x: 0.0,
+                x_advance: 5.0,
+            }],
+            font_id: oppa::FontId(0),
+            family: family.to_string(),
+            ink,
+        }
+    }
+
+    fn laid_line(runs: Vec<oppa::LaidRun>) -> oppa::LaidLine {
+        oppa::LaidLine {
+            y: 0.0,
+            height: 16.0,
+            baseline: 12.0,
+            em_size: 16.0,
+            width: 10.0,
+            runs,
+            clusters: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn merge_text_runs_splits_ink_and_joins_like_kinds() {
+        use oppa::Color;
+        let red = Some(Color(0xFF_00_00));
+        let lines = vec![laid_line(vec![
+            laid_run((0, 1), "DejaVu Sans", red),
+            laid_run((1, 2), "DejaVu Sans", red),
+            laid_run((2, 3), "DejaVu Sans", None),
+        ])];
+        let runs = super::merge_text_runs(&lines, "abc");
+        assert_eq!(runs.len(), 2, "same-ink joins, ink splits: {runs:?}");
+        assert_eq!(runs[0].text, "ab");
+        assert_eq!(runs[0].ink, Some("#ff0000".to_string()));
+        assert_eq!(runs[1].text, "c");
+        assert_eq!(runs[1].ink, None, "None inherits");
+        // Family boundaries split even with matching ink.
+        let lines = vec![laid_line(vec![
+            laid_run((0, 1), "DejaVu Sans", red),
+            laid_run((1, 2), "Noto", red),
+        ])];
+        let runs = super::merge_text_runs(&lines, "ab");
+        assert_eq!(runs.len(), 2, "family splits: {runs:?}");
+        // Empty-glyph runs never render.
+        let mut empty = laid_run((0, 1), "DejaVu Sans", red);
+        empty.glyphs.clear();
+        let lines = vec![laid_line(vec![empty])];
+        assert!(super::merge_text_runs(&lines, "a").is_empty());
+    }
+
+    #[test]
+    fn image_src_prefers_pixels_then_falls_back_to_key() {
+        use oppa::ImageCache;
+        let cache = ImageCache::new();
+        // Bare key (round-4.4 rule, unchanged).
+        let url = cache.load("img/a.png");
+        assert_eq!(super::image_src(&cache, url).as_deref(), Some("img/a.png"));
+        // Deposited pixels win as a PNG data URI (decision 359).
+        let rgba = vec![255u8; 2 * 2 * 4];
+        let id = cache.insert_pixels("dot", 2, 2, rgba);
+        let src = super::image_src(&cache, id).expect("data uri");
+        assert!(
+            src.starts_with("data:image/png;base64,"),
+            "data uri scheme, got {}",
+            &src[..32]
+        );
+        // Unknown ids resolve to nothing (refuse loudly downstream).
+        assert_eq!(super::image_src(&cache, oppa::ImageId(999)), None);
+    }
+
+    #[test]
+    fn canvas_spec_lowers_to_svg_shapes() {
+        use oppa::{CanvasOp, CanvasSpec, Px};
+        let spec = CanvasSpec {
+            ops: vec![
+                CanvasOp::Rect {
+                    x: Px::of(1.0),
+                    y: Px::of(2.0),
+                    w: Px::of(10.0),
+                    h: Px::of(5.0),
+                    color: oppa::Color(0xFF_00_00),
+                },
+                CanvasOp::Text {
+                    text: "hi".into(),
+                    size_px: 14,
+                    weight: oppa::FontWeight::NORMAL,
+                    ink: oppa::Color(0x00_00_00),
+                    x: Px::of(0.0),
+                    y: Px::of(12.0),
+                },
+            ],
+        };
+        let svg = super::canvas_inner_svg(&spec);
+        assert!(
+            svg.contains("<rect") && svg.contains("fill=\"#ff0000\""),
+            "rect lowers with fill: {svg}"
+        );
+        assert!(
+            svg.contains("<text") && svg.contains(">hi<") && svg.contains("font-size=\"14\""),
+            "text lowers with size: {svg}"
+        );
     }
 }

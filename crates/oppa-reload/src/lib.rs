@@ -26,6 +26,32 @@
 //! headless harness the fuzzer and most tests drive. [`DylibSource`]
 //! performs real `LoadLibrary` swaps (retired images stay mapped —
 //! see above).
+//!
+//! ## Recipe: reload your hello-desktop (G9)
+//!
+//! 1. **Split the app.** Move component bodies into a hot crate
+//!    (a `cdylib` + a normal lib target); the host crate keeps
+//!    `main`, the `ComponentHost`, and the runner. Hot crates hold
+//!    no ambient state (the `#[hot_crate]` lint refuses `static`s —
+//!    state lives in signals/props, which is exactly what survives
+//!    the swap).
+//!
+//! 2. **Export the manifest.** `component_manifest![export,
+//!    Counter(CounterProps)]` emits `oppa_component_manifest` —
+//!    the symbol [`DylibSource`] looks up. Monomorphized generics
+//!    spell `Name::<A>(P<A>)` (one entry per instantiation).
+//!
+//! 3. **Drive the loop.** Boot the host, `HotRegistry::install`
+//!    the manifest source, run frames; on rebuild, swap sources —
+//!    the six steps above run inside the RELOAD phase. The
+//!    `app_loop` example is this loop runnable
+//!    (`cargo run -p oppa-reload --example app_loop`).
+//!
+//! 4. **Keep the rules.** Same symbols across versions (rename =
+//!    evict + reseed, never migrate); same props layouts (a
+//!    changed layout evicts with `TypeMismatch`, loudly); tasks
+//!    re-submit under the new generation (in-flight bodies finish,
+//!    their submits are discarded by tag).
 
 pub mod registry;
 pub mod source;

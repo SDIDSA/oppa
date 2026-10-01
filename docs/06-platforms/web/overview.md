@@ -1,16 +1,17 @@
 # Web
 
 Status: current (M7 — `oppa-dom` proves the contract third; see
-`../../04-planning/state.md` §5m). Spike evidence current.
+[`STATE.md`](../../STATE.md)). Spike evidence current.
 Sources: `12-archive/DESIGN.md` §§1–2, 9.2–9.3 (locked #2, #23, #27);
 `spike/REPORT.md`.
 
-- **Build an app here first:** [getting
-  started](../../05-implementation/getting-started.md) (copy-paste
-  tutorial, proven out-of-repo) and [web-app entry
-  point](../../09-api/web-app.md) (the host/binding/page pattern
-  with links to the living example). The architecture below is
-  what that app stands on — read it second, not first.
+- **Build an app here first:** [hello-web
+  template](../../../templates/hello-web/README.md) (copy-paste
+  starter + build recipe, proven out-of-repo) over
+  [`WasmHost`](../../../crates/oppa-web/src/lib.rs) (the
+  host/binding/page pattern with links to the living example).
+  The architecture below is what that app stands on — read it
+  second, not first.
 
 - **Framework behavior:** scene schema owned; browser owns pixels.
   DOM is a first-class renderer backend. Owning pixels on Web would
@@ -54,3 +55,19 @@ Sources: `12-archive/DESIGN.md` §§1–2, 9.2–9.3 (locked #2, #23, #27);
   documented rule); fine-grained DOM patching is v2.
 - **Packaging:** wasm build + wasm-bindgen + static serve — see
   [packaging](../packaging.md) (G4, decision 215).
+- **PWA story (G20, decision 376 — current):** the `hello-web`
+  template ships the installable shell — `web/manifest.json`
+  (`standalone` display, shell colors; icons are app branding,
+  none ships) + `web/sw.js` (cache-first app shell, versioned
+  `CACHE` per release, bundle names following the package stem)
+  + registration in `bootstrap.js` and the manifest link in
+  `index.html` (all flowing through `cargo oppa new --web`,
+  renames included). The dev rig links its own manifest for
+  smoke but registers no worker (network-fresh by design).
+  Weighed 2026-10-01 (`hello-web` release): raw
+  `hello_web.wasm` 3,445,522 bytes (~3.29 MiB); bindgen
+  `pkg/hello_web_bg.wasm` 2,835,099 (~2.70 MiB) + glue
+  28,550 — ~2.87 MB total served shell (supersedes the old 17 MB
+  figure; Firefox/Safari passes stay open — no binaries on the
+  box). The load-once-offline hand pass stays manual (needs a
+  browser session); no background-update or push story (open).

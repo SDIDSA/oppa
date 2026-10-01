@@ -343,6 +343,36 @@ pub fn decode_png(bytes: &[u8]) -> Result<DecodedImage, ImageError> {
     })
 }
 
+/// Encodes straight-alpha `RGBA8` to PNG bytes (Phase 36 PR4,
+/// decision 359 — the DOM data-URI half of the static image path).
+/// Length must equal `width × height × 4`; zero sizes refuse loudly
+/// (mirrors the decode-side loudness — never an empty image).
+pub fn encode_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, ImageError> {
+    if width == 0 || height == 0 {
+        return Err(ImageError::DecodeFailed(format!(
+            "png encode: zero size {width}x{height} — refused, never an empty image"
+        )));
+    }
+    if rgba.len() != width as usize * height as usize * 4 {
+        return Err(ImageError::DecodeFailed(format!(
+            "png encode: {} bytes != {width}x{height}x4 — refused, never a cropped image",
+            rgba.len()
+        )));
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|e| ImageError::DecodeFailed(format!("png encode header: {e}")))?;
+    writer
+        .write_image_data(rgba)
+        .map_err(|e| ImageError::DecodeFailed(format!("png encode pixels: {e}")))?;
+    drop(writer);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +404,23 @@ mod tests {
         assert_eq!(img.rgba, rgba, "lossless round-trips byte-exact");
         // The sniffing entry agrees.
         assert_eq!(decode_image(&bytes).expect("sniffs png"), img);
+    }
+
+    /// Phase 36 PR4 (decision 359): the public RGBA8→PNG encoder
+    /// round-trips byte-exact through the decoder (the DOM data-URI
+    /// half), and refuses short buffers and zero sizes loudly.
+    #[test]
+    fn encode_png_rgba_round_trips_and_refuses_loudly() {
+        let rgba: Vec<u8> = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        let bytes = super::encode_png_rgba(2, 2, &rgba).expect("encodes");
+        assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']), "png magic");
+        let img = decode_png(&bytes).expect("decodes");
+        assert_eq!((img.width, img.height), (2, 2));
+        assert_eq!(img.rgba, rgba);
+        assert!(super::encode_png_rgba(2, 2, &rgba[..15]).is_err());
+        assert!(super::encode_png_rgba(0, 2, &[]).is_err());
     }
 
     #[test]

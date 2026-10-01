@@ -257,6 +257,24 @@ impl EditSession {
         self.inner.content.clone()
     }
 
+    /// Applies a platform-owned full value (U8 `InputEvent::Text`
+    /// feed, Phase 39a decision 377): replaces content wholesale
+    /// through the committing funnel, so `on_change` reports exactly
+    /// like a native insert (round-5.4 parity — the two commit
+    /// paths each report once per commit; controls subscribe once,
+    /// never per path). No undo push (undo is browser-owned
+    /// wherever this feed runs — verdict (b)); caret/selection
+    /// collapse to the end (the feed carries no caret — decision
+    /// 188's shape, clamped like every other mutation).
+    pub fn apply_platform_value(&self, value: &str) {
+        self.set_content(value.to_string());
+        let end = value.len();
+        *self.inner.caret.borrow_mut() = end;
+        *self.inner.sel.borrow_mut() = (end, end);
+        self.ensure_clamped();
+        self.note_caret_activity();
+    }
+
     /// Publishes masked (password) backing (Round 22.1, decision
     /// 331): `TextInput` writes its `masked` prop here every render
     /// (default false). Copy/cut refuse while set.

@@ -11,8 +11,11 @@
 //!
 //! Stated approximations (see crate docs):
 //!
-//! - Shadows are offset solids (the op carries no blur radius — the
-//!   degradation is contractual, identical on both backends).
+//! - Shadows blur natively (Phase 36 PR4, decision 356): radius 0
+//!   stays the offset solid (contractual degradation, identical on
+//!   both backends); radius > 0 encodes a gaussian blurred rounded
+//!   rect (std_dev ≈ radius/2), tol-banded against the CPU box-blur,
+//!   never pixel-exact.
 //! - Vector paths (decision 291): parsed via `kurbo::BezPath::from_svg`
 //!   (native — the CPU backend owns its own parser because
 //!   `tiny-skia-path` 0.12 ships no `from_svg`), translated by the
@@ -254,12 +257,35 @@ pub fn encode_plan(
                 h,
                 dx,
                 dy,
+                blur_radius,
                 color,
                 ..
             } => {
-                // Offset solid (contractual degradation, same as CPU).
-                let brush = Brush::Solid(peniko_color(*color, alpha));
-                if fill_rect_shape(scene, (x + dx, y + dy, *w, *h), 0.0, &brush) {
+                if *blur_radius <= 0.0 {
+                    // Offset solid (contractual degradation, same as CPU).
+                    let brush = Brush::Solid(peniko_color(*color, alpha));
+                    if fill_rect_shape(scene, (x + dx, y + dy, *w, *h), 0.0, &brush) {
+                        stats.shapes_encoded += 1;
+                    }
+                } else {
+                    // Gaussian blurred rect (Phase 36 PR4, decision 356):
+                    // std_dev ≈ blur/2 (the CSS-blur approximation —
+                    // tol-banded against the CPU box-blur, never exact).
+                    if !blur_radius.is_finite() {
+                        panic!(
+                            "vello: shadow blur_radius non-finite ({blur_radius}) — never encodes silently"
+                        );
+                    }
+                    let Some(rc) = rect_of(x + dx, y + dy, *w, *h) else {
+                        continue;
+                    };
+                    scene.draw_blurred_rounded_rect(
+                        Affine::IDENTITY,
+                        rc,
+                        peniko_color(*color, alpha),
+                        0.0,
+                        (*blur_radius as f64 / 2.0).max(0.0),
+                    );
                     stats.shapes_encoded += 1;
                 }
             }

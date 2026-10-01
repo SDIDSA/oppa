@@ -6,7 +6,11 @@ Proven shape (same as `oppa-controls --example hello`).
 ## Use it
 
 ```powershell
-# Copy OUT of this repo (it only builds here via relative paths):
+# From an Oppa checkout (recommended — names the package, points
+# path deps at the checkout, rewrites this paragraph):
+cargo run -p cargo-oppa -- oppa new ~/my-app
+# Or copy out manually (then point the three path deps at your
+# Oppa checkout yourself):
 cp -r templates/hello-desktop ~/my-app
 cd ~/my-app
 # Point the three path deps at your Oppa checkout, then:

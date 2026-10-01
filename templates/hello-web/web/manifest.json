@@ -1,0 +1,10 @@
+{
+  "name": "hello-web — Oppa starter",
+  "short_name": "hello-web",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2266cc",
+  "description": "Minimal Oppa web app (scaffolded by cargo oppa new)."
+}

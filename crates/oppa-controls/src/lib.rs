@@ -38,11 +38,61 @@
 //!   headless trees get hit boxes without a text service; authors
 //!   override through the props' `width`/`height`.
 //!
-//! Controls: Button, Checkbox, Toggle, Slider, TextInput, Modal,
-//! Radio, RadioGroup, Tabs, Select, ProgressBar, Badge.
+//! Controls: Button, Checkbox, Toggle, Slider, TextInput, TextArea,
+//! Modal, Radio, RadioGroup, Tabs, Select, ProgressBar, Badge,
+//! Toast, Tooltip, Menu, ContextMenu, VirtualList, DataGrid,
+//! Scrollbar, ErrorBoundary, Tree, Splitter, DatePicker, Toolbar,
+//! Menubar, FilePicker, RichTextView, ImageView, CanvasView,
+//! NavHost, plus the `Uncontrolled*` self-managed companions.
 //!
 //! Per-control behavior is documented in this crate; catalog status
 //! lives in `docs/STATE.md` (Done).
+//!
+//! Cookbook (G10 — the three additions the page skipped; each names
+//! its precedent, the rule of the page):
+//!
+//! - **Text-field binding.** Controlled state in, committed edits
+//!   out: `let name = ctx.signal(SharedString::from(""))` renders
+//!   through `TextInputProps::new("Name", name.clone())`, and
+//!   `on_change` writes the store back (`Change<SharedString>` —
+//!   the `TaskStudio` inspector's `title_commit` is the shipped
+//!   spelling: guard on inequality, then `update_row`). The
+//!   [`EditSession`](oppa::EditSession) owns caret/selection/undo
+//!   across renders; validators stay app-side, `invalid` +
+//!   `error_message` only announce (decision 366).
+//! - **`VirtualList` / `Collection` paging.** Data lives in an
+//!   author-owned [`Collection`](oppa::Collection) (stable
+//!   [`RowId`](oppa::RowId)s, filter/sort/page queries with match
+//!   totals); [`VirtualList`] windows it through [`vlist_window`]
+//!   (binary-searched tops + overscan — never division) with per-slot
+//!   `child_keyed` recycling; background pages stream in through the
+//!   [`CollectionWriter`](oppa::CollectionWriter) rendezvous (rows
+//!   cross threads as data, ids assign on the UI thread) or
+//!   `spawn_fetch_page` (same drain). [`DataGrid`] is the same feed
+//!   with columns; [`Tree`] the same feed flattened hierarchically.
+//! - **Images and menus.** Static pixels deposit once via
+//!   [`ImageCache::insert_pixels`](oppa::ImageCache::insert_pixels)
+//!   (exact `w × h × 4` RGBA8, loud otherwise) and render through
+//!   [`ImageView`] (alt names it); `key_of` reverses ids for the DOM
+//!   leg. Menus compose [`MenuItem`] rows in a [`Menu`] portal
+//!   (container-owned focus, highlight cursor, hit-test activation)
+//!   wrapped by [`ContextMenu`] (cursor-anchored), [`Select`]
+//!   (box-anchored), or [`Menubar`] (bar-anchored titles).
+//!
+//! Styling (G11 — current, not Proposed): components read
+//! `ctx.theme().tokens()` (a tracked read — `host.set_theme(mode)`
+//! re-renders every themed control in place, instances and state
+//! survive) instead of literals. The token table
+//! ([`ThemeTokens`](oppa::ThemeTokens)): `background`, `surface`,
+//! `text_primary`, `text_secondary`, `primary`, `primary_pressed`,
+//! `border`, `focus_ring`, `disabled`, `error`. Rules: fills ride
+//! tokens; contrast ink on saturated accents stays literal white
+//! (both palettes keep `primary` saturated); keyboard focus paints
+//! a 2px inset `focus_ring` (paint-only — never layout, via
+//! `focus_ringed`); invalid fields edge in `error`; enabled
+//! clickables show `Pointer`/text fields `Text`, inert controls the
+//! platform arrow; decorative literals stay fixed and carry no text
+//! (deliberate non-goals, not debt).
 
 // Control components are `CamelCase` functions by framework convention
 // (`#[component] fn Name` — M2 authoring surface), hence the crate-level
@@ -203,12 +253,22 @@ pub fn Button(ctx: &Ctx, props: &ButtonProps) -> VNode {
 /// `on_change` reports flips (round 5.4 — `None` keeps the exact
 /// pre-5.4 behavior); see [`UncontrolledCheckbox`] for the
 /// self-managed companion.
+///
+/// Form validation (Phase 38a, decision 366 — G7): `invalid` /
+/// `required` / `error_message` announce through [`Semantics`]
+/// (validators stay app-side); `helper_text` renders a dimmed
+/// caption under the row (visual-only, never announced). All four
+/// default off/empty — plain checkboxes keep byte-identical trees.
 #[derive(Clone)]
 pub struct CheckboxProps {
     pub label: SharedString,
     pub checked: Signal<bool>,
     pub enabled: bool,
     pub on_change: Option<Change<bool>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for CheckboxProps {}
@@ -230,10 +290,15 @@ impl Props for CheckboxProps {}
 pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
     let t = ctx.theme().tokens();
     let checked = props.checked.get();
-    let semantics = Semantics::checkbox()
-        .checked(checked)
-        .label(&props.label)
-        .disabled(!props.enabled);
+    let semantics = with_validation_marks(
+        Semantics::checkbox()
+            .checked(checked)
+            .label(&props.label)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let press = if props.enabled {
         let (checked, notify) = (props.checked.clone(), props.on_change.clone());
         Some(action(move || {
@@ -263,6 +328,9 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
     } else {
         (t.surface, t.border, CONTRAST_INK)
     };
+    // Phase 38a: an invalid box edges in `error` (announced through
+    // the payload above); valid boxes keep the exact palette.
+    let edge = if props.invalid { t.error } else { edge };
     let box_style = focus_ringed(
         ctx,
         props.enabled,
@@ -308,13 +376,23 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
         Some(press) => builder.on_press(move || press()),
         None => builder,
     };
-    builder.children([
+    let root = builder.children([
         box_vnode,
         VNode::from(Text {
             text: props.label.clone(),
             style: Text::body_secondary,
         }),
-    ])
+    ]);
+    // Phase 38a: validation footer stacks under the row only when a
+    // message is present (valid rows keep the exact tree).
+    with_validation_footer(
+        root,
+        ctx,
+        "checkbox",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled checkbox (round 5.4, OQ-G2-4): self-managed
@@ -326,20 +404,26 @@ pub struct UncontrolledCheckboxProps {
     pub initial: bool,
     pub enabled: bool,
     pub on_change: Option<Change<bool>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledCheckboxProps {}
 
 pub fn UncontrolledCheckbox(ctx: &Ctx, props: &UncontrolledCheckboxProps) -> VNode {
     let checked = ctx.signal(props.initial);
-    ctx.child(
-        "oppa::Checkbox",
-        1,
+    ctx.child_auto(
         &CheckboxProps {
             label: props.label.clone(),
             checked,
             enabled: props.enabled,
             on_change: props.on_change.clone(),
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         Checkbox,
     )
@@ -353,12 +437,20 @@ pub fn UncontrolledCheckbox(ctx: &Ctx, props: &UncontrolledCheckboxProps) -> VNo
 /// as a shipped control). `on_change` reports flips (round 5.4 —
 /// `None` keeps the exact pre-5.4 behavior); see
 /// [`UncontrolledToggle`] for the self-managed companion.
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`CheckboxProps`] (announced `invalid` / `required` /
+/// `error_message`, visual `helper_text`; all default off/empty).
 #[derive(Clone)]
 pub struct ToggleProps {
     pub label: SharedString,
     pub on: Signal<bool>,
     pub enabled: bool,
     pub on_change: Option<Change<bool>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for ToggleProps {}
@@ -376,10 +468,15 @@ impl Props for ToggleProps {}
 pub fn Toggle(ctx: &Ctx, props: &ToggleProps) -> VNode {
     let t = ctx.theme().tokens();
     let on = props.on.get();
-    let semantics = Semantics::switch()
-        .checked(on)
-        .label(&props.label)
-        .disabled(!props.enabled);
+    let semantics = with_validation_marks(
+        Semantics::switch()
+            .checked(on)
+            .label(&props.label)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let press = if props.enabled {
         let (on, notify) = (props.on.clone(), props.on_change.clone());
         Some(action(move || {
@@ -440,13 +537,22 @@ pub fn Toggle(ctx: &Ctx, props: &ToggleProps) -> VNode {
         Some(press) => builder.on_press(move || press()),
         None => builder,
     };
-    builder.children([
+    let root = builder.children([
         track,
         VNode::from(Text {
             text: props.label.clone(),
             style: Text::body_secondary,
         }),
-    ])
+    ]);
+    // Phase 38a: validation footer only when a message is present.
+    with_validation_footer(
+        root,
+        ctx,
+        "toggle",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled toggle (round 5.4, OQ-G2-4): self-managed `on`
@@ -460,20 +566,26 @@ pub struct UncontrolledToggleProps {
     pub initial: bool,
     pub enabled: bool,
     pub on_change: Option<Change<bool>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledToggleProps {}
 
 pub fn UncontrolledToggle(ctx: &Ctx, props: &UncontrolledToggleProps) -> VNode {
     let on = ctx.signal(props.initial);
-    ctx.child(
-        "oppa::Toggle",
-        1,
+    ctx.child_auto(
         &ToggleProps {
             label: props.label.clone(),
             on,
             enabled: props.enabled,
             on_change: props.on_change.clone(),
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         Toggle,
     )
@@ -487,6 +599,11 @@ pub fn UncontrolledToggle(ctx: &Ctx, props: &UncontrolledToggleProps) -> VNode {
 /// `on_change` reports every internal set (round 5.4 — `None`
 /// keeps the exact pre-5.4 behavior); see [`UncontrolledSlider`]
 /// for the self-managed companion.
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`CheckboxProps`]; the numeric range announces through
+/// `value_num` / `min_value` / `max_value` (Phase 38a, decision
+/// 367 — G18) alongside the human `value_text`.
 #[derive(Clone)]
 pub struct SliderProps {
     pub label: SharedString,
@@ -496,6 +613,10 @@ pub struct SliderProps {
     pub step: f32,
     pub enabled: bool,
     pub on_change: Option<Change<f32>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for SliderProps {}
@@ -546,16 +667,30 @@ fn apply_slider_value(
 /// (round 5.3, OQ-G2-1 — the track drags and arrows step: press
 /// focuses + captures, moves set the value from the pointer x over
 /// the track box, Left/Down step down and Right/Up step up; held
-/// arrows repeat-step). Steps snap and clamp; ends are quiet no-ops
-/// (a step past the end re-sets the same value — signals dedup
+/// arrows repeat-step). Phase 38a (decision 367): the thumb drag is
+/// the continuous pointer-capture stream (`Down` captures on the
+/// root press, every `Move` re-maps through `capture_position`,
+/// `Up`/`Cancel` clears — the 2D Scrollbar precedent, decision
+/// 354); `Home`/`End` jump to `min`/`max`; the numeric range
+/// announces through `value_num`/`min_value`/`max_value` (G18) next
+/// to the human `value_text`. Steps snap and clamp; ends are quiet
+/// no-ops (a step past the end re-sets the same value — signals dedup
 /// downstream... precisely: `Signal::set` always invalidates; the
 /// value is unchanged so memos gate it out).
 pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
     let v = snap_value(props.value.get(), props.min, props.max, props.step);
-    let semantics = Semantics::slider()
-        .label(&props.label)
-        .value_text(&value_text(v))
-        .disabled(!props.enabled);
+    let semantics = with_validation_marks(
+        Semantics::slider()
+            .label(&props.label)
+            .value_text(&value_text(v))
+            .value_num(v)
+            .min_value(props.min)
+            .max_value(props.max)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let dec_props = ButtonProps {
         label: SharedString::from("-"),
         enabled: props.enabled,
@@ -625,7 +760,9 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
         );
     };
     // Arrow steps (round 5.3): directional handlers on the focused
-    // track (held keys repeat-step through the router).
+    // track (held keys repeat-step through the router). Phase 38a:
+    // Home/End jump to the range ends (the text-field caret
+    // precedent — same keys, range ends instead of content ends).
     let step_action = |dir: f32| {
         let (value, min, max, step, notify) = (
             props.value.clone(),
@@ -636,9 +773,28 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
         );
         move || apply_slider_value(&value, &notify, value.get() + dir * step, min, max, step)
     };
+    let jump_action = |to_min: bool| {
+        let (value, min, max, step, notify) = (
+            props.value.clone(),
+            props.min,
+            props.max,
+            props.step,
+            props.on_change.clone(),
+        );
+        move || {
+            apply_slider_value(
+                &value,
+                &notify,
+                if to_min { min } else { max },
+                min,
+                max,
+                step,
+            )
+        }
+    };
     let kids = [
-        ctx.child("oppa::SliderDec", 1, &dec_props, Button),
-        ctx.child("oppa::SliderInc", 2, &inc_props, Button),
+        ctx.child_auto(&dec_props, Button),
+        ctx.child_auto(&inc_props, Button),
     ];
     // Visible rail + fill + knob (Round 7.10 — the track used to be
     // an unfilled box; Round 7.15 reflows the steppers to flank the
@@ -698,7 +854,7 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
         let row = Row("slider-row")
             .style(Style::new().size(160, 32).align_items(AlignItems::Center))
             .children([dec, trackbox, inc]);
-        return Div("slider")
+        let root = Div("slider")
             .style(focus_ringed(
                 ctx,
                 props.enabled,
@@ -706,6 +862,16 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
             ))
             .semantics(semantics)
             .child(row);
+        // Phase 38a: validation footer rides the disabled path too
+        // (announcement + message never depend on enabled).
+        return with_validation_footer(
+            root,
+            ctx,
+            "slider",
+            props.invalid,
+            &props.error_message,
+            &props.helper_text,
+        );
     }
     let [dec, inc] = kids;
     let trackbox = Div("slider-trackbox")
@@ -714,7 +880,7 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
     let row = Row("slider-row")
         .style(Style::new().size(160, 32).align_items(AlignItems::Center))
         .children([dec, trackbox, inc]);
-    Div("slider")
+    let root = Div("slider")
         .style(focus_ringed(
             ctx,
             props.enabled,
@@ -730,7 +896,18 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
         .on_key_down(step_action(-1.0))
         .on_key_right(step_action(1.0))
         .on_key_up(step_action(1.0))
-        .child(row)
+        .on_key_home(jump_action(true))
+        .on_key_end(jump_action(false))
+        .child(row);
+    // Phase 38a: validation footer only when a message is present.
+    with_validation_footer(
+        root,
+        ctx,
+        "slider",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled slider (round 5.4, OQ-G2-4): self-managed `value`
@@ -747,15 +924,17 @@ pub struct UncontrolledSliderProps {
     pub step: f32,
     pub enabled: bool,
     pub on_change: Option<Change<f32>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledSliderProps {}
 
 pub fn UncontrolledSlider(ctx: &Ctx, props: &UncontrolledSliderProps) -> VNode {
     let value = ctx.signal(props.initial);
-    ctx.child(
-        "oppa::Slider",
-        1,
+    ctx.child_auto(
         &SliderProps {
             label: props.label.clone(),
             value,
@@ -764,6 +943,10 @@ pub fn UncontrolledSlider(ctx: &Ctx, props: &UncontrolledSliderProps) -> VNode {
             step: props.step,
             enabled: props.enabled,
             on_change: props.on_change.clone(),
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         Slider,
     )
@@ -777,6 +960,12 @@ pub fn UncontrolledSlider(ctx: &Ctx, props: &UncontrolledSliderProps) -> VNode {
 /// `on_change` reports committed edits (round 5.4 — `None` keeps the
 /// exact pre-5.4 behavior); see [`UncontrolledTextInput`] for the
 /// self-managed companion.
+///
+/// Form validation (Phase 38a, decision 366 — G7): `invalid` /
+/// `required` / `error_message` announce through [`Semantics`]
+/// (validators stay app-side); `helper_text` renders a dimmed caption
+/// under the field (visual-only). All four default off/empty —
+/// `new` keeps the exact pre-38a shape.
 #[derive(Clone)]
 pub struct TextInputProps {
     pub label: SharedString,
@@ -789,6 +978,10 @@ pub struct TextInputProps {
     pub debug: SharedString,
     pub on_change: Option<Change<SharedString>>,
     pub masked: bool,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for TextInputProps {}
@@ -806,6 +999,10 @@ impl TextInputProps {
             debug: SharedString::from("text-input"),
             on_change: None,
             masked: false,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         }
     }
 
@@ -934,6 +1131,76 @@ fn focus_ringed(ctx: &Ctx, enabled: bool, style: StyleBuilder) -> StyleBuilder {
     }
 }
 
+/// Form-validation marks (Phase 38a, decision 366 — G7): `invalid` /
+/// `required` / `error_message` ride [`Semantics`] (validators stay
+/// app-side — the payload only announces, the decision-352 shape);
+/// `helper_text` is visual-only (never announced). Applies the three
+/// announced marks onto a payload under construction.
+fn with_validation_marks(
+    base: Semantics,
+    invalid: bool,
+    required: bool,
+    error_message: &Option<SharedString>,
+) -> Semantics {
+    let mut s = base.invalid(invalid).required(required);
+    if let Some(msg) = error_message {
+        s = s.error_message(msg);
+    }
+    s
+}
+
+/// Validation footer line (Phase 38a, decision 366): `error_message`
+/// wins while `invalid`, else `helper_text`; `None` renders nothing
+/// (callers skip the wrapper — valid controls keep byte-identical
+/// trees). Error text paints in the theme `error` ink, helper text
+/// in `text_secondary`; both at 12px (the chip-caption precedent).
+fn validation_footer(
+    ctx: &Ctx,
+    debug: &str,
+    invalid: bool,
+    error_message: &Option<SharedString>,
+    helper_text: &Option<SharedString>,
+) -> Option<VNode> {
+    let t = ctx.theme().tokens();
+    let (text, ink) = match (invalid, error_message, helper_text) {
+        (true, Some(msg), _) => (msg.clone(), t.error),
+        (_, _, Some(help)) => (help.clone(), t.text_secondary),
+        _ => return None,
+    };
+    // Debug label rides the caller's field (findable in dumps).
+    let _ = debug;
+    Some(with_ink(VNode::from(Text::new(text).size(12)), ink))
+}
+
+/// Wraps a control root with its validation footer (Phase 38a):
+/// no message → the root returns unwrapped (existing oracles and
+/// tab orders byte-identical); a message → `Div("<debug>-field")`
+/// stacking the root over the footer line. The wrapper is a plain
+/// block `Div` (vertical stack, no style — sizes to content).
+fn with_validation_footer(
+    root: VNode,
+    ctx: &Ctx,
+    debug: &str,
+    invalid: bool,
+    error_message: &Option<SharedString>,
+    helper_text: &Option<SharedString>,
+) -> VNode {
+    let Some(foot) = validation_footer(ctx, debug, invalid, error_message, helper_text) else {
+        return root;
+    };
+    Div(format!("{debug}-field").as_str()).children([root, foot])
+}
+
+/// Invalid field edge (Phase 38a): `error` ink while `invalid`,
+/// else the theme `border` (valid controls keep exact pixels).
+fn field_edge(ctx: &Ctx, invalid: bool) -> Color {
+    if invalid {
+        ctx.theme().tokens().error
+    } else {
+        ctx.theme().tokens().border
+    }
+}
+
 /// Text input: bordered field box + [`TextField`](oppa::TextField) payload
 /// (the DOM backend's verdict-(b) `<input>` shape; native backends render
 /// the text run). The [`EditSession`](oppa::EditSession) is keyed to this
@@ -953,6 +1220,23 @@ fn focus_ringed(ctx: &Ctx, enabled: bool, style: StyleBuilder) -> StyleBuilder {
 /// on DOM the backend renders `value=""` with a native `placeholder`
 /// attribute from that span (decision 293) — typing feeds only typed
 /// text through the session fallback, on every backend).
+///
+/// Web value loop (Phase 39a, decisions 377–379 — the U8 authoring
+/// shape): pass an author-owned `Signal<SharedString>` as `value`
+/// and read it back by rendering it (no retained `NodeId` ever
+/// leaks into app code — the signal IS the field's name). The
+/// browser owns insertion, caret, selection, IME, and undo
+/// (verdict (b)); each `input` event forwards pid + full value as
+/// `InputEvent::Text`, which commits through the session (firing
+/// `on_change` exactly like a native insert — validators and
+/// bridges observe every commit) and re-renders around the focused
+/// field without touching it (keyed patches skip it; composition
+/// preedit never forwards — `isComposing` guards the bridge, so
+/// framework normalization can never reset a live IME). Programmatic
+/// `value.set` flows out through the `value` property; it never
+/// re-fires `on_change` (no loop). Rejected commits (a bridge that
+/// ignores a parse) simply never write the signal — the next
+/// keystroke self-heals (level-triggered values).
 pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     let t = ctx.theme().tokens();
     let session = ctx.edit_session(props.value.clone());
@@ -967,9 +1251,16 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     if let Some(notify) = props.on_change.clone() {
         session.set_on_change(Rc::new(move |value| notify(value)));
     }
-    let semantics = Semantics::text_field()
-        .label(&props.label)
-        .disabled(!props.enabled);
+    // Phase 38a (decision 366): validation marks announce; the edge
+    // tints `error` while invalid (valid fields keep exact pixels).
+    let semantics = with_validation_marks(
+        Semantics::text_field()
+            .label(&props.label)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let raw_val = props.value.get();
     let display_text = if props.masked && !raw_val.is_empty() {
         SharedString::from("•".repeat(raw_val.chars().count()))
@@ -993,12 +1284,13 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     };
     // (One `.style()` call — the builder replaces the whole style per
     // call, so size/bg/border/pad fold into a single chain. Round 8.3:
-    // enabled fields show the I-beam; disabled stays the arrow.)
+    // enabled fields show the I-beam; disabled stays the arrow.
+    // Phase 38a: the border edges `error` while invalid.)
     let mut field_style = Style::new()
         .size(props.width, props.height)
         .radius(4)
         .bg(if props.enabled { t.surface } else { t.disabled })
-        .border(1, t.border)
+        .border(1, field_edge(ctx, props.invalid))
         .pad_x(8)
         .pad_y(4);
     if props.enabled {
@@ -1025,7 +1317,18 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     } else {
         builder
     };
-    builder.child(payload)
+    // Phase 38a: footer stacks under the field only when a message
+    // is present (the wrapper debug derives from the field debug).
+    let debug = props.debug.clone();
+    let root = builder.child(payload);
+    with_validation_footer(
+        root,
+        ctx,
+        &debug,
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled text input (round 5.4, OQ-G2-4): self-managed
@@ -1045,6 +1348,10 @@ pub struct UncontrolledTextInputProps {
     pub debug: SharedString,
     pub on_change: Option<Change<SharedString>>,
     pub masked: bool,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledTextInputProps {}
@@ -1058,9 +1365,7 @@ impl UncontrolledTextInputProps {
 
 pub fn UncontrolledTextInput(ctx: &Ctx, props: &UncontrolledTextInputProps) -> VNode {
     let value = ctx.signal(props.initial.clone());
-    ctx.child(
-        "oppa::TextInput",
-        1,
+    ctx.child_auto(
         &TextInputProps {
             label: props.label.clone(),
             value,
@@ -1072,6 +1377,10 @@ pub fn UncontrolledTextInput(ctx: &Ctx, props: &UncontrolledTextInputProps) -> V
             debug: props.debug.clone(),
             on_change: props.on_change.clone(),
             masked: props.masked,
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         TextInput,
     )
@@ -1089,6 +1398,9 @@ pub fn UncontrolledTextInput(ctx: &Ctx, props: &UncontrolledTextInputProps) -> V
 /// inserts a newline through the router instead of activating).
 /// `on_change` reports committed edits (round 5.4 — `None` keeps
 /// the exact pre-5.4 behavior).
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`TextInputProps`].
 #[derive(Clone)]
 pub struct TextAreaProps {
     pub label: SharedString,
@@ -1099,6 +1411,10 @@ pub struct TextAreaProps {
     pub style: TextClass,
     pub debug: SharedString,
     pub on_change: Option<Change<SharedString>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for TextAreaProps {}
@@ -1114,6 +1430,10 @@ impl TextAreaProps {
             style: Text::body_secondary,
             debug: SharedString::from("text-area"),
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         }
     }
 
@@ -1160,9 +1480,16 @@ pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
     if let Some(notify) = props.on_change.clone() {
         session.set_on_change(Rc::new(move |value| notify(value)));
     }
-    let semantics = Semantics::text_area()
-        .label(&props.label)
-        .disabled(!props.enabled);
+    // Phase 38a (decision 366): validation marks announce; the edge
+    // tints `error` while invalid.
+    let semantics = with_validation_marks(
+        Semantics::text_area()
+            .label(&props.label)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let payload: VNode = match (props.value.get().is_empty(), &props.placeholder) {
         (true, Some(placeholder)) => with_ink(
             VNode::from(Text {
@@ -1192,7 +1519,7 @@ pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
         Style::new()
             .radius(4)
             .bg(if props.enabled { t.surface } else { t.disabled })
-            .border(1, t.border)
+            .border(1, field_edge(ctx, props.invalid))
             .pad_x(8)
             .pad_y(4),
     );
@@ -1218,7 +1545,18 @@ pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
     } else {
         builder
     };
-    builder.child(payload)
+    // Phase 38a: footer stacks under the area only when a message
+    // is present (wrapper debug derives from the area debug).
+    let debug = props.debug.clone();
+    let root = builder.child(payload);
+    with_validation_footer(
+        root,
+        ctx,
+        &debug,
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled text area (round 5.4, OQ-G2-4): self-managed
@@ -1234,15 +1572,17 @@ pub struct UncontrolledTextAreaProps {
     pub style: TextClass,
     pub debug: SharedString,
     pub on_change: Option<Change<SharedString>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledTextAreaProps {}
 
 pub fn UncontrolledTextArea(ctx: &Ctx, props: &UncontrolledTextAreaProps) -> VNode {
     let value = ctx.signal(props.initial.clone());
-    ctx.child(
-        "oppa::TextArea",
-        1,
+    ctx.child_auto(
         &TextAreaProps {
             label: props.label.clone(),
             value,
@@ -1252,6 +1592,10 @@ pub fn UncontrolledTextArea(ctx: &Ctx, props: &UncontrolledTextAreaProps) -> VNo
             style: props.style,
             debug: props.debug.clone(),
             on_change: props.on_change.clone(),
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         TextArea,
     )
@@ -1413,8 +1757,8 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
             Row("modal-actions")
                 .style(Style::new().gap(8).justify_content(JustifyContent::End))
                 .children([
-                    ctx.child("oppa::ModalCancel", 1, &cancel_props, Button),
-                    ctx.child("oppa::ModalConfirm", 2, &confirm_props, Button),
+                    ctx.child_auto(&cancel_props, Button),
+                    ctx.child_auto(&confirm_props, Button),
                 ]),
         ]);
     let backdrop = Div("modal-backdrop").style(
@@ -1558,7 +1902,7 @@ pub fn Toast(ctx: &Ctx, props: &ToastProps) -> VNode {
                         style: Text::body_secondary,
                     }),
                 ]),
-            ctx.child("oppa::ToastDismiss", 1, &dismiss_props, Button),
+            ctx.child_auto(&dismiss_props, Button),
         ]);
     let anchor = Div("toast-anchor").style(
         Style::new()
@@ -1596,11 +1940,20 @@ pub struct RadioOption<T> {
 
 /// RadioGroup props (controlled — `selected` holds the chosen value;
 /// clicking an option sets it, so exactly one option reads selected).
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`CheckboxProps`]; the marks announce on the group container
+/// (role `Generic` — there is no group role in [`Semantics`], so the
+/// payload carries only the marks, never an invented role).
 #[derive(Clone, Props)]
 pub struct RadioGroupProps<T: 'static> {
     pub options: Vec<RadioOption<T>>,
     pub selected: Signal<T>,
     pub enabled: bool,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 /// Radio button: 18×18 circle indicator (8×8 centered dot when
@@ -1685,10 +2038,33 @@ pub fn RadioGroup<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &RadioGroupP
                 enabled: props.enabled,
                 on_select: action(move || selected.set(value.clone())),
             };
-            ctx.child("oppa::Radio", i as u64, &rp, Radio)
+            ctx.child_keyed(i as u64, &rp, Radio)
         })
         .collect::<Vec<_>>();
-    Column::new().children(children)
+    // Phase 38a: validation marks ride the group container only when
+    // set (valid groups keep the exact tree); the footer stacks
+    // under the options only when a message is present.
+    let validation_active = props.invalid || props.required || props.error_message.is_some();
+    let root = if validation_active {
+        Column::new()
+            .semantics(with_validation_marks(
+                Semantics::default(),
+                props.invalid,
+                props.required,
+                &props.error_message,
+            ))
+            .children(children)
+    } else {
+        Column::new().children(children)
+    };
+    with_validation_footer(
+        root,
+        ctx,
+        "radio-group",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1805,7 +2181,7 @@ pub fn Tabs<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &TabsProps<T>) -> 
                 enabled: props.enabled,
                 on_select: action(move || active.set(value.clone())),
             };
-            ctx.child("oppa::TabsTab", i as u64, &bp, TabButton)
+            ctx.child_keyed(i as u64, &bp, TabButton)
         })
         .collect::<Vec<_>>();
     let bar = Row("tab-bar")
@@ -1843,6 +2219,9 @@ pub struct SelectItem<T> {
 /// `open` holds the list visibility; both author-owned signals).
 /// `width` defaults to 160.0 via [`SelectProps::new`] (the slider
 /// width precedent — decision 213 explicit sizes).
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`CheckboxProps`]; the marks announce on the `combobox` box.
 #[derive(Clone, Props)]
 pub struct SelectProps<T: 'static> {
     pub items: Vec<SelectItem<T>>,
@@ -1850,6 +2229,10 @@ pub struct SelectProps<T: 'static> {
     pub open: Signal<bool>,
     pub enabled: bool,
     pub width: f32,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl<T: Clone + PartialEq + 'static> SelectProps<T> {
@@ -1860,6 +2243,10 @@ impl<T: Clone + PartialEq + 'static> SelectProps<T> {
             open,
             enabled: true,
             width: 160.0,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         }
     }
 }
@@ -1966,17 +2353,20 @@ pub fn Select<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &SelectProps<T>)
             Style::new()
                 .size(props.width, 32)
                 .radius(4)
-                .border(1, t.border)
+                .border(1, field_edge(ctx, props.invalid))
                 .bg(if props.enabled { t.surface } else { t.disabled })
                 .pad_x(8)
                 .gap(8)
                 .align_items(AlignItems::Center),
         ))
-        .semantics(
+        .semantics(with_validation_marks(
             Semantics::combobox()
                 .label(&current_label)
                 .disabled(!props.enabled),
-        );
+            props.invalid,
+            props.required,
+            &props.error_message,
+        ));
     // The box keeps its handler while enabled even when open
     // (re-press closes — the toggle, not a select).
     let box_builder = if props.enabled {
@@ -2004,7 +2394,7 @@ pub fn Select<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &SelectProps<T>)
                         open.set(false);
                     }),
                 };
-                ctx.child("oppa::SelectOption", i as u64, &op, SelectOption)
+                ctx.child_keyed(i as u64, &op, SelectOption)
             })
             .collect::<Vec<_>>();
         // No explicit size: the list sizes to its rows (the
@@ -2032,9 +2422,19 @@ pub fn Select<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &SelectProps<T>)
     }
     // Constant 32px root (Round 7.21): the box owns the height, the
     // popup is out-of-flow — open and closed lay out identically.
-    Div("select")
+    // Phase 38a: validation footer stacks under the box only when a
+    // message is present (valid selects keep the exact tree).
+    let root = Div("select")
         .style(Style::new().size(props.width, 32))
-        .children(children)
+        .children(children);
+    with_validation_footer(
+        root,
+        ctx,
+        "select",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2398,15 +2798,31 @@ pub struct ScrollbarProps {
     /// (visible until the next pointer move). `VirtualList` /
     /// `DataGrid` attach with `Some(1200)`.
     pub idle_hide_ms: Option<u64>,
+    /// Scrollbar axis (Phase 36 PR2b, decision 354 — G15): `Vertical`
+    /// (default) rides the `y` offset over `content_h`; `Horizontal`
+    /// rides the `x` half over `content_w` (callers pass the 2D
+    /// handle's `x()` view — same signal family, never a second
+    /// source). Geometry, thumb, drag, and keys transpose exactly.
+    pub axis: ScrollbarAxis,
+}
+
+/// Scrollbar axis (Phase 36 PR2b, decision 354 — G15): which offset
+/// half and which content extent a [`Scrollbar`] overlay follows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ScrollbarAxis {
+    #[default]
+    Vertical,
+    Horizontal,
 }
 
 /// Overlay scrollbar: track + draggable thumb over a `ScrollArea`
-/// viewport (Round 17.2, decision 318). Shows if and only if the
-/// content overflows; the thumb follows
-/// [`scrollbar_thumb`](oppa::scrollbar_thumb) (`max(24,
+/// viewport (Round 17.2, decision 318; horizontal axis Phase 36 PR2b,
+/// decision 354). Shows if and only if the content overflows on the
+/// followed axis; the thumb follows the axis thumb math (`max(24,
 /// viewport²/content)`, linear in the clamped offset); the track
 /// page-scrolls on tap; thumb drags capture the pointer and map
-/// through the linear content ratio; arrows page when focused.
+/// through the linear content ratio; arrows page when focused
+/// (Down/Up vertical, Right/Left horizontal).
 /// Auto-hide fades the chrome out on disengage (hover-leave,
 /// release) and back in on hover, press, or scroll writes — the
 /// M8 transition evaluator animates both directions (first
@@ -2447,10 +2863,25 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
         return closed();
     };
     // Tracked reads (every one re-renders): offset, hover, press.
-    let y = props.offset.get();
-    let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-    let Some(g) = oppa::scrollbar_thumb(tb.h, tb.content_h, y) else {
-        return closed();
+    // Phase 36 PR2b: axis-transposed locals — `pos` is the followed
+    // offset half, `vp`/`content` the viewport/extent on that axis,
+    // (`tpos`, `tlen`) the thumb origin/extent. One set of names for
+    // both orientations (the layout thumb-twin precedent).
+    let pos = props.offset.get();
+    let (vp, content) = match props.axis {
+        ScrollbarAxis::Vertical => (tb.h, tb.content_h),
+        ScrollbarAxis::Horizontal => (tb.w, tb.content_w),
+    };
+    let max = oppa::scrollbar_max_offset(vp, content);
+    let (tpos, tlen) = match props.axis {
+        ScrollbarAxis::Vertical => match oppa::scrollbar_thumb(vp, content, pos) {
+            Some(g) => (g.y, g.h),
+            None => return closed(),
+        },
+        ScrollbarAxis::Horizontal => match oppa::scrollbar_thumb_x(vp, content, pos) {
+            Some(g) => (g.x, g.w),
+            None => return closed(),
+        },
     };
     let hover = ctx.hovered();
     let down = ctx.pressed();
@@ -2458,9 +2889,9 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
     // offset edges show the thumb so wheel/programmatic scrolls
     // paint live; disengage runs hide it again.
     let flash = ctx.signal(false);
-    let last_y = ctx.signal(0.0f32);
-    if y != last_y.get() {
-        last_y.set(y);
+    let last_pos = ctx.signal(0.0f32);
+    if pos != last_pos.get() {
+        last_pos.set(pos);
         if !flash.get() {
             flash.set(true);
         }
@@ -2501,14 +2932,38 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
     let down_now = down.get();
     if down_now && !was_down.get() {
         let origin = host.lowest_press_origin();
-        let gutter_x = tb.x + tb.w - SCROLLBAR_HIT_PX;
-        let on_thumb = origin.is_some_and(|(ox, oy)| {
-            ox >= gutter_x
-                && ox < gutter_x + SCROLLBAR_HIT_PX
-                && oy >= tb.y + g.y
-                && oy < tb.y + g.y + g.h
+        // Thumb hit-test transposed by axis (gutter strip on the
+        // trailing edge; thumb rect inside it).
+        let on_thumb = origin.is_some_and(|(ox, oy)| match props.axis {
+            ScrollbarAxis::Vertical => {
+                let gutter_x = tb.x + tb.w - SCROLLBAR_HIT_PX;
+                ox >= gutter_x
+                    && ox < gutter_x + SCROLLBAR_HIT_PX
+                    && oy >= tb.y + tpos
+                    && oy < tb.y + tpos + tlen
+            }
+            ScrollbarAxis::Horizontal => {
+                let gutter_y = tb.y + tb.h - SCROLLBAR_HIT_PX;
+                oy >= gutter_y
+                    && oy < gutter_y + SCROLLBAR_HIT_PX
+                    && ox >= tb.x + tpos
+                    && ox < tb.x + tpos + tlen
+            }
         });
-        base.set((y, origin.map(|(_, oy)| oy).unwrap_or(tb.y + g.y)));
+        // Drag snapshot on the press edge (grab-preserving ratio):
+        // base offset + press-origin coordinate on the scroll axis,
+        // falling back to the thumb origin for keyboard presses.
+        let fallback = match props.axis {
+            ScrollbarAxis::Vertical => tb.y + tpos,
+            ScrollbarAxis::Horizontal => tb.x + tpos,
+        };
+        let origin_coord = origin
+            .map(|(ox, oy)| match props.axis {
+                ScrollbarAxis::Vertical => oy,
+                ScrollbarAxis::Horizontal => ox,
+            })
+            .unwrap_or(fallback);
+        base.set((pos, origin_coord));
         if grabbed.get() != on_thumb {
             grabbed.set(on_thumb);
         }
@@ -2516,35 +2971,48 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
     if was_down.get() != down_now {
         was_down.set(down_now);
     }
-    // Slider role with a human percentage (the G2 announcement
-    // shape — value-pattern exposure stays OQ-G2-2).
+    // Slider role with a human percentage plus the numeric value
+    // (Phase 36 PR2b: the G18 RangeValue half rides along — UIA
+    // RangeValue, AT-SPI Value, DOM aria-valuenow/min/max; the OQ-G2-2
+    // gap stays closed here too).
     let pct = if max <= 0.0 {
         0
     } else {
-        (y.clamp(0.0, max) / max * 100.0).round() as u32
+        (pos.clamp(0.0, max) / max * 100.0).round() as u32
     };
     let fade = Transition::new(150, Ease::Out);
     let track_opacity = if visible { 0.3 } else { 0.0 };
     let thumb_opacity = if visible { 1.0 } else { 0.0 };
     let offset = props.offset.clone();
+    let axis = props.axis;
     // Hit gutter (follow-up): the press/hover node spans
-    // SCROLLBAR_HIT_PX leftwards over the content edge while the
-    // painted bar + thumb keep the 12px chrome — summoning no
-    // longer needs pixel-hunting. The gutter is transparent (no bg
-    // → paints nothing → plan rects byte-identical); presses inside
-    // it page/drag instead of reaching the covered content strip.
+    // SCROLLBAR_HIT_PX over the content's trailing edge (right for
+    // vertical, bottom for horizontal) while the painted bar + thumb
+    // keep the 12px chrome — summoning no longer needs
+    // pixel-hunting. The gutter is transparent (no bg → paints
+    // nothing → plan rects byte-identical); presses inside it
+    // page/drag instead of reaching the covered content strip.
+    let track_style = match axis {
+        ScrollbarAxis::Vertical => Style::new()
+            .x(tb.w - SCROLLBAR_HIT_PX)
+            .w(SCROLLBAR_HIT_PX)
+            .h(tb.h)
+            .build(),
+        ScrollbarAxis::Horizontal => Style::new()
+            .absolute_y(tb.h - SCROLLBAR_HIT_PX)
+            .w(tb.w)
+            .h(SCROLLBAR_HIT_PX)
+            .build(),
+    };
     let track = Div(format!("scrollbar-track-{inst}").as_str())
-        .style(
-            Style::new()
-                .x(tb.w - SCROLLBAR_HIT_PX)
-                .w(SCROLLBAR_HIT_PX)
-                .h(tb.h)
-                .build(),
-        )
+        .style(track_style)
         .semantics(
             Semantics::slider()
                 .label("scrollbar")
-                .value_text(format!("{pct} percent").as_str()),
+                .value_text(format!("{pct} percent").as_str())
+                .value_num(pos)
+                .min_value(0.0)
+                .max_value(max),
         )
         .on_press({
             let host = host.clone();
@@ -2562,21 +3030,40 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
                 else {
                     return;
                 };
-                let y = offset.get();
-                let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-                let Some(g) = oppa::scrollbar_thumb(tb.h, tb.content_h, y) else {
+                let pos = offset.get();
+                let (vp, content) = match axis {
+                    ScrollbarAxis::Vertical => (tb.h, tb.content_h),
+                    ScrollbarAxis::Horizontal => (tb.w, tb.content_w),
+                };
+                let max = oppa::scrollbar_max_offset(vp, content);
+                let (tpos, tlen) = match axis {
+                    ScrollbarAxis::Vertical => match oppa::scrollbar_thumb(vp, content, pos) {
+                        Some(g) => (g.y, g.h),
+                        None => return,
+                    },
+                    ScrollbarAxis::Horizontal => match oppa::scrollbar_thumb_x(vp, content, pos) {
+                        Some(g) => (g.x, g.w),
+                        None => return,
+                    },
+                };
+                let Some((px, py)) = host.last_press_position() else {
                     return;
                 };
-                let Some((_, py)) = host.last_press_position() else {
-                    return;
+                let (coord, start, len, extent) = match axis {
+                    ScrollbarAxis::Vertical => (py, tb.y + tpos, tlen, tb.h),
+                    ScrollbarAxis::Horizontal => (px, tb.x + tpos, tlen, tb.w),
                 };
-                let ty = tb.y + g.y;
-                if py >= ty && py < ty + g.h {
+                if coord >= start && coord < start + len {
                     return;
                 }
-                let ny = if py < ty { y - tb.h } else { y + tb.h }.clamp(0.0, max);
-                if ny != y {
-                    offset.set(ny);
+                let npos = if coord < start {
+                    pos - extent
+                } else {
+                    pos + extent
+                }
+                .clamp(0.0, max);
+                if npos != pos {
+                    offset.set(npos);
                 }
             }
         })
@@ -2590,7 +3077,7 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
                 if !grabbed.get() {
                     return;
                 }
-                let Some((_, cy)) = host.capture_position() else {
+                let Some((cx, cy)) = host.capture_position() else {
                     return;
                 };
                 let Some(tb) = oppa::find_retained_by_debug(&host, &target)
@@ -2600,86 +3087,143 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
                 else {
                     return;
                 };
-                let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-                let Some(g) = oppa::scrollbar_thumb(tb.h, tb.content_h, offset.get()) else {
-                    return;
+                let (vp, content, coord) = match axis {
+                    ScrollbarAxis::Vertical => (tb.h, tb.content_h, cy),
+                    ScrollbarAxis::Horizontal => (tb.w, tb.content_w, cx),
                 };
-                let travel = tb.h - g.h;
+                let max = oppa::scrollbar_max_offset(vp, content);
+                let tlen = match axis {
+                    ScrollbarAxis::Vertical => {
+                        match oppa::scrollbar_thumb(vp, content, offset.get()) {
+                            Some(g) => g.h,
+                            None => return,
+                        }
+                    }
+                    ScrollbarAxis::Horizontal => {
+                        match oppa::scrollbar_thumb_x(vp, content, offset.get()) {
+                            Some(g) => g.w,
+                            None => return,
+                        }
+                    }
+                };
+                let travel = vp - tlen;
                 if travel <= 0.0 {
                     return;
                 }
-                let (base_off, base_y) = base.get();
-                let ny = (base_off + (cy - base_y) * max / travel).clamp(0.0, max);
-                if ny != offset.get() {
-                    offset.set(ny);
+                let (base_off, base_coord) = base.get();
+                let npos = (base_off + (coord - base_coord) * max / travel).clamp(0.0, max);
+                if npos != offset.get() {
+                    offset.set(npos);
                 }
             }
-        })
-        .on_key_down({
-            let host = host.clone();
-            let offset = offset.clone();
-            let target = props.target.clone();
-            move || {
-                // Arrow pages by viewport (fresh max, guarded
-                // write — end presses never spin).
-                let Some(tb) = oppa::find_retained_by_debug(&host, &target)
-                    .into_iter()
-                    .next()
-                    .and_then(|id| host.committed_box(id))
-                else {
-                    return;
-                };
-                let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-                let ny = (offset.get() + tb.h).clamp(0.0, max);
-                if ny != offset.get() {
-                    offset.set(ny);
-                }
+        });
+    // Arrow pages by viewport (fresh max, guarded write — end
+    // presses never spin): Down/Up on the vertical axis,
+    // Right/Left on the horizontal one.
+    let page_fwd: std::rc::Rc<dyn Fn()> = {
+        let host = host.clone();
+        let offset = offset.clone();
+        let target = props.target.clone();
+        std::rc::Rc::new(move || {
+            let Some(tb) = oppa::find_retained_by_debug(&host, &target)
+                .into_iter()
+                .next()
+                .and_then(|id| host.committed_box(id))
+            else {
+                return;
+            };
+            let (vp, content) = match axis {
+                ScrollbarAxis::Vertical => (tb.h, tb.content_h),
+                ScrollbarAxis::Horizontal => (tb.w, tb.content_w),
+            };
+            let max = oppa::scrollbar_max_offset(vp, content);
+            let npos = (offset.get() + vp).clamp(0.0, max);
+            if npos != offset.get() {
+                offset.set(npos);
             }
         })
-        .on_key_up({
-            let host = host.clone();
-            let offset = offset.clone();
-            let target = props.target.clone();
-            move || {
-                let Some(tb) = oppa::find_retained_by_debug(&host, &target)
-                    .into_iter()
-                    .next()
-                    .and_then(|id| host.committed_box(id))
-                else {
-                    return;
-                };
-                let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-                let ny = (offset.get() - tb.h).clamp(0.0, max);
-                if ny != offset.get() {
-                    offset.set(ny);
-                }
+    };
+    let page_back: std::rc::Rc<dyn Fn()> = {
+        let host = host.clone();
+        let offset = offset.clone();
+        let target = props.target.clone();
+        std::rc::Rc::new(move || {
+            let Some(tb) = oppa::find_retained_by_debug(&host, &target)
+                .into_iter()
+                .next()
+                .and_then(|id| host.committed_box(id))
+            else {
+                return;
+            };
+            let (vp, content) = match axis {
+                ScrollbarAxis::Vertical => (tb.h, tb.content_h),
+                ScrollbarAxis::Horizontal => (tb.w, tb.content_w),
+            };
+            let max = oppa::scrollbar_max_offset(vp, content);
+            let npos = (offset.get() - vp).clamp(0.0, max);
+            if npos != offset.get() {
+                offset.set(npos);
             }
         })
-        .children([
-            Div(format!("scrollbar-trackbar-{inst}").as_str())
-                .style(
-                    Style::new()
-                        .x(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
-                        .w(SCROLLBAR_TRACK_PX)
-                        .h(tb.h)
-                        .bg(t.border)
-                        .opacity(Some(track_opacity))
-                        .transition(fade),
-                )
-                .build(),
-            Div(format!("scrollbar-thumb-{inst}").as_str())
-                .style(
-                    Style::new()
-                        .x(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
-                        .w(SCROLLBAR_TRACK_PX)
-                        .h(g.h)
-                        .absolute_y(g.y)
-                        .bg(t.text_secondary)
-                        .opacity(Some(thumb_opacity))
-                        .transition(fade),
-                )
-                .build(),
-        ]);
+    };
+    let track = match axis {
+        ScrollbarAxis::Vertical => {
+            let fwd = page_fwd.clone();
+            let back = page_back.clone();
+            track.on_key_down(move || fwd()).on_key_up(move || back())
+        }
+        ScrollbarAxis::Horizontal => {
+            let fwd = page_fwd.clone();
+            let back = page_back.clone();
+            track
+                .on_key_right(move || fwd())
+                .on_key_left(move || back())
+        }
+    };
+    let (bar_style, thumb_style) = match axis {
+        ScrollbarAxis::Vertical => (
+            Style::new()
+                .x(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
+                .w(SCROLLBAR_TRACK_PX)
+                .h(tb.h)
+                .bg(t.border)
+                .opacity(Some(track_opacity))
+                .transition(fade),
+            Style::new()
+                .x(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
+                .w(SCROLLBAR_TRACK_PX)
+                .h(tlen)
+                .absolute_y(tpos)
+                .bg(t.text_secondary)
+                .opacity(Some(thumb_opacity))
+                .transition(fade),
+        ),
+        ScrollbarAxis::Horizontal => (
+            Style::new()
+                .absolute_y(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
+                .h(SCROLLBAR_TRACK_PX)
+                .w(tb.w)
+                .bg(t.border)
+                .opacity(Some(track_opacity))
+                .transition(fade),
+            Style::new()
+                .absolute_y(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
+                .h(SCROLLBAR_TRACK_PX)
+                .w(tlen)
+                .x(tpos)
+                .bg(t.text_secondary)
+                .opacity(Some(thumb_opacity))
+                .transition(fade),
+        ),
+    };
+    let track = track.children([
+        Div(format!("scrollbar-trackbar-{inst}").as_str())
+            .style(bar_style)
+            .build(),
+        Div(format!("scrollbar-thumb-{inst}").as_str())
+            .style(thumb_style)
+            .build(),
+    ]);
     // Root origin for the portal base (unstyled marker — content
     // origin is the box origin; tracked like the target so resizes
     // reposition the overlay).
@@ -2752,7 +3296,7 @@ pub fn VirtualList<T: Clone + 'static>(ctx: &Ctx, props: &VirtualListProps<T>) -
             Div("vlist-slot")
                 .style(Style::new().absolute_y(tops[idx] - y).h(h).w(width).build())
                 .key(slot as u64)
-                .child(ctx.child("oppa::VListRow", slot as u64, &row_props, props.render_row))
+                .child(ctx.child_keyed(slot as u64, &row_props, props.render_row))
         })
         .collect::<Vec<_>>();
     let area = oppa::ScrollArea(&props.debug)
@@ -2774,13 +3318,12 @@ pub fn VirtualList<T: Clone + 'static>(ctx: &Ctx, props: &VirtualListProps<T>) -
     // `content_size` above — no second source. The overlay is a
     // portal (out-of-flow), so the wrapper sizes exactly to the
     // area and committed boxes move nowhere.
-    let bar = ctx.child(
-        "oppa::VListBar",
-        1,
+    let bar = ctx.child_auto(
         &ScrollbarProps {
             target: props.debug.clone(),
             offset: offset.clone(),
             idle_hide_ms: Some(1200),
+            axis: ScrollbarAxis::Vertical,
         },
         Scrollbar,
     );
@@ -3056,13 +3599,12 @@ pub fn DataGrid<T: Clone + 'static>(ctx: &Ctx, props: &DataGridProps<T>) -> VNod
     }
     // Attached overlay (Round 21.2, decision 329): same contract as
     // VirtualList — the grid's instance offset drives the thumb.
-    let bar = ctx.child(
-        "oppa::DGridBar",
-        1,
+    let bar = ctx.child_auto(
         &ScrollbarProps {
             target: props.debug.clone(),
             offset: offset.clone(),
             idle_hide_ms: Some(1200),
+            axis: ScrollbarAxis::Vertical,
         },
         Scrollbar,
     );
@@ -3332,7 +3874,7 @@ pub fn ErrorBoundary(ctx: &Ctx, props: &ErrorBoundaryProps) -> VNode {
                 let r = reset_action.clone();
                 let btn_props =
                     ButtonProps::new("Retry", move || r()).debug("error-boundary-retry");
-                let retry_btn = ctx.child("oppa::ErrorBoundaryRetry", 0, &btn_props, Button);
+                let retry_btn = ctx.child_auto(&btn_props, Button);
                 let card = Div("error-boundary-card")
                     .style(
                         Style::new()
@@ -3349,6 +3891,2048 @@ pub fn ErrorBoundary(ctx: &Ctx, props: &ErrorBoundaryProps) -> VNode {
                 Div("error-boundary-container").child(card)
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tree (Phase 38b, G12)
+// ---------------------------------------------------------------------------
+
+/// One hierarchy node: identity + label + parent link (`None` =
+/// root). Plain data over an author-owned [`Collection`](oppa::Collection)
+/// (commit order = sibling order — roots and children each keep it).
+#[derive(Clone, PartialEq, Debug)]
+pub struct TreeNode {
+    pub id: SharedString,
+    pub label: SharedString,
+    pub parent: Option<SharedString>,
+}
+
+impl TreeNode {
+    pub fn root(id: &str, label: &str) -> Self {
+        Self {
+            id: SharedString::from(id),
+            label: SharedString::from(label),
+            parent: None,
+        }
+    }
+
+    pub fn child(id: &str, label: &str, parent: &str) -> Self {
+        Self {
+            id: SharedString::from(id),
+            label: SharedString::from(label),
+            parent: Some(SharedString::from(parent)),
+        }
+    }
+}
+
+/// Tree props (controlled — `expanded` holds the open node ids,
+/// `selected` the chosen node; both author-owned signals). The
+/// hierarchy rides `nodes` (a [`Collection`](oppa::Collection) of
+/// [`TreeNode`]); the visible flatten re-derives live (appends grow
+/// the tree, removals collapse it — same frame, no remount).
+/// `row_height` is fixed per row (variable heights stay out —
+/// the Blocked prefix-sum rule); the viewport scrolls natively with
+/// an attached [`Scrollbar`].
+#[derive(Clone, Props)]
+pub struct TreeProps {
+    pub nodes: oppa::Collection<TreeNode>,
+    pub expanded: Signal<Vec<SharedString>>,
+    pub selected: Signal<Option<SharedString>>,
+    pub label: SharedString,
+    pub width: f32,
+    pub height: f32,
+    pub row_height: f32,
+    pub overscan: usize,
+    pub enabled: bool,
+    pub debug: SharedString,
+}
+
+/// Flattens the hierarchy to visible `(row, depth)` pairs in
+/// commit order (pure — headless-testable): roots first, each open
+/// node's children (commit order) recursed. Unknown parents and
+/// cycles refuse loudly (authoring bugs, never silent skips —
+/// a child naming a missing parent, or a parent loop, panics).
+pub fn tree_visible(
+    rows: &[oppa::Row<TreeNode>],
+    expanded: &[SharedString],
+) -> Vec<(oppa::Row<TreeNode>, usize)> {
+    use std::collections::HashSet;
+    let ids: HashSet<&str> = rows.iter().map(|r| r.value.id.as_ref()).collect();
+    for row in rows {
+        if let Some(p) = row.value.parent.as_ref() {
+            assert!(
+                ids.contains(p.as_ref()),
+                "tree child {:?} names missing parent {p:?} — refused, never silently dropped",
+                row.value.id.to_string(),
+            );
+        }
+    }
+    fn visit(
+        rows: &[oppa::Row<TreeNode>],
+        parent: Option<&str>,
+        expanded: &[SharedString],
+        depth: usize,
+        stack: &mut Vec<SharedString>,
+        out: &mut Vec<(oppa::Row<TreeNode>, usize)>,
+    ) {
+        for row in rows
+            .iter()
+            .filter(|r| r.value.parent.as_ref().map(|p| p.as_ref()) == parent)
+        {
+            let id = row.value.id.clone();
+            assert!(
+                !stack.iter().any(|s| s == &id),
+                "tree parent loop at {id:?} — refused, never an infinite flatten"
+            );
+            out.push((row.clone(), depth));
+            if expanded.iter().any(|e| e == &id) {
+                stack.push(id.clone());
+                let parent: SharedString = id;
+                visit(rows, Some(parent.as_ref()), expanded, depth + 1, stack, out);
+                stack.pop();
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut stack = Vec::new();
+    visit(rows, None, expanded, 0, &mut stack, &mut out);
+    out
+}
+
+/// Toggles `id` in the expanded list (pure — headless-testable):
+/// present → removed, absent → appended (append order is render
+/// order only, never semantic).
+pub fn tree_toggled(expanded: &[SharedString], id: &SharedString) -> Vec<SharedString> {
+    if expanded.iter().any(|e| e == id) {
+        expanded.iter().filter(|e| *e != id).cloned().collect()
+    } else {
+        let mut next = expanded.to_vec();
+        next.push(id.clone());
+        next
+    }
+}
+
+/// One tree row (private — mounted per visible slot through
+/// `ctx.child_keyed`, so slots recycle like [`VirtualList`] slots:
+/// expanding rebinds slot content, never remounts the viewport).
+#[derive(Clone)]
+struct TreeRowProps {
+    node: oppa::Row<TreeNode>,
+    depth: usize,
+    selected: bool,
+    expanded: bool,
+    has_children: bool,
+    row_height: f32,
+    width: f32,
+    enabled: bool,
+    on_select: Action,
+    on_toggle: Action,
+    nav: Rc<dyn Fn(NavDir)>,
+}
+
+/// Tree keyboard direction (one payload-less handler per direction —
+/// the arrow precedent, lock #11 stands).
+#[derive(Clone, Copy)]
+enum NavDir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl Props for TreeRowProps {}
+
+/// Vector chevron data (the Select-chevron precedent — real stroked
+/// paths, no symbol-font coverage): right when collapsed, down when
+/// open; leaves render a 12px spacer so labels align.
+fn tree_chevron(expanded: bool) -> &'static str {
+    if expanded {
+        "M 2 4 L 6 9 L 10 4"
+    } else {
+        "M 4 2 L 9 6 L 4 10"
+    }
+}
+
+fn TreeRow(ctx: &Ctx, props: &TreeRowProps) -> VNode {
+    let t = ctx.theme().tokens();
+    let semantics = Semantics::tree_item(props.selected)
+        .label(&props.node.value.label)
+        .disabled(!props.enabled);
+    let chevron = if props.has_children {
+        Path::new("tree-chevron")
+            .data(tree_chevron(props.expanded))
+            .stroke(t.text_primary, 2.0)
+            .size(12, 12)
+            .build()
+    } else {
+        Div("tree-spacer").style(Style::new().size(12, 12)).build()
+    };
+    // The chevron owns the toggle press (Enter/Space on it toggles
+    // through the router pulse); the row owns select + arrows.
+    let chevron = if props.enabled && props.has_children {
+        let toggle = props.on_toggle.clone();
+        Div("tree-chevron-hit")
+            .style(Style::new().size(20, 20).align_items(AlignItems::Center))
+            .on_press(move || toggle())
+            .child(chevron)
+    } else {
+        Div("tree-chevron-hit")
+            .style(Style::new().size(20, 20).align_items(AlignItems::Center))
+            .child(chevron)
+    };
+    let mut label = Text::new(props.node.value.label.clone());
+    if props.selected {
+        label = label.bold();
+    }
+    let label_vnode = if props.selected {
+        with_ink(VNode::from(label), t.primary)
+    } else {
+        VNode::from(label)
+    };
+    let row_style = Style::new()
+        .size(props.width, props.row_height)
+        .pad_left(props.depth as f32 * 16.0)
+        .gap(4)
+        .align_items(AlignItems::Center);
+    let builder = Row("tree-row")
+        .style(focus_ringed(ctx, props.enabled, row_style))
+        .semantics(semantics);
+    // All four arrows share the row press owner (handlers attach
+    // pre-`child` — `.child()`/`.children()` are terminal, so every
+    // handler rides the chain above the row content).
+    let builder = if props.enabled {
+        let select = props.on_select.clone();
+        let nav_u = props.nav.clone();
+        let nav_d = props.nav.clone();
+        let nav_l = props.nav.clone();
+        let nav_r = props.nav.clone();
+        builder
+            .on_press(move || select())
+            .on_key_up(move || nav_u(NavDir::Up))
+            .on_key_down(move || nav_d(NavDir::Down))
+            .on_key_left(move || nav_l(NavDir::Left))
+            .on_key_right(move || nav_r(NavDir::Right))
+    } else {
+        builder
+    };
+    builder.children([chevron, label_vnode])
+}
+
+/// Hierarchy view over a [`Collection`](oppa::Collection): visible
+/// rows flatten per render ([`tree_visible`]), window through the
+/// shared [`vlist_window`] math (binary-searched tops, overscan —
+/// the [`VirtualList`] precedent, fixed `row_height`), and recycle
+/// per-slot instances (`child_keyed` on the slot — expanding
+/// rebinds content, never remounts).
+///
+/// Interaction: row press selects (Enter/Space pulse it through the
+/// router); chevron press toggles expansion; arrows on the focused
+/// row move selection (Up/Down to the visible neighbors), collapse
+/// / ascend (Left: collapse when open, else select the parent),
+/// expand / descend (Right: expand when closed with children, else
+/// select the first child). Ends and leaves are quiet no-ops
+/// (controlled-contract edges, documented not silent). Disabled
+/// renders everything handlerless with `disabled` semantics.
+pub fn Tree(ctx: &Ctx, props: &TreeProps) -> VNode {
+    let offset = ctx.scroll_offset();
+    let y = offset.get();
+    let page = props.nodes.query(&oppa::CollectionQuery {
+        filter: None,
+        sort: None,
+        offset: 0,
+        limit: None,
+    });
+    let expanded = props.expanded.get();
+    let selected = props.selected.get();
+    let visible = tree_visible(&page.rows, &expanded);
+    let n = visible.len();
+    let rh = props.row_height;
+    assert!(
+        rh.is_finite() && rh > 0.0,
+        "tree row_height must be finite positive, got {rh} — refused, never a silent collapse"
+    );
+    let mut tops = Vec::with_capacity(n + 1);
+    let mut cursor = 0.0f32;
+    for _ in 0..n {
+        tops.push(cursor);
+        cursor += rh;
+    }
+    let total = cursor;
+    let (first, end) = vlist_window(&tops, total, y, props.height, props.overscan);
+    let width = props.width;
+    let children = visible[first..end]
+        .iter()
+        .enumerate()
+        .map(|(slot, (row, depth))| {
+            let idx = first + slot;
+            let id = row.value.id.clone();
+            let has_children = page
+                .rows
+                .iter()
+                .any(|r| r.value.parent.as_ref() == Some(&id));
+            let is_open = expanded.iter().any(|e| e == &id);
+            let is_sel = selected.as_ref() == Some(&id);
+            // Event-time nav (recomputes the visible list from live
+            // signals — the Slider fresh-geometry precedent, so keys
+            // never act on a stale flatten).
+            let nav_nodes = props.nodes.clone();
+            let nav_expanded = props.expanded.clone();
+            let nav_selected = props.selected.clone();
+            let nav = Rc::new(move |dir: NavDir| {
+                let page = nav_nodes.query(&oppa::CollectionQuery {
+                    filter: None,
+                    sort: None,
+                    offset: 0,
+                    limit: None,
+                });
+                let exp = nav_expanded.get();
+                let vis = tree_visible(&page.rows, &exp);
+                let sel = nav_selected.get();
+                let at = vis
+                    .iter()
+                    .position(|(r, _)| Some(&r.value.id) == sel.as_ref());
+                match dir {
+                    NavDir::Up => {
+                        if let Some(i) = at {
+                            if i > 0 {
+                                nav_selected.set(Some(vis[i - 1].0.value.id.clone()));
+                            }
+                        } else if !vis.is_empty() {
+                            nav_selected.set(Some(vis[0].0.value.id.clone()));
+                        }
+                    }
+                    NavDir::Down => {
+                        if let Some(i) = at {
+                            if i + 1 < vis.len() {
+                                nav_selected.set(Some(vis[i + 1].0.value.id.clone()));
+                            }
+                        } else if !vis.is_empty() {
+                            nav_selected.set(Some(vis[0].0.value.id.clone()));
+                        }
+                    }
+                    NavDir::Left => {
+                        let Some(i) = at else { return };
+                        let (row, _) = &vis[i];
+                        if exp.iter().any(|e| e == &row.value.id) {
+                            nav_expanded.set(tree_toggled(&exp, &row.value.id));
+                        } else if let Some(p) = row.value.parent.clone() {
+                            nav_selected.set(Some(p));
+                        }
+                    }
+                    NavDir::Right => {
+                        let Some(i) = at else { return };
+                        let (row, _) = &vis[i];
+                        let kids = page
+                            .rows
+                            .iter()
+                            .any(|r| r.value.parent.as_ref() == Some(&row.value.id));
+                        if kids && !exp.iter().any(|e| e == &row.value.id) {
+                            nav_expanded.set(tree_toggled(&exp, &row.value.id));
+                        } else if kids {
+                            let first_kid = page
+                                .rows
+                                .iter()
+                                .find(|r| r.value.parent.as_ref() == Some(&row.value.id));
+                            if let Some(k) = first_kid {
+                                nav_selected.set(Some(k.value.id.clone()));
+                            }
+                        }
+                    }
+                }
+            });
+            let sel_id = id.clone();
+            let sel_sig = props.selected.clone();
+            let exp_sig = props.expanded.clone();
+            let exp_list = expanded.clone();
+            let row_props = TreeRowProps {
+                node: row.clone(),
+                depth: *depth,
+                selected: is_sel,
+                expanded: is_open,
+                has_children,
+                row_height: rh,
+                width,
+                enabled: props.enabled,
+                on_select: action(move || sel_sig.set(Some(sel_id.clone()))),
+                on_toggle: action(move || exp_sig.set(tree_toggled(&exp_list, &id))),
+                nav,
+            };
+            Div("tree-slot")
+                .style(
+                    Style::new()
+                        .absolute_y(tops[idx] - y)
+                        .h(rh)
+                        .w(width)
+                        .build(),
+                )
+                .key(slot as u64)
+                .child(ctx.child_keyed(slot as u64, &row_props, TreeRow))
+        })
+        .collect::<Vec<_>>();
+    let area = oppa::ScrollArea(&props.debug)
+        .style(
+            Style::new()
+                .size(width, props.height)
+                .content_size(total)
+                .build(),
+        )
+        .semantics(
+            Semantics::tree()
+                .label(&props.label)
+                .disabled(!props.enabled),
+        )
+        .on_scroll(|| {})
+        .children(children);
+    // Disabled rows render handlerless inside (TreeRow gates on
+    // enabled — decision 213); the scroll container itself always
+    // scrolls (a viewport, not a control).
+    area
+}
+
+// ---------------------------------------------------------------------------
+// Splitter (Phase 38b, G13)
+// ---------------------------------------------------------------------------
+
+/// Splitter axis: `Vertical` splits left/right (the divider is a
+/// vertical bar, `ColResize`); `Horizontal` splits top/bottom
+/// (`RowResize`). One axis per instance (the Scrollbar-axis
+/// precedent — decision 354).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SplitterAxis {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+/// Splitter props (controlled — `fraction` is the author-owned
+/// first-pane share of the main axis, `0..1` clamped to the minima
+/// below). Panes are factories (`Rc`, the TabItem-content
+/// precedent — `VNode` is move-only, so factories rebuild per
+/// render; child `(name, key)` pairs inside panes must be unique
+/// across BOTH panes, the Tabs-namespace rule).
+#[derive(Clone, Props)]
+pub struct SplitterProps {
+    pub fraction: Signal<f32>,
+    pub axis: SplitterAxis,
+    pub width: f32,
+    pub height: f32,
+    pub divider_px: f32,
+    pub min_first_px: f32,
+    pub min_second_px: f32,
+    pub enabled: bool,
+    pub debug: SharedString,
+    pub first: Rc<dyn Fn(&Ctx) -> VNode>,
+    pub second: Rc<dyn Fn(&Ctx) -> VNode>,
+    pub on_change: Option<Change<f32>>,
+}
+
+/// Clamps `frac` into the minima (pure — headless-testable): the
+/// first pane keeps `min_first_px`, the second `min_second_px`
+/// (the divider straddles the fraction edge, hence the half-divider
+/// terms). Panics loudly on non-finite/negative geometry or minima
+/// exceeding the total (authoring contradictions, never silent
+/// snaps — the Grid-span precedent).
+pub fn splitter_fraction(
+    frac: f32,
+    total: f32,
+    divider: f32,
+    min_first: f32,
+    min_second: f32,
+) -> f32 {
+    if !frac.is_finite() {
+        panic!("splitter fraction must be finite, got {frac} — refused, never silent");
+    }
+    if !(total.is_finite() && total > 0.0) {
+        panic!("splitter total must be finite positive, got {total} — refused, never silent");
+    }
+    if !(divider.is_finite() && divider >= 0.0) {
+        panic!(
+            "splitter divider must be finite non-negative, got {divider} — refused, never silent"
+        );
+    }
+    if !(min_first.is_finite() && min_first >= 0.0) {
+        panic!("splitter min_first_px must be finite non-negative, got {min_first} — refused, never silent");
+    }
+    if !(min_second.is_finite() && min_second >= 0.0) {
+        panic!("splitter min_second_px must be finite non-negative, got {min_second} — refused, never silent");
+    }
+    if min_first + min_second + divider > total {
+        panic!(
+            "splitter minima ({min_first} + {min_second} + divider {divider}) exceed total {total} — refused, never a silent overlap"
+        );
+    }
+    let lo = (min_first + divider / 2.0) / total;
+    let hi = 1.0 - (min_second + divider / 2.0) / total;
+    frac.clamp(lo, hi)
+}
+
+/// Sets a clamped splitter fraction and reports it (the single
+/// funnel for the drag/arrow sites — the `apply_slider_value`
+/// precedent, so notification cannot drift from any one path).
+fn apply_split_fraction(
+    fraction: &Signal<f32>,
+    notify: &Option<Change<f32>>,
+    frac: f32,
+    total: f32,
+    divider: f32,
+    min_first: f32,
+    min_second: f32,
+) {
+    let clamped = splitter_fraction(frac, total, divider, min_first, min_second);
+    fraction.set(clamped);
+    if let Some(notify) = notify.as_ref() {
+        notify(clamped);
+    }
+}
+
+/// Two-pane draggable divider (Slider-drag precedent): the divider
+/// captures on press, every `Move` re-maps through
+/// `capture_position` over the container box (fresh geometry at
+/// event time — immune to body staleness), `Up`/`Cancel` clears.
+/// Arrows nudge by 0.05 (Left/Down down, Right/Up up — the Slider
+/// arrow precedent, axis-agnostic by design); ends clamp quietly.
+/// Disabled renders the panes with a handlerless divider (no tab
+/// stop either — decision 213).
+pub fn Splitter(ctx: &Ctx, props: &SplitterProps) -> VNode {
+    let total = match props.axis {
+        SplitterAxis::Vertical => props.width,
+        SplitterAxis::Horizontal => props.height,
+    };
+    let frac = splitter_fraction(
+        props.fraction.get(),
+        total,
+        props.divider_px,
+        props.min_first_px,
+        props.min_second_px,
+    );
+    let d = props.divider_px;
+    let first_px = frac * total - d / 2.0;
+    let cross = match props.axis {
+        SplitterAxis::Vertical => props.height,
+        SplitterAxis::Horizontal => props.width,
+    };
+    let t = ctx.theme().tokens();
+    let cursor = match props.axis {
+        SplitterAxis::Vertical => CursorIcon::ColResize,
+        SplitterAxis::Horizontal => CursorIcon::RowResize,
+    };
+    // Divider drag (the Slider-track precedent): the pointer
+    // coordinate over the container box maps to the fraction.
+    let host = ctx.host();
+    let (g_frac, g_notify) = (props.fraction.clone(), props.on_change.clone());
+    let (g_min_first, g_min_second) = (props.min_first_px, props.min_second_px);
+    let g_axis = props.axis;
+    let g_debug = props.debug.clone();
+    let g_d = d;
+    let drag_action = move || {
+        let Some((x, y)) = host.capture_position() else {
+            return;
+        };
+        let Some(box_id) = oppa::find_retained_by_debug(&host, &g_debug)
+            .into_iter()
+            .next()
+        else {
+            return;
+        };
+        let Some(b) = host.committed_box(box_id) else {
+            return;
+        };
+        let (coord, origin, extent) = match g_axis {
+            SplitterAxis::Vertical => (x, b.x, b.w),
+            SplitterAxis::Horizontal => (y, b.y, b.h),
+        };
+        if !(extent.is_finite() && extent > 0.0) {
+            return;
+        }
+        apply_split_fraction(
+            &g_frac,
+            &g_notify,
+            (coord - origin) / extent,
+            extent,
+            g_d,
+            g_min_first,
+            g_min_second,
+        );
+    };
+    let nudge = |dir: f32| {
+        let (fraction, notify) = (props.fraction.clone(), props.on_change.clone());
+        let (total, d, min_first, min_second) = (total, d, props.min_first_px, props.min_second_px);
+        move || {
+            apply_split_fraction(
+                &fraction,
+                &notify,
+                fraction.get() + dir * 0.05,
+                total,
+                d,
+                min_first,
+                min_second,
+            )
+        }
+    };
+    // Panes size explicitly (decision 213 — no content-derived
+    // sizes anywhere near a drag map).
+    let (first_style, divider_style, second_style) = match props.axis {
+        SplitterAxis::Vertical => (
+            Style::new().size(first_px.max(0.0), cross),
+            Style::new().size(d, cross).bg(t.border).cursor(cursor),
+            Style::new().size((total - frac * total - d / 2.0).max(0.0), cross),
+        ),
+        SplitterAxis::Horizontal => (
+            Style::new().size(cross, first_px.max(0.0)),
+            Style::new().size(cross, d).bg(t.border).cursor(cursor),
+            Style::new().size(cross, (total - frac * total - d / 2.0).max(0.0)),
+        ),
+    };
+    let first = Div(format!("{}-first", props.debug.as_ref()).as_str())
+        .style(first_style)
+        .child((props.first)(ctx));
+    let second = Div(format!("{}-second", props.debug.as_ref()).as_str())
+        .style(second_style)
+        .child((props.second)(ctx));
+    let divider = Div(format!("{}-divider", props.debug.as_ref()).as_str()).style(focus_ringed(
+        ctx,
+        props.enabled,
+        divider_style,
+    ));
+    let divider = if props.enabled {
+        divider
+            // Focus-only press (capture owner for drags + tab stop +
+            // focus for arrows — the Slider-root precedent, the
+            // closure is intentionally empty).
+            .on_press(|| {})
+            .on_drag(drag_action)
+            .on_key_left(nudge(-1.0))
+            .on_key_down(nudge(-1.0))
+            .on_key_right(nudge(1.0))
+            .on_key_up(nudge(1.0))
+    } else {
+        divider
+    };
+    // NOTE: `divider` is an `ElementBuilder` here (handlers attach
+    // pre-child); the divider itself is a childless bar (paints its
+    // `border`-ink fill, nothing else).
+    let divider = divider.build();
+    let inner = match props.axis {
+        SplitterAxis::Vertical => Row(format!("{}-inner", props.debug.as_ref()).as_str())
+            .children([first, divider, second]),
+        SplitterAxis::Horizontal => Div(format!("{}-inner", props.debug.as_ref()).as_str())
+            .children([first, divider, second]),
+    };
+    Div(&props.debug)
+        .style(Style::new().size(props.width, props.height))
+        .child(inner)
+}
+
+// ---------------------------------------------------------------------------
+// DatePicker (Phase 38b, G14)
+// ---------------------------------------------------------------------------
+
+/// Calendar date (proleptic Gregorian, no timezone — a picked day,
+/// never an instant). `month` is 1–12, `day` 1–31 (validated by
+/// [`Date::valid`]); ordering is chronological (derived `Ord`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Date {
+    pub year: i32,
+    pub month: u8,
+    pub day: u8,
+}
+
+/// Date failure (loud by construction — authoring bugs panic,
+/// user input parses to `None`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DateError {
+    OutOfMonth(u8),
+    OutOfDay(u8),
+}
+
+impl Date {
+    /// Builds a date, refusing out-of-range months/days loudly
+    /// (including Feb 30 — validated against the leap rule, never
+    /// silently normalized like a lenient parser would).
+    pub fn new(year: i32, month: u8, day: u8) -> Self {
+        if !(1..=12).contains(&month) {
+            panic!("date month must be 1..=12, got {month} — refused, never silent");
+        }
+        let dim = days_in_month(year, month);
+        if day < 1 || day > dim {
+            panic!(
+                "date day must be 1..={dim} for {year}-{month:02}, got {day} — refused, never silent"
+            );
+        }
+        Self { year, month, day }
+    }
+
+    /// Checked construction for parsed input (`None` on any
+    /// out-of-range field — user input is a query outcome, never a
+    /// failure).
+    pub fn valid(year: i32, month: u8, day: u8) -> Option<Self> {
+        if !(1..=12).contains(&month) {
+            return None;
+        }
+        let dim = days_in_month(year, month);
+        if day < 1 || day > dim {
+            return None;
+        }
+        Some(Self { year, month, day })
+    }
+}
+
+/// Leap rule (Gregorian — divisible by 4, except centuries unless
+/// divisible by 400).
+pub fn is_leap(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Month length (pure — headless-testable; panics loudly on month
+/// 0/13+, never a silent 30).
+pub fn days_in_month(year: i32, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap(year) {
+                29
+            } else {
+                28
+            }
+        }
+        m => panic!("month must be 1..=12, got {m} — refused, never silent"),
+    }
+}
+
+/// Days since 1970-01-01 (Howard Hinnant's algorithm — pure,
+/// headless-testable; the weekday/month-shift backbone).
+fn days_from_civil(year: i32, month: u8, day: u8) -> i32 {
+    let (mut y, m) = (year, month as i32);
+    y -= (m <= 2) as i32;
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn civil_from_days(z: i32) -> Date {
+    let zz = z + 719468;
+    let era = if zz >= 0 { zz } else { zz - 146096 } / 146097;
+    let doe = zz - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u8;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
+    y += (m <= 2) as i32;
+    Date {
+        year: y,
+        month: m,
+        day: d,
+    }
+}
+
+/// Monday-based weekday of a date (0 = Monday … 6 = Sunday; pure —
+/// 1970-01-01 was a Thursday, hence the +3).
+pub fn weekday_monday0(date: Date) -> u8 {
+    (days_from_civil(date.year, date.month, date.day) + 3).rem_euclid(7) as u8
+}
+
+/// Shifts a date by whole days, clamping the result into
+/// `[min, max]` (pure — the arrow-key backbone; out-of-range ends
+/// pin, never wrap).
+pub fn shift_days(date: Date, delta: i32, min: Option<Date>, max: Option<Date>) -> Date {
+    let moved = civil_from_days(days_from_civil(date.year, date.month, date.day) + delta);
+    clamp_date(moved, min, max)
+}
+
+/// Clamps a date into `[min, max]` (pure — `None` bounds are open).
+pub fn clamp_date(date: Date, min: Option<Date>, max: Option<Date>) -> Date {
+    let mut d = date;
+    if let Some(lo) = min {
+        if d < lo {
+            d = lo;
+        }
+    }
+    if let Some(hi) = max {
+        if d > hi {
+            d = hi;
+        }
+    }
+    d
+}
+
+/// Shifts the shown month, keeping the day where the target month
+/// allows (clamped to its length — Jan 31 → Feb 28/29, never a
+/// silent March spill). Returns `None` when the shifted month lies
+/// fully outside `[min, max]` (the prev/next disable rule).
+pub fn shift_month(date: Date, delta: i32, min: Option<Date>, max: Option<Date>) -> Option<Date> {
+    let total = date.year as i64 * 12 + (date.month as i64 - 1) + delta as i64;
+    let y = total.div_euclid(12) as i32;
+    let m = (total.rem_euclid(12) + 1) as u8;
+    let dim = days_in_month(y, m);
+    let first = Date {
+        year: y,
+        month: m,
+        day: 1,
+    };
+    let last = Date {
+        year: y,
+        month: m,
+        day: dim,
+    };
+    if let Some(lo) = min {
+        if last < lo {
+            return None;
+        }
+    }
+    if let Some(hi) = max {
+        if first > hi {
+            return None;
+        }
+    }
+    Some(Date {
+        year: y,
+        month: m,
+        day: date.day.min(dim),
+    })
+}
+
+/// Formats `YYYY-MM-DD` (the text-bridge spelling — fixed width,
+/// zero-padded, lexicographically sortable).
+pub fn format_date(date: Date) -> SharedString {
+    SharedString::from(format!(
+        "{:04}-{:02}-{:02}",
+        date.year, date.month, date.day
+    ))
+}
+
+/// Parses `YYYY-MM-DD` (strict — 4/2/2 digits with `-` separators;
+/// anything else is `None`, never a loud parse — user input is a
+/// query outcome). Out-of-range fields are `None` too (Feb 30
+/// parses to nothing, never a silent March 2).
+pub fn parse_date(s: &str) -> Option<Date> {
+    let mut parts = s.split('-');
+    let (y, m, d) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || y.len() != 4 || m.len() != 2 || d.len() != 2 {
+        return None;
+    }
+    let year: i32 = y.parse().ok()?;
+    let month: u8 = m.parse().ok()?;
+    let day: u8 = d.parse().ok()?;
+    Date::valid(year, month, day)
+}
+
+/// English month names (the popup header — fixed strings, never
+/// locale lookups; localization is app-side, stated).
+pub const MONTH_NAMES: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// Monday-first two-letter weekday headers.
+pub const WEEKDAY_HEADERS: [&str; 7] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+
+/// DatePicker props (controlled — `value` is the picked day,
+/// `open` the month-popup visibility; both author-owned signals).
+/// `min`/`max` bound every path (arrows pin, month flips refuse
+/// past the bound, out-of-range days render handlerless, parses
+/// outside the bound are ignored — one bound, never per-path
+/// second-guessing).
+#[derive(Clone, Props)]
+pub struct DatePickerProps {
+    pub value: Signal<Date>,
+    pub open: Signal<bool>,
+    pub min: Option<Date>,
+    pub max: Option<Date>,
+    pub enabled: bool,
+    pub width: f32,
+    pub label: SharedString,
+}
+
+fn date_in_bounds(date: Date, min: Option<Date>, max: Option<Date>) -> bool {
+    clamp_date(date, min, max) == date
+}
+
+/// Month-grid popup date picker: a `combobox` box (a [`TextInput`]
+/// parse bridge showing `YYYY-MM-DD` + a chevron toggle) over a
+/// `Portal` month [`Grid`](oppa::Grid) (the Select-popup
+/// precedent — `x(0)` + `absolute_y(36)`, out-of-flow, constant
+/// 32px root). Typing a valid in-bounds date commits it (invalid
+/// text is a quiet no-op — the controlled-contract edge, same class
+/// as an unmatched Select signal); picking a day sets the value and
+/// closes; prev/next flip the shown month (the value's month — the
+/// popup carries no cursor state, so month and value cannot drift).
+/// Arrows on the focused toggle step the value (Left/Right ±1 day,
+/// Up/Down ±7, `Home` month-first, `End` month-last — the Slider
+/// key precedent); Enter/Space toggles through the router pulse.
+/// Disabled drops every handler structurally (decision 213).
+pub fn DatePicker(ctx: &Ctx, props: &DatePickerProps) -> VNode {
+    let t = ctx.theme().tokens();
+    let value = props.value.get();
+    let is_open = props.open.get();
+    // Text bridge (the studio-inspector latch): the text signal
+    // mirrors the value; typing parses back into it.
+    let text = ctx.signal(format_date(value));
+    let spelled = format_date(value);
+    if text.get() != spelled {
+        text.set(spelled.clone());
+    }
+    let (p_value, p_min, p_max) = (props.value.clone(), props.min, props.max);
+    let commit: Change<SharedString> = Rc::new(move |s| {
+        let Some(d) = parse_date(&s) else { return };
+        if d != p_value.get() && date_in_bounds(d, p_min, p_max) {
+            p_value.set(d);
+        }
+    });
+    let text_props = TextInputProps {
+        label: props.label.clone(),
+        value: text,
+        placeholder: Some(SharedString::from("YYYY-MM-DD")),
+        enabled: props.enabled,
+        width: (props.width - 40.0).max(80.0),
+        height: 32.0,
+        style: Text::body_secondary,
+        debug: SharedString::from("date-text"),
+        on_change: Some(commit),
+        masked: false,
+        invalid: false,
+        required: false,
+        error_message: None,
+        helper_text: None,
+    };
+    let toggle = {
+        let open = props.open.clone();
+        action(move || open.set(!open.get()))
+    };
+    let chevron = Path::new("date-chevron")
+        .data(if is_open {
+            "M 2 6 L 6 2 L 10 6"
+        } else {
+            "M 2 2 L 6 6 L 10 2"
+        })
+        .stroke(t.text_primary, 2.0)
+        .size(12, 8)
+        .build();
+    // Keyboard day-steps (the Slider key precedent): arrows pin to
+    // the bounds (quiet no-ops past them); Home/End jump to the
+    // month edges. Enter/Space toggle through the router pulse.
+    let step = |delta: i32| {
+        let (v, min, max) = (props.value.clone(), props.min, props.max);
+        move || {
+            let next = shift_days(v.get(), delta, min, max);
+            if next != v.get() {
+                v.set(next);
+            }
+        }
+    };
+    let edge = |to_first: bool| {
+        let (v, min, max) = (props.value.clone(), props.min, props.max);
+        move || {
+            let cur = v.get();
+            let dim = days_in_month(cur.year, cur.month);
+            let end = if to_first {
+                Date {
+                    year: cur.year,
+                    month: cur.month,
+                    day: 1,
+                }
+            } else {
+                Date {
+                    year: cur.year,
+                    month: cur.month,
+                    day: dim,
+                }
+            };
+            let next = clamp_date(end, min, max);
+            if next != cur {
+                v.set(next);
+            }
+        }
+    };
+    let box_builder = Row("date-box")
+        .style(focus_ringed(
+            ctx,
+            props.enabled,
+            Style::new()
+                .size(props.width, 32)
+                .radius(4)
+                .border(1, t.border)
+                .bg(if props.enabled { t.surface } else { t.disabled })
+                .pad_x(8)
+                .gap(8)
+                .align_items(AlignItems::Center),
+        ))
+        .semantics(
+            Semantics::combobox()
+                .label(&spelled)
+                .disabled(!props.enabled),
+        );
+    let box_builder = if props.enabled {
+        box_builder
+            .on_press(move || toggle())
+            .on_key_left(step(-1))
+            .on_key_right(step(1))
+            .on_key_up(step(-7))
+            .on_key_down(step(7))
+            .on_key_home(edge(true))
+            .on_key_end(edge(false))
+    } else {
+        box_builder
+    };
+    // (The TextInput child owns its own press/focus — taps into the
+    // text focus the field for typing; taps on the chevron half climb
+    // to the box press and toggle the popup (knob→track precedent).
+    // Keyboard users step days with the box arrows from either half.)
+    let text_child = ctx.child_auto(&text_props, TextInput);
+    let select_box = box_builder.children([text_child, chevron]);
+    let mut children = vec![select_box];
+    if is_open {
+        let dim = days_in_month(value.year, value.month);
+        let lead = weekday_monday0(Date {
+            year: value.year,
+            month: value.month,
+            day: 1,
+        }) as usize;
+        let title = SharedString::from(format!(
+            "{} {}",
+            MONTH_NAMES[(value.month - 1) as usize],
+            value.year
+        ));
+        let can_prev = shift_month(value, -1, props.min, props.max).is_some();
+        let can_next = shift_month(value, 1, props.min, props.max).is_some();
+        let prev_value = props.value.clone();
+        let prev_btn = if props.enabled && can_prev {
+            let pv = prev_value.clone();
+            let (pmin, pmax) = (props.min, props.max);
+            ctx.child_keyed(
+                1000,
+                &ButtonProps {
+                    label: SharedString::from("<"),
+                    enabled: true,
+                    width: 32.0,
+                    height: 28.0,
+                    debug: SharedString::from("date-prev"),
+                    on_press: action(move || {
+                        if let Some(d) = shift_month(pv.get(), -1, pmin, pmax) {
+                            pv.set(Date {
+                                day: pv.get().day.min(days_in_month(d.year, d.month)),
+                                ..d
+                            });
+                        }
+                    }),
+                },
+                Button,
+            )
+        } else {
+            Div("date-prev-off")
+                .style(Style::new().size(32, 28).bg(t.disabled))
+                .build()
+        };
+        let next_btn = if props.enabled && can_next {
+            let nv = prev_value.clone();
+            let (pmin, pmax) = (props.min, props.max);
+            ctx.child_keyed(
+                1001,
+                &ButtonProps {
+                    label: SharedString::from(">"),
+                    enabled: true,
+                    width: 32.0,
+                    height: 28.0,
+                    debug: SharedString::from("date-next"),
+                    on_press: action(move || {
+                        if let Some(d) = shift_month(nv.get(), 1, pmin, pmax) {
+                            nv.set(Date {
+                                day: nv.get().day.min(days_in_month(d.year, d.month)),
+                                ..d
+                            });
+                        }
+                    }),
+                },
+                Button,
+            )
+        } else {
+            Div("date-next-off")
+                .style(Style::new().size(32, 28).bg(t.disabled))
+                .build()
+        };
+        let header = Row("date-header")
+            .style(Style::new().gap(8).align_items(AlignItems::Center))
+            .children([prev_btn, VNode::from(Text::new(title).bold()), next_btn]);
+        let mut cells: Vec<VNode> = WEEKDAY_HEADERS
+            .iter()
+            .map(|w| {
+                with_ink(
+                    VNode::from(Text::new(SharedString::from(*w)).size(12)),
+                    t.text_secondary,
+                )
+            })
+            .collect();
+        for _ in 0..lead {
+            cells.push(Div("date-blank").style(Style::new().size(28, 28)).build());
+        }
+        for day in 1..=dim {
+            let d = Date {
+                year: value.year,
+                month: value.month,
+                day,
+            };
+            let in_bounds = date_in_bounds(d, props.min, props.max);
+            let is_sel = d == value;
+            let mut day_label = Text::new(SharedString::from(format!("{day}"))).size(12);
+            if is_sel {
+                day_label = day_label.bold();
+            }
+            let day_text = if is_sel {
+                with_ink(VNode::from(day_label), t.primary)
+            } else {
+                VNode::from(day_label)
+            };
+            let cell = if props.enabled && in_bounds {
+                let (vv, oo) = (props.value.clone(), props.open.clone());
+                Div(format!("date-day-{day}").as_str())
+                    .style(
+                        Style::new()
+                            .size(28, 28)
+                            .radius(4)
+                            .bg(if is_sel { t.disabled } else { t.surface })
+                            .align_items(AlignItems::Center),
+                    )
+                    .on_press(move || {
+                        vv.set(d);
+                        oo.set(false);
+                    })
+                    .child(day_text)
+            } else {
+                Div(format!("date-day-{day}").as_str())
+                    .style(
+                        Style::new()
+                            .size(28, 28)
+                            .bg(t.disabled)
+                            .align_items(AlignItems::Center),
+                    )
+                    .child(with_ink(day_text, t.text_secondary))
+            };
+            cells.push(cell);
+        }
+        let grid = oppa::Grid("date-grid")
+            .style(
+                Style::new()
+                    .grid_cols(vec![oppa::GridTrack::Fr(Px::of(1.0)); 7])
+                    .gap(2),
+            )
+            .children(cells);
+        let panel = Div("date-panel")
+            .style(
+                Style::new()
+                    .radius(4)
+                    .border(1, t.border)
+                    .bg(t.surface)
+                    .pad_x(8)
+                    .pad_y(8)
+                    .gap(8),
+            )
+            .children([header, grid]);
+        let popup = Portal("date-popup")
+            .style(Style::new().x(0).absolute_y(36).w(props.width))
+            .child(panel);
+        children.push(popup);
+    }
+    // Constant 32px root (the Select-popup precedent): the box owns
+    // the height, the popup is out-of-flow.
+    Div("date")
+        .style(Style::new().size(props.width, 32))
+        .children(children)
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar + Menubar + FilePicker (Phase 38c, G21)
+// ---------------------------------------------------------------------------
+
+/// One bar cell (shared Toolbar/Menubar recipe): label + enabled +
+/// optional separator. Separators render 1px vertical rules
+/// (non-interactive, skipped in nav; pointer hits land as quiet
+/// no-ops — the menu dead-padding precedent, without dismissal
+/// since bars never close).
+#[derive(Clone)]
+pub struct BarItem {
+    pub label: SharedString,
+    pub enabled: bool,
+    pub separator: bool,
+    pub on_press: Action,
+}
+
+impl BarItem {
+    pub fn new(label: &str, on_press: impl Fn() + 'static) -> Self {
+        Self {
+            label: SharedString::from(label),
+            enabled: true,
+            separator: false,
+            on_press: action(on_press),
+        }
+    }
+
+    pub fn separator() -> Self {
+        Self {
+            label: SharedString::from(""),
+            enabled: false,
+            separator: true,
+            on_press: action(|| {}),
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+}
+
+/// One menubar title: label + the dropdown rows it opens.
+#[derive(Clone)]
+pub struct MenuTitle {
+    pub label: SharedString,
+    pub items: Vec<MenuItemProps>,
+    pub enabled: bool,
+}
+
+impl MenuTitle {
+    pub fn new(label: &str, items: Vec<MenuItemProps>) -> Self {
+        Self {
+            label: SharedString::from(label),
+            items,
+            enabled: true,
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+}
+
+/// Shared bar-row contract (one recipe, never two spellings of the
+/// same cursor — the `RowFilter`/`RowSort` shared-alias precedent).
+trait BarRow {
+    fn selectable(&self) -> bool;
+}
+
+impl BarRow for BarItem {
+    fn selectable(&self) -> bool {
+        !self.separator && self.enabled
+    }
+}
+
+impl BarRow for MenuTitle {
+    fn selectable(&self) -> bool {
+        self.enabled && !self.items.is_empty()
+    }
+}
+
+/// Effective highlight: the stored index when selectable, else the
+/// next selectable forward (wrapping), else `None` (empty or
+/// all-disabled — Enter no-ops, nothing paints highlighted). The
+/// [`Menu`] `effective_highlight` twin for horizontal bars.
+fn bar_effective<T: BarRow>(items: &[T], stored: usize) -> Option<usize> {
+    if items.is_empty() {
+        return None;
+    }
+    let mut i = stored.min(items.len() - 1);
+    for _ in 0..items.len() {
+        if items[i].selectable() {
+            return Some(i);
+        }
+        i = (i + 1) % items.len();
+    }
+    None
+}
+
+/// One arrow step (wrapping, skipping separators and disabled
+/// cells; `dir` is +1 right / −1 left). No selectable cell keeps
+/// the index (never invents a highlight). The [`Menu`]
+/// `step_highlight` twin for horizontal bars.
+fn bar_step<T: BarRow>(items: &[T], from: usize, dir: i32) -> usize {
+    if items.is_empty() {
+        return 0;
+    }
+    let len = items.len();
+    let mut i = from.min(len - 1);
+    for _ in 0..len {
+        i = (i as i32 + dir).rem_euclid(len as i32) as usize;
+        if items[i].selectable() {
+            return i;
+        }
+    }
+    from.min(len - 1)
+}
+
+/// Cell index under a device-px point, if any (pointer path —
+/// committed boxes by hit-test label, the slider-trackbox
+/// precedent; separators count, gaps do not — the Menu `hit_item`
+/// twin with caller-owned labels).
+fn bar_hit(
+    host: &oppa::ComponentHost,
+    label: &dyn Fn(usize) -> String,
+    len: usize,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    for i in 0..len {
+        for id in oppa::find_retained_by_debug(host, &label(i)) {
+            if let Some(b) = host.committed_box(id) {
+                if x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Toolbar props: a horizontal command bar (row-based, one tab
+/// stop — arrows rove, Enter activates; the Menu focus precedent:
+/// routers own focus so components never move it — the container
+/// holds framework focus while a highlight cursor roves the
+/// cells).
+#[derive(Clone, Props)]
+pub struct ToolbarProps {
+    pub items: Vec<BarItem>,
+    pub enabled: bool,
+    pub label: SharedString,
+    pub cell_width: f32,
+    pub height: f32,
+    pub debug: SharedString,
+}
+
+impl ToolbarProps {
+    pub fn new(items: Vec<BarItem>) -> Self {
+        Self {
+            items,
+            enabled: true,
+            label: SharedString::from("Toolbar"),
+            cell_width: 64.0,
+            height: 32.0,
+            debug: SharedString::from("toolbar"),
+        }
+    }
+}
+
+/// Horizontal command bar over the shared recipe: cells render
+/// handlerless inside a single press-owner container (focus never
+/// fragments mid-gesture — the Menu-list precedent); pointer taps
+/// hit-test by committed box and invoke enabled cells (separators
+/// and disabled hits are quiet no-ops — bars never close, so there
+/// is nothing to dismiss); Left/Right rove the highlight cursor
+/// (wrapping, skipping separators/disabled); Enter/Space invokes
+/// the effective highlight through the router pulse (keyboard
+/// activation carries no tap point — the Menu disambiguation
+/// rule). Disabled renders everything handlerless with `disabled`
+/// semantics. The highlight cursor is instance-owned interaction
+/// state (the pressed-flag precedent — no author signal, unlike
+/// menu `open`).
+pub fn Toolbar(ctx: &Ctx, props: &ToolbarProps) -> VNode {
+    let t = ctx.theme().tokens();
+    let highlight = ctx.signal(0usize);
+    let eff = bar_effective(&props.items, highlight.get());
+    // Cell labels ride the author debug only (the Slider-trackbox
+    // precedent — fixed labels, sibling bars use distinct debugs).
+    let prefix = props.debug.as_ref().to_string();
+    let cells = props
+        .items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let debug = format!("{prefix}-cell-{i}");
+            if item.separator {
+                return Div(debug.as_str())
+                    .style(Style::new().size(9, 20).align_items(AlignItems::Center))
+                    .child(
+                        Div(format!("{debug}-rule").as_str())
+                            .style(Style::new().size(1, 20).bg(t.border))
+                            .build(),
+                    );
+            }
+            let hl = eff == Some(i);
+            let mut text = Text::new(item.label.clone());
+            if hl {
+                text = text.bold();
+            }
+            let inked = if hl {
+                with_ink(VNode::from(text), CONTRAST_INK)
+            } else if !item.enabled || !props.enabled {
+                with_ink(VNode::from(text), t.text_secondary)
+            } else {
+                VNode::from(text)
+            };
+            let mut style = Style::new()
+                .size(props.cell_width, props.height)
+                .radius(4)
+                .align_items(AlignItems::Center);
+            if hl {
+                style = style.bg(t.primary);
+            }
+            Div(debug.as_str())
+                .style(style)
+                .semantics(
+                    Semantics::button()
+                        .label(&item.label)
+                        .disabled(!item.enabled || !props.enabled),
+                )
+                .child(inked)
+        })
+        .collect::<Vec<_>>();
+    let host = ctx.host();
+    let items_ev = props.items.clone();
+    let hl_ev = highlight.clone();
+    let prefix_ev = prefix.clone();
+    let press = move || {
+        // Tap point → hit-test (roving follows the pointer);
+        // keyboard pulse (no tap point) → invoke the effective
+        // highlight (the Menu disambiguation rule).
+        if let Some((x, y)) = host.last_press_position() {
+            if let Some(i) = bar_hit(
+                &host,
+                &|i| format!("{prefix_ev}-cell-{i}"),
+                items_ev.len(),
+                x,
+                y,
+            ) {
+                if let Some(it) = items_ev.get(i) {
+                    if it.selectable() {
+                        if hl_ev.get() != i {
+                            hl_ev.set(i);
+                        }
+                        it.on_press.clone()();
+                    }
+                }
+            }
+            return;
+        }
+        if let Some(i) = bar_effective(&items_ev, hl_ev.get()) {
+            if let Some(it) = items_ev.get(i) {
+                if it.selectable() {
+                    it.on_press.clone()();
+                }
+            }
+        }
+    };
+    let rove = |dir: i32| {
+        let (items, hl) = (props.items.clone(), highlight.clone());
+        move || {
+            let next = bar_step(&items, hl.get(), dir);
+            if next != hl.get() {
+                hl.set(next);
+            }
+        }
+    };
+    let builder = Row(&props.debug)
+        .style(Style::new().gap(4).pad_x(4).align_items(AlignItems::Center))
+        .semantics(
+            Semantics::default()
+                .label(&props.label)
+                .disabled(!props.enabled),
+        );
+    let builder = if props.enabled {
+        builder
+            .on_press(press)
+            .on_key_left(rove(-1))
+            .on_key_right(rove(1))
+    } else {
+        builder
+    };
+    builder.children(cells)
+}
+
+/// Menubar props: a horizontal title bar (the Toolbar recipe —
+/// one tab stop, Left/Right rove) where each title opens a
+/// [`Menu`] dropdown (the Menu/Portal half). `open_title` is the
+/// author-owned visibility truth (`Some(i)` = title `i` open —
+/// the Select-`open` precedent); the highlight cursor stays
+/// instance-owned (the Toolbar precedent).
+#[derive(Clone, Props)]
+pub struct MenubarProps {
+    pub titles: Vec<MenuTitle>,
+    pub open_title: Signal<Option<usize>>,
+    pub enabled: bool,
+    pub label: SharedString,
+    pub title_width: f32,
+    pub height: f32,
+    pub menu_width: f32,
+    pub debug: SharedString,
+}
+
+impl MenubarProps {
+    pub fn new(titles: Vec<MenuTitle>, open_title: Signal<Option<usize>>) -> Self {
+        Self {
+            titles,
+            open_title,
+            enabled: true,
+            label: SharedString::from("Menubar"),
+            title_width: 96.0,
+            height: 32.0,
+            menu_width: 200.0,
+            debug: SharedString::from("menubar"),
+        }
+    }
+}
+
+/// Horizontal menu bar: title cells (the Toolbar cell treatment —
+/// handlerless visuals, one press-owner bar, hit-test activation,
+/// Left/Right rove with wrapping) where each title press opens its
+/// [`Menu`] dropdown in a `Portal` anchored under the title
+/// (settled-box math, Menu cursor-anchored precedent). Down/Enter
+/// opens the highlighted title; Left/Right while open moves the
+/// open menu with the highlight (native menubar behavior); Escape
+/// blurs through the router and the bar's own focus-edge rule
+/// closes the menu (standalone `Menu`, Select parity — dismissal
+/// writes back through an edge latch, guarded and terminating).
+/// Invoking a row runs its action and closes (the Menu rule).
+/// Disabled titles skip nav and never open.
+pub fn Menubar(ctx: &Ctx, props: &MenubarProps) -> VNode {
+    let t = ctx.theme().tokens();
+    let highlight = ctx.signal(0usize);
+    let eff = bar_effective(&props.titles, highlight.get());
+    // Bar/title labels ride the author debug only (the
+    // Slider-trackbox precedent — sibling bars use distinct
+    // debugs, and tests address titles without an instance id).
+    let prefix = props.debug.as_ref().to_string();
+    let bar_debug = format!("{prefix}-bar");
+    let cells = props
+        .titles
+        .iter()
+        .enumerate()
+        .map(|(i, title)| {
+            let debug = format!("{prefix}-title-{i}");
+            let hl = eff == Some(i);
+            let open_here = props.open_title.get() == Some(i);
+            let mut text = Text::new(title.label.clone());
+            if hl || open_here {
+                text = text.bold();
+            }
+            let inked = if hl || open_here {
+                with_ink(VNode::from(text), CONTRAST_INK)
+            } else if !title.enabled || !props.enabled {
+                with_ink(VNode::from(text), t.text_secondary)
+            } else {
+                VNode::from(text)
+            };
+            let mut style = Style::new()
+                .size(props.title_width, props.height)
+                .radius(4)
+                .align_items(AlignItems::Center);
+            if hl || open_here {
+                style = style.bg(t.primary);
+            }
+            Div(debug.as_str())
+                .style(style)
+                .semantics(
+                    Semantics::button()
+                        .label(&title.label)
+                        .disabled(!title.enabled || !props.enabled),
+                )
+                .child(inked)
+        })
+        .collect::<Vec<_>>();
+    let host = ctx.host();
+    let titles_ev = props.titles.clone();
+    let hl_ev = highlight.clone();
+    let open_ev = props.open_title.clone();
+    let prefix_ev = prefix.clone();
+    let press = move || {
+        if let Some((x, y)) = host.last_press_position() {
+            if let Some(i) = bar_hit(
+                &host,
+                &|i| format!("{prefix_ev}-title-{i}"),
+                titles_ev.len(),
+                x,
+                y,
+            ) {
+                if let Some(ti) = titles_ev.get(i) {
+                    if ti.selectable() {
+                        if hl_ev.get() != i {
+                            hl_ev.set(i);
+                        }
+                        let cur = open_ev.get();
+                        open_ev.set(if cur == Some(i) { None } else { Some(i) });
+                    }
+                }
+            }
+            return;
+        }
+        // Keyboard pulse: open the effective title.
+        if let Some(i) = bar_effective(&titles_ev, hl_ev.get()) {
+            if titles_ev.get(i).is_some_and(|ti| ti.selectable()) {
+                open_ev.set(Some(i));
+            }
+        }
+    };
+    let rove = |dir: i32| {
+        let (titles, hl, open) = (
+            props.titles.clone(),
+            highlight.clone(),
+            props.open_title.clone(),
+        );
+        move || {
+            let next = bar_step(&titles, hl.get(), dir);
+            if next != hl.get() {
+                hl.set(next);
+            }
+            // While a menu is open, the open menu follows the
+            // highlight (native menubar behavior).
+            if open.get().is_some() && titles.get(next).is_some_and(|t| t.selectable()) {
+                open.set(Some(next));
+            }
+        }
+    };
+    let down = {
+        let (titles, hl, open) = (
+            props.titles.clone(),
+            highlight.clone(),
+            props.open_title.clone(),
+        );
+        move || {
+            if let Some(i) = bar_effective(&titles, hl.get()) {
+                if titles.get(i).is_some_and(|ti| ti.selectable()) {
+                    open.set(Some(i));
+                }
+            }
+        }
+    };
+    let builder = Row(bar_debug.as_str())
+        .style(Style::new().gap(4).pad_x(4).align_items(AlignItems::Center))
+        .semantics(
+            Semantics::default()
+                .label(&props.label)
+                .disabled(!props.enabled),
+        );
+    let builder = if props.enabled {
+        builder
+            .on_press(press)
+            .on_key_left(rove(-1))
+            .on_key_right(rove(1))
+            .on_key_down(down)
+    } else {
+        builder
+    };
+    let bar = builder.children(cells);
+    // Open dropdown (at most one — the Tabs single-panel
+    // precedent): the open title's rows in a Menu anchored under
+    // the title (settled-box math, re-derived when layout settles).
+    let open_idx = props.open_title.get();
+    let Some(open_i) = open_idx else {
+        return Div(format!("{prefix}-root").as_str()).children([bar]);
+    };
+    let Some(title) = props.titles.get(open_i) else {
+        // Stale index past a shrink (controlled edge — the
+        // unmatched-Tabs precedent, quiet empty, documented).
+        return Div(format!("{prefix}-root").as_str()).children([bar]);
+    };
+    // Standalone dismissal (the Select-parity rule — the Menu below
+    // carries `anchor_focus: None`, so the bar owns dismissal):
+    // a bar-FOCUS edge out (Escape-blur, outside tap, tab-out)
+    // closes the menu, unless focus moved into the open list itself
+    // (Tab-in — membership read off the root, untracked; the
+    // re-run rides `ctx.focused()`). Edges only, never states: a
+    // preset-open menu (never focused) stays truthful to `open_title`
+    // (controlled signals are never second-guessed — the Select
+    // rule). The Menu stale-focus trap stays shut by construction
+    // (standalone Menus never consult list focus for visibility).
+    let bar_focused = ctx.focused().get();
+    let was_focused = ctx.signal(false);
+    let prev_focused = was_focused.get();
+    if bar_focused != prev_focused {
+        was_focused.set(bar_focused);
+    }
+    if prev_focused && !bar_focused {
+        let host_now = ctx.host();
+        let fnow = host_now.focused_node();
+        // NOTE: single `with_retained_mut` borrow — `rec` methods
+        // directly (the `find_retained_by_debug` helper borrows
+        // again and would panic nested inside the mutable borrow).
+        let in_list = fnow.is_some_and(|f| {
+            host_now.with_retained_mut(|rec, _| {
+                rec.find_by_debug(&format!("{prefix}-root"))
+                    .into_iter()
+                    .any(|r| oppa::is_within(rec, f, r))
+            })
+        });
+        if !in_list {
+            props.open_title.set(None);
+            return Div(format!("{prefix}-root").as_str()).children([bar]);
+        }
+    }
+    // Edge latch (guarded, terminating): `want` edges flow author
+    // → menu; menu-side invocation flows back by clearing
+    // `open_title` exactly once per edge (blur dismissal flows
+    // through the focus-edge rule above — one writer per edge,
+    // never two).
+    let menu_open = ctx.signal(false);
+    let last_want = ctx.signal(false);
+    let want = true;
+    if want != last_want.get() {
+        last_want.set(want);
+        menu_open.set(want);
+    }
+    if !menu_open.get() && want {
+        props.open_title.set(None);
+        last_want.set(false);
+        return Div(format!("{prefix}-root").as_str()).children([bar]);
+    }
+    let host = ctx.host();
+    let bar_box = host.settled_box_by_debug(bar_debug.as_str());
+    let title_box = host.settled_box_by_debug(format!("{prefix}-title-{open_i}").as_str());
+    let anchor = match (bar_box, title_box) {
+        (Some(b), Some(tb)) => (tb.x - b.x, b.h),
+        _ => (0.0, props.height),
+    };
+    let menu_props = MenuProps {
+        items: title.items.clone(),
+        open: menu_open.clone(),
+        anchor,
+        width: props.menu_width,
+        highlight: None,
+        // Standalone (Select parity — the bar owns dismissal, see
+        // the focus-edge rule above): `open_title` is the only
+        // visibility truth. Attached mode would consult the Menu
+        // instance's focus flag, which goes stale-true when a menu
+        // unmounts under keyboard focus (invoke path) and would pin
+        // the next open menu past Escape — stated, not silent.
+        anchor_focus: None,
+    };
+    let menu = ctx.child_auto(&menu_props, Menu);
+    Div(format!("{prefix}-root").as_str()).children([bar, menu])
+}
+
+// ---------------------------------------------------------------------------
+// FilePicker (Phase 38c, G21)
+// ---------------------------------------------------------------------------
+
+/// FilePicker mode: which dialog backend the browse trigger wraps
+/// (one trigger, three backends — the mode selects the backend and
+/// its options, never two at once).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FilePickerMode {
+    #[default]
+    Open,
+    Save,
+    Folder,
+}
+
+/// FilePicker props (controlled `path` — the picked destination as
+/// display text; `None` until the first successful pick — dismissed
+/// dialogs leave it untouched, never clear it). Backends are
+/// runner-owned handles (the KitchenSink `ScriptedDialog` precedent
+/// — the shell seam returns `&mut` per pump, so runners hold and
+/// forward the handle; the control only wraps the request/poll
+/// protocol). Options ride per mode (each mode reads its own —
+/// `open_options` / `save_options` / `folder_options`).
+#[derive(Clone, Props)]
+pub struct FilePickerProps {
+    pub path: Signal<Option<SharedString>>,
+    pub mode: FilePickerMode,
+    pub open_dialog: Option<std::rc::Rc<std::cell::RefCell<dyn oppa::FileDialog>>>,
+    pub save_dialog: Option<std::rc::Rc<std::cell::RefCell<dyn oppa::SaveFileDialog>>>,
+    pub folder_dialog: Option<std::rc::Rc<std::cell::RefCell<dyn oppa::FolderDialog>>>,
+    pub open_options: oppa::FilePickerOptions,
+    pub save_options: oppa::FileDialogOptions,
+    pub folder_options: oppa::FolderDialogOptions,
+    pub browse_label: SharedString,
+    pub enabled: bool,
+    pub debug: SharedString,
+}
+
+impl FilePickerProps {
+    pub fn new(path: Signal<Option<SharedString>>, mode: FilePickerMode) -> Self {
+        Self {
+            path,
+            mode,
+            open_dialog: None,
+            save_dialog: None,
+            folder_dialog: None,
+            open_options: oppa::FilePickerOptions::default(),
+            save_options: oppa::FileDialogOptions::default(),
+            folder_options: oppa::FolderDialogOptions::default(),
+            browse_label: SharedString::from("Browse…"),
+            enabled: true,
+            debug: SharedString::from("file-picker"),
+        }
+    }
+}
+
+/// Browse/save/folder trigger wrapping the dialog request/poll
+/// protocol (the ~30-lines-of-glue gap, closed): one Browse button,
+/// the controlled path line, and an instance-owned status caption.
+/// Press requests then polls (blocking shells settle synchronously
+/// — modal behavior, documented; async shells poll `None` as
+/// "still open…" and the next press re-polls — the
+/// level-triggered rule, so a dropped poll self-heals).
+/// `Some(Ok)` sets the path (open takes the first path and names
+/// the count past one); dismissal (`Ok(vec![])` / `Ok(None)`) and
+/// refusals surface in the caption and leave the path untouched
+/// (dismissal is data — decision 230, never a clear). A missing
+/// backend for the chosen mode refuses loudly (wiring bug, never a
+/// silent button). Disabled drops the trigger structurally
+/// (decision 213).
+pub fn FilePicker(ctx: &Ctx, props: &FilePickerProps) -> VNode {
+    let status = ctx.signal(SharedString::from(""));
+    let browse = {
+        let (path, status) = (props.path.clone(), status.clone());
+        let mode = props.mode;
+        let (open_dlg, save_dlg, folder_dlg) = (
+            props.open_dialog.clone(),
+            props.save_dialog.clone(),
+            props.folder_dialog.clone(),
+        );
+        let (open_opts, save_opts, folder_opts) = (
+            props.open_options.clone(),
+            props.save_options.clone(),
+            props.folder_options.clone(),
+        );
+        action(move || match mode {
+            FilePickerMode::Open => {
+                let Some(dlg) = open_dlg.clone() else {
+                    panic!("file picker in Open mode without an open backend — refused, never a silent button");
+                };
+                let mut dlg = dlg.borrow_mut();
+                dlg.request_open(open_opts.clone());
+                match dlg.poll_open() {
+                    None => status.set(SharedString::from("still open…")),
+                    Some(Ok(paths)) if paths.is_empty() => {
+                        status.set(SharedString::from("dismissed"))
+                    }
+                    Some(Ok(paths)) => {
+                        let first = paths[0].to_string_lossy().into_owned();
+                        path.set(Some(SharedString::from(first)));
+                        status.set(SharedString::from(if paths.len() > 1 {
+                            format!("picked {} files (first shown)", paths.len())
+                        } else {
+                            format!("picked {}", paths[0].display())
+                        }));
+                    }
+                    Some(Err(e)) => status.set(SharedString::from(format!("picker failed: {e}"))),
+                }
+            }
+            FilePickerMode::Save => {
+                let Some(dlg) = save_dlg.clone() else {
+                    panic!("file picker in Save mode without a save backend — refused, never a silent button");
+                };
+                let mut backend = dlg.borrow_mut();
+                match backend.save(save_opts.clone()) {
+                    Ok(Some(p)) => {
+                        path.set(Some(SharedString::from(p.to_string_lossy().into_owned())));
+                        status.set(SharedString::from(format!("save to {}", p.display())));
+                    }
+                    Ok(None) => status.set(SharedString::from("dismissed")),
+                    Err(e) => status.set(SharedString::from(format!("picker failed: {e}"))),
+                }
+            }
+            FilePickerMode::Folder => {
+                let Some(dlg) = folder_dlg.clone() else {
+                    panic!("file picker in Folder mode without a folder backend — refused, never a silent button");
+                };
+                let mut backend = dlg.borrow_mut();
+                match backend.pick(folder_opts.clone()) {
+                    Ok(Some(p)) => {
+                        path.set(Some(SharedString::from(p.to_string_lossy().into_owned())));
+                        status.set(SharedString::from(format!("folder {}", p.display())));
+                    }
+                    Ok(None) => status.set(SharedString::from("dismissed")),
+                    Err(e) => status.set(SharedString::from(format!("picker failed: {e}"))),
+                }
+            }
+        })
+    };
+    let browse_btn = ctx.child_auto(
+        &ButtonProps {
+            label: props.browse_label.clone(),
+            enabled: props.enabled,
+            width: 96.0,
+            height: 32.0,
+            debug: SharedString::from(format!("{}-browse", props.debug.as_ref())),
+            on_press: browse,
+        },
+        Button,
+    );
+    let path_text = match props.path.get() {
+        Some(p) => p,
+        None => SharedString::from("(none)"),
+    };
+    let mut row_children = vec![
+        browse_btn,
+        VNode::from(Text {
+            text: path_text,
+            style: Text::body_secondary,
+        }),
+    ];
+    if !status.get().to_string().is_empty() {
+        row_children.push(with_ink(
+            VNode::from(Text::new(status.get()).size(12)),
+            ctx.theme().tokens().text_secondary,
+        ));
+    }
+    Row(format!("{}-row", props.debug.as_ref()).as_str())
+        .style(Style::new().gap(8).align_items(AlignItems::Center))
+        .children(row_children)
+}
+
+// ---------------------------------------------------------------------------
+// G22 control wrappers (Phase 38c — the Phase 36 leaves as components)
+// ---------------------------------------------------------------------------
+
+/// RichText display control: multi-span text over the Phase 36
+/// `VNode::RichText` leaf (shape-per-span then join, shared size —
+/// decision 355). Display-only (no handlers, no editing — the
+/// caret/selection space stays the joined bytes by construction).
+/// A `label` wraps the leaf in a named `Div` carrying it (leaves
+/// carry no semantics payload — `VNode::RichText` has none, so the
+/// wrapper announces, never the leaf); `None` returns the bare leaf
+/// (byte-identical to the hand-built `VNode`).
+#[derive(Clone, Props)]
+pub struct RichTextViewProps {
+    pub spans: Vec<oppa::TextSpan>,
+    pub style: TextClass,
+    pub label: Option<SharedString>,
+    pub debug: SharedString,
+}
+
+pub fn RichTextView(ctx: &Ctx, props: &RichTextViewProps) -> VNode {
+    let leaf = VNode::from(oppa::RichText::new(props.spans.clone()).style(props.style));
+    let Some(label) = props.label.clone() else {
+        return leaf;
+    };
+    let _ = ctx;
+    Div(&props.debug)
+        .semantics(Semantics::default().label(&label))
+        .child(leaf)
+}
+
+/// Image control: static-image leaf over the Phase 36 one-deposit
+/// cache (decision 359 — `insert_pixels` once, every backend serves
+/// from the deposit). `image` is the author-resolved cache id (the
+/// handle stays app-owned like `KvStore` handles — `load` never
+/// fails, so resolution is one call, never a fallible seam in the
+/// body). `alt` names the image (`""` = decorative intent — the
+/// payload carries it opaquely, like `value_text`).
+#[derive(Clone, Props)]
+pub struct ImageViewProps {
+    pub image: oppa::ImageId,
+    pub size: f32,
+    pub radius: f32,
+    pub alt: SharedString,
+}
+
+pub fn ImageView(_ctx: &Ctx, props: &ImageViewProps) -> VNode {
+    let vnode = VNode::from(oppa::Img {
+        src: props.image,
+        size: props.size,
+        radius: props.radius,
+    });
+    let VNode::Element(mut el) = vnode else {
+        panic!("image leaf is not an element — refused, never silent");
+    };
+    el.semantics = Some(Semantics::default().label(&props.alt));
+    VNode::Element(el)
+}
+
+/// Canvas control: retained vector surface over the Phase 36
+/// `Tag::Canvas` leaf (decision 358 — lowers to Rect/RRect/Path/Text
+/// ops, never a new `DrawOp`). `ops` replay through the [`Canvas`]
+/// builder (same loud refusals — empty/invalid/paintless never
+/// build silently); geometry rides the explicit `width`/`height`
+/// (childless leaf, explicit-or-zero box — content never sizes
+/// it). A `label` attaches to the element (which carries semantics,
+/// unlike the RichText leaf).
+#[derive(Clone, Props)]
+pub struct CanvasViewProps {
+    pub ops: Vec<oppa::CanvasOp>,
+    pub width: f32,
+    pub height: f32,
+    pub label: Option<SharedString>,
+    pub debug: SharedString,
+}
+
+pub fn CanvasView(_ctx: &Ctx, props: &CanvasViewProps) -> VNode {
+    let mut b = oppa::Canvas::new(&props.debug).style(Style::new().size(props.width, props.height));
+    for op in &props.ops {
+        b = match op {
+            oppa::CanvasOp::Rect { x, y, w, h, color } => {
+                b.rect(x.get(), y.get(), w.get(), h.get(), *color)
+            }
+            oppa::CanvasOp::RRect {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                color,
+            } => b.rrect(x.get(), y.get(), w.get(), h.get(), radius.get(), *color),
+            oppa::CanvasOp::Path { data, fill, stroke } => b.path(data, *fill, *stroke),
+            oppa::CanvasOp::Text {
+                text,
+                size_px,
+                weight,
+                ink,
+                x,
+                y,
+            } => b.text(text, *size_px, *weight, *ink, x.get(), y.get()),
+        };
+    }
+    let vnode = b.build();
+    let Some(label) = props.label.clone() else {
+        return vnode;
+    };
+    let VNode::Element(mut el) = vnode else {
+        panic!("canvas leaf is not an element — refused, never silent");
+    };
+    el.semantics = Some(Semantics::default().label(&label));
+    VNode::Element(el)
+}
+
+/// One route view: name + factory (the TabItem-content precedent —
+/// factories rebuild per render and stay lazy; inactive routes
+/// build nothing).
+#[derive(Clone)]
+pub struct RouteView {
+    pub name: SharedString,
+    pub content: Rc<dyn Fn(&Ctx) -> VNode>,
+}
+
+/// NavHost props: declarative router over an author-owned
+/// [`NavStack`](oppa::NavStack) (stack position is identity —
+/// decision 218; the stack signal is the single truth, like
+/// Select-`open`). Renders the current route's factory; an unknown
+/// route name renders a quiet empty panel (the unmatched-Tabs
+/// precedent — controlled-contract edge, documented not silent).
+/// System back flows through the runner-owned BackPress chain
+/// (`handle_back` → [`BackOutcome::Unhandled`](oppa::BackOutcome)
+/// → runner pops or exits — `nav.rs`): the host never pops what it
+/// does not own, so back wiring stays runner-side, stated.
+#[derive(Clone, Props)]
+pub struct NavHostProps {
+    pub stack: Signal<oppa::NavStack>,
+    pub routes: Vec<RouteView>,
+}
+
+pub fn NavHost(ctx: &Ctx, props: &NavHostProps) -> VNode {
+    let current = props.stack.get().current().cloned();
+    let Some(route) = current else {
+        return Div("nav-empty").build();
+    };
+    match props
+        .routes
+        .iter()
+        .find(|entry| entry.name.to_string() == route.name)
+    {
+        Some(entry) => (entry.content)(ctx),
+        None => Div("nav-empty").build(),
     }
 }
 
@@ -3523,6 +6107,10 @@ mod tests {
             checked: checked.clone(),
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Chk", CheckCase { props }, check_render);
         host.run_until_idle();
@@ -3574,6 +6162,10 @@ mod tests {
             checked: checked.clone(),
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("ChkV", CheckCase { props }, check_render);
         host.run_until_idle();
@@ -3624,6 +6216,10 @@ mod tests {
             on: on.clone(),
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Tgl", ToggleCase { props }, toggle_render);
         host.run_until_idle();
@@ -3669,6 +6265,10 @@ mod tests {
             on: on.clone(),
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("TglV", ToggleCase { props }, toggle_render);
         host.run_until_idle();
@@ -3702,6 +6302,10 @@ mod tests {
             step: 10.0,
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Sld", SliderCase { props }, slider_render);
         host.run_until_idle();
@@ -3737,6 +6341,10 @@ mod tests {
             step: 10.0,
             enabled: false,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("SldDis", SliderCase { props }, slider_render);
         host.run_until_idle();
@@ -3773,6 +6381,10 @@ mod tests {
             step: 10.0,
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Sld", SliderCase { props }, slider_render);
         host.run_until_idle();
@@ -4618,6 +7230,10 @@ mod tests {
             ],
             selected: selected.clone(),
             enabled: true,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("G", props, RadioGroup::<SharedString>);
         host.run_until_idle();
@@ -5417,6 +8033,10 @@ mod tests {
                     on: on.clone(),
                     enabled: true,
                     on_change: Some(notify),
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
             },
             toggle_render,
@@ -5438,6 +8058,10 @@ mod tests {
                     checked: checked.clone(),
                     enabled: true,
                     on_change: Some(notify2),
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
             },
             check_render,
@@ -5463,6 +8087,10 @@ mod tests {
             step: 10.0,
             enabled: true,
             on_change: Some(notify),
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Sld", SliderCase { props }, slider_render);
         host.run_until_idle();
@@ -5497,6 +8125,10 @@ mod tests {
                 initial: false,
                 enabled: true,
                 on_change: Some(notify),
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledToggle,
         );
@@ -5518,6 +8150,10 @@ mod tests {
                 step: 10.0,
                 enabled: true,
                 on_change: Some(notify2),
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledSlider,
         );
@@ -5534,6 +8170,10 @@ mod tests {
                 initial: false,
                 enabled: true,
                 on_change: Some(notify3),
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledCheckbox,
         );
@@ -5563,6 +8203,10 @@ mod tests {
                 debug: SharedString::from("text-input"),
                 on_change: Some(notify),
                 masked: false,
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledTextInput,
         );
@@ -5594,6 +8238,10 @@ mod tests {
                 style: Text::body_secondary,
                 debug: SharedString::from("text-area"),
                 on_change: Some(notify2),
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledTextArea,
         );
@@ -6073,12 +8721,20 @@ mod tests {
                     on: on.clone(),
                     enabled: true,
                     on_change: None,
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
                 check: CheckboxProps {
                     label: SharedString::from("T&C"),
                     checked: checked.clone(),
                     enabled: true,
                     on_change: None,
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
             },
             cursor_tc_render,
@@ -6154,6 +8810,10 @@ mod tests {
                     on: on.clone(),
                     enabled: true,
                     on_change: None,
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
                 modal: ModalProps::new("Delete file?", open.clone()),
             },
@@ -6905,6 +9565,7 @@ mod tests {
                         // wall-clock fade is proven through the
                         // VirtualList/DataGrid attachments (21.2).
                         idle_hide_ms: None,
+                        axis: ScrollbarAxis::Vertical,
                     },
                     Scrollbar,
                 ),
@@ -7622,6 +10283,173 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------
+    // Phase 36 PR2b (decision 354): horizontal scrollbar axis.
+    // ------------------------------------------------------------------
+
+    /// Horizontal rig: hand-rolled `ScrollArea` (200×200 at the
+    /// origin, content `content_w`×200) plus a horizontal `Scrollbar`
+    /// sharing the rig's x-half offset (the 2D `scroll_2d` handle's
+    /// `x()` view — same signal family, never a second source).
+    #[derive(Clone)]
+    struct HScrollRigProps {
+        content_w: f32,
+    }
+    impl Props for HScrollRigProps {}
+
+    fn hscroll_rig(ctx: &Ctx, p: &HScrollRigProps) -> VNode {
+        let offset = ctx.scroll_2d();
+        Div("hscroll-screen")
+            .style(Style::new().size(400, 300))
+            .children([
+                oppa::ScrollArea("hscroll-list")
+                    .style(Style::new().size(200, 200).content_size(p.content_w))
+                    .on_scroll(|| {})
+                    .child(
+                        Div("hscroll-content")
+                            .style(Style::new().size(p.content_w, 200).x(-offset.get().x))
+                            .build(),
+                    ),
+                ctx.child(
+                    "oppa::HScrollRigBar",
+                    1,
+                    &ScrollbarProps {
+                        target: SharedString::from("hscroll-list"),
+                        offset: offset.x(),
+                        idle_hide_ms: None,
+                        axis: ScrollbarAxis::Horizontal,
+                    },
+                    Scrollbar,
+                ),
+            ])
+    }
+
+    fn hscrollbar_harness(content_w: f32) -> (ComponentHost, ScrollOffset) {
+        let host = ComponentHost::new();
+        host.set_viewport(400.0, 300.0);
+        let handle = host.mount("HS", HScrollRigProps { content_w }, hscroll_rig);
+        host.run_until_idle();
+        let both = host
+            .instance_scroll_2d(handle.root_instance())
+            .expect("rig 2D handle");
+        (host, both.x())
+    }
+
+    /// Horizontal chrome rects (track spans the viewport width at
+    /// the target's bottom edge; thumb pins the transposed ratio).
+    fn hchrome_rects(plan: &oppa::FramePlan) -> ChromePair {
+        let mut track = Vec::new();
+        let mut thumb = Vec::new();
+        for op in &plan.ops {
+            if let oppa::DrawOp::Rect { x, y, w, h, .. } = op {
+                if approx(*y, 188.0) && approx(*h, 12.0) {
+                    if approx(*x, 0.0) && approx(*w, 200.0) {
+                        track.push((*x, *y, *w, *h));
+                    } else {
+                        thumb.push((*x, *y, *w, *h));
+                    }
+                }
+            }
+        }
+        (track, thumb)
+    }
+
+    /// Phase 36 PR2b: the horizontal thumb paints transposed (same
+    /// ratio as the vertical brief) and hides without overflow.
+    #[test]
+    fn horizontal_thumb_paints_transposed_and_hides_when_fit() {
+        let (host, _) = hscrollbar_harness(300.0);
+        let plan = scrollbar_plan(&host);
+        let (track, thumb) = hchrome_rects(&plan);
+        assert!(track.is_empty() && thumb.is_empty(), "idle paints nothing");
+        hover(&host, 100.0, 194.0);
+        let plan = scrollbar_plan(&host);
+        let (track, thumb) = hchrome_rects(&plan);
+        assert_eq!(track.len(), 1, "gutter hover paints track, got {track:?}");
+        assert_eq!(thumb.len(), 1, "gutter hover paints thumb, got {thumb:?}");
+        assert!(
+            approx(thumb[0].2, 200.0 * 200.0 / 300.0),
+            "thumb pins vp²/c, got {:?}",
+            thumb[0]
+        );
+        assert!(
+            approx(thumb[0].0, 0.0),
+            "rest parks at left, got {:?}",
+            thumb[0]
+        );
+        // No overflow: nothing paints even on hover.
+        let (host2, _) = hscrollbar_harness(100.0);
+        hover(&host2, 100.0, 194.0);
+        let plan2 = scrollbar_plan(&host2);
+        let (track2, thumb2) = hchrome_rects(&plan2);
+        assert!(
+            track2.is_empty() && thumb2.is_empty(),
+            "fits: paints nothing"
+        );
+    }
+
+    /// Phase 36 PR2b: dragging the horizontal thumb left-to-right
+    /// scrolls the content to 100% of its `content_w` overflow.
+    #[test]
+    fn horizontal_thumb_drag_scrolls_to_max() {
+        let (host, offset) = hscrollbar_harness(600.0);
+        // Thumb at rest: 0..66.67 on the 200 track; drag to the right
+        // edge (through the midpoint, like the vertical proof).
+        drag(&host, 33.0, 194.0, 190.0, 194.0);
+        assert!(
+            approx(offset.get(), 400.0),
+            "drag parks at max, got {}",
+            offset.get()
+        );
+        let plan = scrollbar_plan(&host);
+        let (_, thumb) = hchrome_rects(&plan);
+        assert_eq!(thumb.len(), 1, "thumb paints after drag");
+        assert!(
+            approx(thumb[0].0, (200.0f32 - 200.0 * 200.0 / 600.0).round()),
+            "thumb parks at travel, got {:?}",
+            thumb[0]
+        );
+    }
+
+    /// Phase 36 PR2b: Right/Left page by viewport on the horizontal
+    /// axis, and the track semantics carry the G18 numeric value.
+    #[test]
+    fn horizontal_keys_page_and_semantics_carry_range() {
+        let (host, offset) = hscrollbar_harness(600.0);
+        host.inject_input(InputEvent::key(keys::TAB, KeyState::Pressed));
+        host.run_until_idle();
+        host.inject_input(InputEvent::key(keys::RIGHT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(
+            approx(offset.get(), 200.0),
+            "Right pages, got {}",
+            offset.get()
+        );
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(
+            approx(offset.get(), 0.0),
+            "Left pages back, got {}",
+            offset.get()
+        );
+        // Range half (decision 352, wired in PR2b): the slider payload
+        // names the numeric position, not just the human percent.
+        let track = host.with_retained_mut(|rec, _| {
+            rec.retained_ids()
+                .into_iter()
+                .find(|id| {
+                    rec.get(*id)
+                        .is_some_and(|n| n.debug.starts_with("scrollbar-track-"))
+                })
+                .expect("track node lives")
+        });
+        let sem = host.retained_semantics(track).expect("track semantics");
+        assert_eq!(sem.role, oppa::Role::Slider);
+        assert_eq!(sem.value_num, Some(oppa::Num::of(0.0)));
+        assert_eq!(sem.min_value, Some(oppa::Num::of(0.0)));
+        assert_eq!(sem.max_value, Some(oppa::Num::of(400.0)));
+    }
+
     /// Round 22.1 (decision 331): `masked` publishes into the
     /// session every render (and clears back) — the loop's
     /// copy/cut guard reads this flag, so toggling needs no
@@ -8008,5 +10836,1119 @@ mod tests {
         assert_eq!(find_retained_by_debug(&host, "custom-fallback").len(), 1);
 
         std::panic::set_hook(hook);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 38a (decisions 366–367): form validation + slider keys
+    // ------------------------------------------------------------------
+
+    #[derive(Clone)]
+    struct ValidationFieldCase {
+        props: TextInputProps,
+    }
+    impl Props for ValidationFieldCase {}
+
+    fn validation_field_render(ctx: &Ctx, p: &ValidationFieldCase) -> VNode {
+        ctx.child("oppa::TextInput", 7, &p.props, TextInput)
+    }
+
+    /// G7: invalid/required/error_message announce through Semantics;
+    /// the footer stacks under the field only when a message is
+    /// present (valid fields keep the exact tree — no wrapper).
+    #[test]
+    fn validation_marks_announce_and_footer_stacks() {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        let value = host.runtime().signal(SharedString::from(""));
+        let props = TextInputProps {
+            label: SharedString::from("Age"),
+            value: value.clone(),
+            placeholder: None,
+            enabled: true,
+            width: 200.0,
+            height: 32.0,
+            style: Text::body_secondary,
+            debug: SharedString::from("text-input"),
+            on_change: None,
+            masked: false,
+            invalid: true,
+            required: true,
+            error_message: Some(SharedString::from("err-age")),
+            helper_text: Some(SharedString::from("Years, digits only")),
+        };
+        host.mount(
+            "Val",
+            ValidationFieldCase { props },
+            validation_field_render,
+        );
+        host.run_until_idle();
+        let id = node_by_debug(&host, "text-input");
+        let sem = host.retained_semantics(id).expect("semantics");
+        assert!(sem.invalid, "invalid announces");
+        assert!(sem.required, "required announces");
+        assert_eq!(
+            sem.error_message.as_deref(),
+            Some("err-age"),
+            "error node identity announces"
+        );
+        // Error wins over helper while invalid; the wrapper stacks it.
+        assert_eq!(
+            find_retained_by_debug(&host, "text-input-field").len(),
+            1,
+            "footer wrapper stacks under the field"
+        );
+        // Helper-only (valid): footer renders, marks stay off.
+        let host2 = ComponentHost::new();
+        host2.set_text_service(Box::new(FakeText));
+        let value2 = host2.runtime().signal(SharedString::from(""));
+        let props2 = TextInputProps {
+            label: SharedString::from("Age"),
+            value: value2.clone(),
+            placeholder: None,
+            enabled: true,
+            width: 200.0,
+            height: 32.0,
+            style: Text::body_secondary,
+            debug: SharedString::from("text-input"),
+            on_change: None,
+            masked: false,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: Some(SharedString::from("Years, digits only")),
+        };
+        host2.mount(
+            "ValHelp",
+            ValidationFieldCase { props: props2 },
+            validation_field_render,
+        );
+        host2.run_until_idle();
+        let id2 = node_by_debug(&host2, "text-input");
+        let sem2 = host2.retained_semantics(id2).expect("semantics");
+        assert!(!sem2.invalid);
+        assert!(!sem2.required);
+        assert_eq!(sem2.error_message, None);
+        assert_eq!(
+            find_retained_by_debug(&host2, "text-input-field").len(),
+            1,
+            "helper-only still stacks the caption"
+        );
+        // Plain (no message): no wrapper — the pre-38a tree exactly.
+        let host3 = ComponentHost::new();
+        host3.set_text_service(Box::new(FakeText));
+        let value3 = host3.runtime().signal(SharedString::from(""));
+        host3.mount(
+            "ValPlain",
+            ValidationFieldCase {
+                props: TextInputProps::new("Age", value3),
+            },
+            validation_field_render,
+        );
+        host3.run_until_idle();
+        assert!(
+            find_retained_by_debug(&host3, "text-input-field").is_empty(),
+            "valid fields keep the exact tree"
+        );
+    }
+
+    /// G7 across the catalog: Checkbox, Toggle, Select, and
+    /// RadioGroup carry the same four marks (validators stay
+    /// app-side — the payload only announces).
+    #[test]
+    fn checkbox_toggle_select_radiogroup_carry_validation() {
+        // Checkbox.
+        let host = ComponentHost::new();
+        let checked = host.runtime().signal(false);
+        host.mount(
+            "ChkV",
+            CheckCase {
+                props: CheckboxProps {
+                    label: SharedString::from("T&C"),
+                    checked: checked.clone(),
+                    enabled: true,
+                    on_change: None,
+                    invalid: true,
+                    required: true,
+                    error_message: Some(SharedString::from("err-tc")),
+                    helper_text: None,
+                },
+            },
+            check_render,
+        );
+        host.run_until_idle();
+        let sem = host
+            .retained_semantics(node_by_debug(&host, "checkbox"))
+            .expect("semantics");
+        assert!(sem.invalid && sem.required);
+        assert_eq!(sem.error_message.as_deref(), Some("err-tc"));
+        assert_eq!(find_retained_by_debug(&host, "checkbox-field").len(), 1);
+        // Toggle.
+        let host2 = ComponentHost::new();
+        let on = host2.runtime().signal(false);
+        host2.mount(
+            "TglV",
+            ToggleCase {
+                props: ToggleProps {
+                    label: SharedString::from("Wi-Fi"),
+                    on: on.clone(),
+                    enabled: true,
+                    on_change: None,
+                    invalid: true,
+                    required: false,
+                    error_message: Some(SharedString::from("err-wifi")),
+                    helper_text: None,
+                },
+            },
+            toggle_render,
+        );
+        host2.run_until_idle();
+        let sem2 = host2
+            .retained_semantics(node_by_debug(&host2, "toggle"))
+            .expect("semantics");
+        assert!(sem2.invalid);
+        assert_eq!(sem2.error_message.as_deref(), Some("err-wifi"));
+        assert_eq!(find_retained_by_debug(&host2, "toggle-field").len(), 1);
+        // Select.
+        let host3 = ComponentHost::new();
+        let sel = host3.runtime().signal("a".to_string());
+        let open = host3.runtime().signal(false);
+        let mut sp = SelectProps::new(
+            vec![SelectItem {
+                value: "a".to_string(),
+                label: SharedString::from("Alpha"),
+            }],
+            sel,
+            open,
+        );
+        sp.invalid = true;
+        sp.required = true;
+        sp.error_message = Some(SharedString::from("err-sel"));
+        host3.mount("SelV", sp, Select::<String>);
+        host3.run_until_idle();
+        let sem3 = host3
+            .retained_semantics(node_by_debug(&host3, "select-box"))
+            .expect("semantics");
+        assert!(sem3.invalid && sem3.required);
+        assert_eq!(sem3.error_message.as_deref(), Some("err-sel"));
+        assert_eq!(find_retained_by_debug(&host3, "select-field").len(), 1);
+        // RadioGroup.
+        let host4 = ComponentHost::new();
+        let gsel = host4.runtime().signal(SharedString::from("Free"));
+        host4.mount(
+            "GV",
+            RadioGroupProps {
+                options: vec![RadioOption {
+                    value: SharedString::from("Free"),
+                    label: SharedString::from("Free"),
+                }],
+                selected: gsel,
+                enabled: true,
+                invalid: true,
+                required: true,
+                error_message: Some(SharedString::from("err-plan")),
+                helper_text: None,
+            },
+            RadioGroup::<SharedString>,
+        );
+        host4.run_until_idle();
+        assert_eq!(
+            find_retained_by_debug(&host4, "radio-group-field").len(),
+            1,
+            "group footer stacks under the options"
+        );
+    }
+
+    /// Decision 367: the numeric range announces through value_num /
+    /// min_value / max_value (G18) next to the human value_text; Home
+    /// jumps to min, End to max (held arrows keep repeat-stepping).
+    #[test]
+    fn slider_home_end_jump_and_range_announces() {
+        let host = ComponentHost::new();
+        let value = host.runtime().signal(50.0f32);
+        let props = SliderProps {
+            label: SharedString::from("Volume"),
+            value: value.clone(),
+            min: 0.0,
+            max: 100.0,
+            step: 10.0,
+            enabled: true,
+            on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
+        };
+        host.mount("SldHE", SliderCase { props }, slider_render);
+        host.run_until_idle();
+        let track = node_by_debug(&host, "slider");
+        let sem = host.retained_semantics(track).expect("semantics");
+        assert_eq!(sem.value_text.as_deref(), Some("50 percent"));
+        assert_eq!(sem.value_num, Some(oppa::Num::of(50.0)));
+        assert_eq!(sem.min_value, Some(oppa::Num::of(0.0)));
+        assert_eq!(sem.max_value, Some(oppa::Num::of(100.0)));
+        // Focus the track (press owns capture + focus), then jump.
+        press_node(&host, track);
+        assert_eq!(host.focused_node(), Some(track));
+        host.inject_input(InputEvent::key(keys::HOME, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(value.get(), 0.0, "Home jumps to min");
+        host.inject_input(InputEvent::key(keys::END, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(value.get(), 100.0, "End jumps to max");
+        // Arrows still step from the jumped ends.
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(value.get(), 90.0, "Left steps down from max");
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 38b (decisions 368–370): Tree, Splitter, DatePicker
+    // ------------------------------------------------------------------
+
+    fn tree_nodes() -> Vec<TreeNode> {
+        vec![
+            TreeNode::root("a", "Alpha"),
+            TreeNode::child("a1", "Alpha-One", "a"),
+            TreeNode::child("a2", "Alpha-Two", "a"),
+            TreeNode::root("b", "Beta"),
+        ]
+    }
+
+    #[derive(Clone)]
+    struct TreeCase {
+        props: TreeProps,
+    }
+    impl Props for TreeCase {}
+
+    fn tree_render(ctx: &Ctx, p: &TreeCase) -> VNode {
+        ctx.child("oppa::Tree", 7, &p.props, Tree)
+    }
+
+    /// Mounted tree + its controlled signals (one harness shape for
+    /// the Phase 38b tree tests — the tuple type rides an alias so
+    /// the signature stays under the complexity lint).
+    type TreeHarness = (
+        ComponentHost,
+        oppa::Collection<TreeNode>,
+        Signal<Vec<SharedString>>,
+        Signal<Option<SharedString>>,
+    );
+
+    fn mount_tree() -> TreeHarness {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        let rt = host.runtime();
+        let coll = oppa::Collection::new(&rt, oppa::fetch_key("test:tree"));
+        coll.ingest(tree_nodes());
+        let expanded = rt.signal(Vec::<SharedString>::new());
+        let selected = rt.signal(None::<SharedString>);
+        let props = TreeProps {
+            nodes: coll.clone(),
+            expanded: expanded.clone(),
+            selected: selected.clone(),
+            label: SharedString::from("Files"),
+            width: 280.0,
+            height: 200.0,
+            row_height: 28.0,
+            overscan: 2,
+            enabled: true,
+            debug: SharedString::from("tree"),
+        };
+        host.mount("Tree", TreeCase { props }, tree_render);
+        host.run_until_idle();
+        (host, coll, expanded, selected)
+    }
+
+    /// G12: the flatten shows roots only when collapsed, children
+    /// when expanded (pure); the toggle is symmetric.
+    #[test]
+    fn tree_visible_flattens_and_toggles() {
+        let rows: Vec<oppa::Row<TreeNode>> = tree_nodes()
+            .into_iter()
+            .enumerate()
+            .map(|(i, value)| oppa::Row {
+                id: oppa::RowId(i as u64),
+                value,
+            })
+            .collect();
+        let flat = tree_visible(&rows, &[]);
+        assert_eq!(
+            flat.iter()
+                .map(|(r, d)| (r.value.id.to_string(), *d))
+                .collect::<Vec<_>>(),
+            vec![("a".to_string(), 0), ("b".to_string(), 0)],
+            "collapsed shows roots only"
+        );
+        let open = vec![SharedString::from("a")];
+        let flat = tree_visible(&rows, &open);
+        assert_eq!(
+            flat.iter()
+                .map(|(r, d)| (r.value.id.to_string(), *d))
+                .collect::<Vec<_>>(),
+            vec![
+                ("a".to_string(), 0),
+                ("a1".to_string(), 1),
+                ("a2".to_string(), 1),
+                ("b".to_string(), 0),
+            ],
+            "expanded interleaves children in commit order"
+        );
+        let shut = tree_toggled(&open, &SharedString::from("a"));
+        assert!(shut.is_empty(), "toggle is symmetric");
+        let reopened = tree_toggled(&shut, &SharedString::from("b"));
+        assert_eq!(reopened, vec![SharedString::from("b")]);
+    }
+
+    /// G12: chevron expands, row press selects, arrows walk the
+    /// visible list, and roles announce Tree/TreeItem.
+    #[test]
+    fn tree_expands_selects_and_walks() {
+        let (host, _coll, expanded, selected) = mount_tree();
+        // Container announces the tree role.
+        let root = node_by_debug(&host, "tree");
+        let sem = host.retained_semantics(root).expect("semantics");
+        assert_eq!(sem.role, oppa::Role::Tree);
+        assert_eq!(sem.label.as_deref(), Some("Files"));
+        // Collapsed: two rows, both TreeItem.
+        assert_eq!(find_retained_by_debug(&host, "tree-row").len(), 2);
+        // Chevron expands "a" (first chevron hit in commit order).
+        let chevrons = find_retained_by_debug(&host, "tree-chevron-hit");
+        assert_eq!(chevrons.len(), 2);
+        press_node(&host, chevrons[0]);
+        assert_eq!(expanded.get(), vec![SharedString::from("a")]);
+        assert_eq!(find_retained_by_debug(&host, "tree-row").len(), 4);
+        // Row press selects (rows render in visible order).
+        let rows = find_retained_by_debug(&host, "tree-row");
+        press_node(&host, rows[1]);
+        assert_eq!(selected.get(), Some(SharedString::from("a1")));
+        let sem1 = host.retained_semantics(rows[1]).expect("semantics");
+        assert_eq!(sem1.role, oppa::Role::TreeItem);
+        assert_eq!(sem1.selected, Some(true));
+        // Down moves selection to the next visible row.
+        host.inject_input(InputEvent::key(keys::DOWN, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(selected.get(), Some(SharedString::from("a2")));
+        // Left on a leaf ascends to the parent.
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(selected.get(), Some(SharedString::from("a")));
+        // Left on the open parent collapses it.
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(expanded.get().is_empty(), "Left collapses the open node");
+        assert_eq!(find_retained_by_debug(&host, "tree-row").len(), 2);
+        // Right re-opens, Enter-equivalent press selects.
+        host.inject_input(InputEvent::key(keys::RIGHT, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(expanded.get(), vec![SharedString::from("a")]);
+    }
+
+    /// G13: minima clamp loudly-checked bounds; arrows nudge.
+    #[test]
+    fn splitter_fraction_clamps_and_arrows_nudge() {
+        assert_eq!(splitter_fraction(0.5, 400.0, 8.0, 40.0, 40.0), 0.5);
+        assert_eq!(
+            splitter_fraction(0.0, 400.0, 8.0, 40.0, 40.0),
+            (40.0 + 4.0) / 400.0,
+            "first minimum pins the low end"
+        );
+        assert_eq!(
+            splitter_fraction(1.0, 400.0, 8.0, 40.0, 40.0),
+            1.0 - (40.0 + 4.0) / 400.0,
+            "second minimum pins the high end"
+        );
+        // Mounted arrows nudge through the funnel.
+        let host = ComponentHost::new();
+        let frac = host.runtime().signal(0.5f32);
+        fn split_pane(_ctx: &Ctx) -> VNode {
+            Div("pane").child(VNode::from(Text {
+                text: SharedString::from("pane"),
+                style: Text::body_secondary,
+            }))
+        }
+        let props = SplitterProps {
+            fraction: frac.clone(),
+            axis: SplitterAxis::Vertical,
+            width: 400.0,
+            height: 300.0,
+            divider_px: 8.0,
+            min_first_px: 40.0,
+            min_second_px: 40.0,
+            enabled: true,
+            debug: SharedString::from("split"),
+            first: Rc::new(split_pane),
+            second: Rc::new(split_pane),
+            on_change: None,
+        };
+        host.mount("Split", props, Splitter);
+        host.run_until_idle();
+        let div = node_by_debug(&host, "split-divider");
+        press_node(&host, div);
+        assert_eq!(host.focused_node(), Some(div));
+        host.inject_input(InputEvent::key(keys::RIGHT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(
+            (frac.get() - 0.55).abs() < 1e-6,
+            "Right nudges +0.05, got {}",
+            frac.get()
+        );
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(
+            (frac.get() - 0.5).abs() < 1e-6,
+            "Left nudges back, got {}",
+            frac.get()
+        );
+        // Divider shows the resize cursor.
+        let cursor = host.with_retained_mut(|rec, styles| {
+            let n = rec.get(div).expect("live divider");
+            styles.get(n.style).cloned().unwrap_or_default().cursor
+        });
+        assert_eq!(cursor, Some(CursorIcon::ColResize));
+    }
+
+    /// G13/G14 pure cores: leap rule, known weekday (2026-10-01 is
+    /// a Thursday), parse/format round-trip, month shift clamping.
+    #[test]
+    fn date_math_shapes() {
+        assert!(is_leap(2024) && !is_leap(2025) && !is_leap(1900) && is_leap(2000));
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(2025, 2), 28);
+        // 2026-10-01: Thursday → Monday0 == 3.
+        assert_eq!(
+            weekday_monday0(Date {
+                year: 2026,
+                month: 10,
+                day: 1
+            }),
+            3
+        );
+        // Monday 2026-09-28 → 0.
+        assert_eq!(
+            weekday_monday0(Date {
+                year: 2026,
+                month: 9,
+                day: 28
+            }),
+            0
+        );
+        let d = Date::new(2026, 10, 1);
+        assert_eq!(format_date(d).to_string(), "2026-10-01");
+        assert_eq!(parse_date("2026-10-01"), Some(d));
+        assert_eq!(parse_date("2026-13-01"), None, "month 13 never parses");
+        assert_eq!(parse_date("2026-02-30"), None, "Feb 30 never parses");
+        assert_eq!(parse_date("10-01-2026"), None, "non-padded never parses");
+        assert_eq!(parse_date("hello"), None);
+        // Jan 31 shifted +1 clamps to Feb 28 (2025, non-leap).
+        let jan31 = Date::new(2025, 1, 31);
+        let feb = shift_month(jan31, 1, None, None).expect("in range");
+        assert_eq!((feb.year, feb.month, feb.day), (2025, 2, 28));
+        // Bound refusal: shifting past max is None (disable rule).
+        let oct = Date::new(2026, 10, 15);
+        assert_eq!(
+            shift_month(
+                oct,
+                1,
+                Some(Date::new(2026, 10, 1)),
+                Some(Date::new(2026, 10, 31))
+            ),
+            None,
+            "November lies fully past October max"
+        );
+        // Day steps pin to the bounds.
+        assert_eq!(
+            shift_days(
+                Date::new(2026, 10, 31),
+                1,
+                Some(Date::new(2026, 10, 1)),
+                Some(Date::new(2026, 10, 31))
+            ),
+            Date::new(2026, 10, 31),
+            "stepping past max pins"
+        );
+    }
+
+    /// G14: picking a day sets the value and closes; prev/next flip
+    /// the shown month; the text bridge parses; bounds refuse.
+    #[test]
+    fn date_picker_picks_flips_and_parses() {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        let value = host.runtime().signal(Date::new(2026, 10, 1));
+        let open = host.runtime().signal(false);
+        let props = DatePickerProps {
+            value: value.clone(),
+            open: open.clone(),
+            min: None,
+            max: None,
+            enabled: true,
+            width: 240.0,
+            label: SharedString::from("When"),
+        };
+        host.mount("DP", props, DatePicker);
+        host.run_until_idle();
+        // Closed: no popup in the tree.
+        assert!(find_retained_by_debug(&host, "date-popup").is_empty());
+        // The chevron half toggles (the box center belongs to the
+        // text bridge — taps there focus the field, the knob→track
+        // precedent: each half routes to its own press owner).
+        press_node(&host, node_by_debug(&host, "date-chevron"));
+        assert!(open.get());
+        assert_eq!(find_retained_by_debug(&host, "date-popup").len(), 1);
+        assert_eq!(find_retained_by_debug(&host, "date-grid").len(), 1);
+        // Pick the 15th: value sets, popup closes.
+        press_node(&host, node_by_debug(&host, "date-day-15"));
+        assert_eq!(value.get(), Date::new(2026, 10, 15));
+        assert!(!open.get(), "pick closes the popup");
+        // Reopen via the chevron, flip to November (day preserved).
+        press_node(&host, node_by_debug(&host, "date-chevron"));
+        press_node(&host, node_by_debug(&host, "date-next"));
+        assert_eq!(value.get(), Date::new(2026, 11, 15));
+        // Text bridge: a valid spelling commits.
+        press_node(&host, node_by_debug(&host, "date-text"));
+        let sess = host.focused_field_session().expect("session");
+        sess.select_all();
+        sess.insert("2026-12-25");
+        host.run_until_idle();
+        assert_eq!(value.get(), Date::new(2026, 12, 25));
+        // Invalid text never moves the value.
+        let sess = host.focused_field_session().expect("session");
+        sess.select_all();
+        sess.insert("not-a-date");
+        host.run_until_idle();
+        assert_eq!(value.get(), Date::new(2026, 12, 25));
+        // Bounds: days outside [min, max] are handlerless.
+        let host2 = ComponentHost::new();
+        host2.set_text_service(Box::new(FakeText));
+        let value2 = host2.runtime().signal(Date::new(2026, 10, 10));
+        let open2 = host2.runtime().signal(true);
+        host2.mount(
+            "DPB",
+            DatePickerProps {
+                value: value2.clone(),
+                open: open2.clone(),
+                min: Some(Date::new(2026, 10, 5)),
+                max: Some(Date::new(2026, 10, 20)),
+                enabled: true,
+                width: 240.0,
+                label: SharedString::from("When"),
+            },
+            DatePicker,
+        );
+        host2.run_until_idle();
+        let day1 = node_by_debug(&host2, "date-day-1");
+        assert!(
+            host2.retained_handlers(day1).is_empty(),
+            "out-of-bounds days carry no press"
+        );
+        press_node(&host2, node_by_debug(&host2, "date-day-10"));
+        assert_eq!(value2.get(), Date::new(2026, 10, 10));
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 38c (decisions 371–372): Toolbar, Menubar, FilePicker, G22
+    // ------------------------------------------------------------------
+
+    fn toolbar_items(fired: &[Signal<bool>]) -> Vec<BarItem> {
+        vec![
+            BarItem::new("New", {
+                let f = fired[0].clone();
+                move || f.set(true)
+            }),
+            BarItem::separator(),
+            BarItem::new("Save", {
+                let f = fired[1].clone();
+                move || f.set(true)
+            })
+            .disabled(),
+            BarItem::new("Open", {
+                let f = fired[2].clone();
+                move || f.set(true)
+            }),
+        ]
+    }
+
+    /// G21: taps hit-test cells, arrows rove past separators/disabled,
+    /// Enter invokes the highlight; cells announce buttons.
+    #[test]
+    fn toolbar_taps_rove_and_enter_activates() {
+        let host = ComponentHost::new();
+        let rt = host.runtime();
+        let fired: Vec<Signal<bool>> = (0..3).map(|_| rt.signal(false)).collect();
+        host.mount(
+            "TB",
+            ToolbarProps {
+                items: toolbar_items(&fired),
+                ..ToolbarProps::new(vec![])
+            },
+            Toolbar,
+        );
+        host.run_until_idle();
+        // Tap the first cell: invokes + roving follows the pointer.
+        press_node(&host, node_by_debug(&host, "toolbar-cell-0"));
+        assert!(fired[0].get(), "tap invokes the enabled cell");
+        // Right roves past the separator (1) and disabled Save (2)
+        // to Open (3); Enter invokes it through the router pulse.
+        let bar = node_by_debug(&host, "toolbar");
+        press_node(&host, bar);
+        host.inject_input(InputEvent::key(keys::RIGHT, KeyState::Pressed));
+        host.run_until_idle();
+        host.inject_input(InputEvent::key(keys::ENTER, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(fired[2].get(), "Enter invokes the roved highlight");
+        // Left wraps back past disabled/separator to New.
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        host.inject_input(InputEvent::key(keys::ENTER, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(fired[0].get());
+        // Cells announce buttons; separators carry no semantics.
+        let sem = host
+            .retained_semantics(node_by_debug(&host, "toolbar-cell-0"))
+            .expect("semantics");
+        assert_eq!(sem.role, oppa::Role::Button);
+        assert_eq!(sem.label.as_deref(), Some("New"));
+        assert!(
+            host.retained_semantics(node_by_debug(&host, "toolbar-cell-1"))
+                .is_none(),
+            "separators announce nothing"
+        );
+        // Disabled cells keep their press owner out of the tab order.
+        assert!(
+            !host
+                .retained_handlers(node_by_debug(&host, "toolbar"))
+                .is_empty(),
+            "the bar container owns press + arrows (one tab stop)"
+        );
+    }
+
+    fn menubar_titles(fired: &[Signal<bool>]) -> Vec<MenuTitle> {
+        vec![
+            MenuTitle::new(
+                "File",
+                vec![
+                    MenuItemProps::new("New", {
+                        let f = fired[0].clone();
+                        move || f.set(true)
+                    }),
+                    MenuItemProps::new("Open", {
+                        let f = fired[1].clone();
+                        move || f.set(true)
+                    }),
+                ],
+            ),
+            MenuTitle::new(
+                "Edit",
+                vec![MenuItemProps::new("Undo", {
+                    let f = fired[2].clone();
+                    move || f.set(true)
+                })],
+            ),
+        ]
+    }
+
+    fn mount_menubar() -> (ComponentHost, Vec<Signal<bool>>, Signal<Option<usize>>) {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        let rt = host.runtime();
+        let fired: Vec<Signal<bool>> = (0..3).map(|_| rt.signal(false)).collect();
+        let open_title = rt.signal(None::<usize>);
+        let props = MenubarProps {
+            titles: menubar_titles(&fired),
+            open_title: open_title.clone(),
+            ..MenubarProps::new(vec![], open_title.clone())
+        };
+        host.mount("MB", props, Menubar);
+        host.run_until_idle();
+        (host, fired, open_title)
+    }
+
+    /// G21: title taps toggle the dropdown; Down opens; Tab + Enter
+    /// invokes the highlighted row and closes; Right moves the open
+    /// menu; Escape closes through the blur rule.
+    #[test]
+    fn menubar_opens_invokes_and_escapes() {
+        let (host, fired, open_title) = mount_menubar();
+        assert!(find_retained_by_debug(&host, "menu-popup").is_empty());
+        // Title tap toggles the dropdown (attached to the bar focus).
+        press_node(&host, node_by_debug(&host, "menubar-title-0"));
+        assert_eq!(open_title.get(), Some(0));
+        host.run_until_idle();
+        assert_eq!(find_retained_by_debug(&host, "menu-popup").len(), 1);
+        // Same-title tap closes.
+        press_node(&host, node_by_debug(&host, "menubar-title-0"));
+        assert_eq!(open_title.get(), None);
+        assert!(find_retained_by_debug(&host, "menu-popup").is_empty());
+        // Keyboard: Tab focuses the bar, Down opens title 0.
+        host.inject_input(InputEvent::key(keys::TAB, KeyState::Pressed));
+        host.run_until_idle();
+        let bar = node_by_debug(&host, "menubar-bar");
+        assert_eq!(host.focused_node(), Some(bar));
+        host.inject_input(InputEvent::key(keys::DOWN, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(open_title.get(), Some(0));
+        // Right moves the open menu with the highlight (native).
+        host.inject_input(InputEvent::key(keys::RIGHT, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(open_title.get(), Some(1));
+        // Tab into the list, Enter invokes Undo and closes.
+        host.inject_input(InputEvent::key(keys::TAB, KeyState::Pressed));
+        host.run_until_idle();
+        host.inject_input(InputEvent::key(keys::ENTER, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(fired[2].get(), "Enter invokes the highlighted row");
+        assert_eq!(open_title.get(), None, "invoke closes the menu");
+        // Escape closes an open menu through the blur rule.
+        press_node(&host, node_by_debug(&host, "menubar-title-1"));
+        assert_eq!(open_title.get(), Some(1));
+        host.inject_input(InputEvent::key(keys::ESCAPE, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(open_title.get(), None, "Escape dismisses");
+    }
+
+    /// G21: browse wraps request/poll per mode (pick sets, dismissal
+    /// leaves the path, failures surface in the caption).
+    #[test]
+    fn file_picker_browse_sets_and_dismissal_keeps() {
+        // Open mode.
+        let host = ComponentHost::new();
+        let path = host.runtime().signal(None::<SharedString>);
+        let open_dlg = std::rc::Rc::new(std::cell::RefCell::new(oppa::ScriptedDialog::new()));
+        open_dlg
+            .borrow_mut()
+            .push_response(vec![std::path::PathBuf::from("a.txt")]);
+        open_dlg.borrow_mut().push_response(vec![]);
+        let mut fp = FilePickerProps::new(path.clone(), FilePickerMode::Open);
+        fp.open_dialog = Some(open_dlg);
+        fp.debug = SharedString::from("fp-open");
+        host.mount("FP", fp, FilePicker);
+        host.run_until_idle();
+        press_node(&host, node_by_debug(&host, "fp-open-browse"));
+        assert_eq!(path.get().as_deref(), Some("a.txt"));
+        press_node(&host, node_by_debug(&host, "fp-open-browse"));
+        assert_eq!(
+            path.get().as_deref(),
+            Some("a.txt"),
+            "dismissal leaves the path untouched"
+        );
+        // Save mode.
+        let host2 = ComponentHost::new();
+        let path2 = host2.runtime().signal(None::<SharedString>);
+        let save_dlg = std::rc::Rc::new(std::cell::RefCell::new(oppa::ScriptedSaveDialog::new()));
+        save_dlg
+            .borrow_mut()
+            .push_response(Some(std::path::PathBuf::from("out.txt")));
+        save_dlg.borrow_mut().push_response(None);
+        let mut fp2 = FilePickerProps::new(path2.clone(), FilePickerMode::Save);
+        fp2.save_dialog = Some(save_dlg);
+        fp2.debug = SharedString::from("fp-save");
+        host2.mount("FPS", fp2, FilePicker);
+        host2.run_until_idle();
+        press_node(&host2, node_by_debug(&host2, "fp-save-browse"));
+        assert_eq!(path2.get().as_deref(), Some("out.txt"));
+        press_node(&host2, node_by_debug(&host2, "fp-save-browse"));
+        assert_eq!(path2.get().as_deref(), Some("out.txt"));
+        // Folder mode.
+        let host3 = ComponentHost::new();
+        let path3 = host3.runtime().signal(None::<SharedString>);
+        let folder_dlg =
+            std::rc::Rc::new(std::cell::RefCell::new(oppa::ScriptedFolderDialog::new()));
+        folder_dlg
+            .borrow_mut()
+            .push_response(Some(std::path::PathBuf::from("docs")));
+        let mut fp3 = FilePickerProps::new(path3.clone(), FilePickerMode::Folder);
+        fp3.folder_dialog = Some(folder_dlg);
+        fp3.debug = SharedString::from("fp-folder");
+        host3.mount("FPF", fp3, FilePicker);
+        host3.run_until_idle();
+        press_node(&host3, node_by_debug(&host3, "fp-folder-browse"));
+        assert_eq!(path3.get().as_deref(), Some("docs"));
+    }
+
+    /// G21: a missing backend for the chosen mode refuses loudly
+    /// (wiring bug, never a silent button).
+    #[test]
+    #[should_panic(expected = "without an open backend")]
+    fn file_picker_missing_backend_refuses_loudly() {
+        let host = ComponentHost::new();
+        let path = host.runtime().signal(None::<SharedString>);
+        let mut fp = FilePickerProps::new(path, FilePickerMode::Open);
+        fp.debug = SharedString::from("fp-loud");
+        host.mount("FPL", fp, FilePicker);
+        host.run_until_idle();
+        press_node(&host, node_by_debug(&host, "fp-loud-browse"));
+    }
+
+    fn route_home(_ctx: &Ctx) -> VNode {
+        Div("route-home").build()
+    }
+
+    fn route_settings(_ctx: &Ctx) -> VNode {
+        Div("route-settings").build()
+    }
+
+    /// G22: the Phase 36 leaves render as controls (label wrappers
+    /// announce, bare leaves stay byte-identical); NavHost switches
+    /// on the stack and empties quietly past unknown names.
+    #[test]
+    fn g22_wrappers_render_leaves_and_route() {
+        // RichText labeled (wrapper announces) + bare (mounts).
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        host.mount(
+            "RT",
+            RichTextViewProps {
+                spans: vec![oppa::TextSpan::new("hi")],
+                style: Text::body_secondary,
+                label: Some(SharedString::from("Greeting")),
+                debug: SharedString::from("rich"),
+            },
+            RichTextView,
+        );
+        host.run_until_idle();
+        let wrap = node_by_debug(&host, "rich");
+        let sem = host.retained_semantics(wrap).expect("semantics");
+        assert_eq!(sem.label.as_deref(), Some("Greeting"));
+        let host_bare = ComponentHost::new();
+        host_bare.set_text_service(Box::new(FakeText));
+        host_bare.mount(
+            "RTB",
+            RichTextViewProps {
+                spans: vec![oppa::TextSpan::new("hi")],
+                style: Text::body_secondary,
+                label: None,
+                debug: SharedString::from("rich-bare"),
+            },
+            RichTextView,
+        );
+        host_bare.run_until_idle();
+        assert!(
+            find_retained_by_debug(&host_bare, "rich-bare").is_empty(),
+            "bare leaves carry no wrapper"
+        );
+        // Image: the `img` leaf + alt announcement.
+        let host2 = ComponentHost::new();
+        host2.mount(
+            "IMG",
+            ImageViewProps {
+                image: oppa::ImageId(7),
+                size: 48.0,
+                radius: 4.0,
+                alt: SharedString::from("Logo"),
+            },
+            ImageView,
+        );
+        host2.run_until_idle();
+        let img = node_by_debug(&host2, "img");
+        let sem2 = host2.retained_semantics(img).expect("semantics");
+        assert_eq!(sem2.label.as_deref(), Some("Logo"));
+        // Canvas: the named leaf mounts.
+        let host3 = ComponentHost::new();
+        host3.mount(
+            "CV",
+            CanvasViewProps {
+                ops: vec![oppa::CanvasOp::Rect {
+                    x: Px::of(2.0),
+                    y: Px::of(2.0),
+                    w: Px::of(20.0),
+                    h: Px::of(12.0),
+                    color: Color(0x22_66_CC),
+                }],
+                width: 64.0,
+                height: 32.0,
+                label: None,
+                debug: SharedString::from("plot"),
+            },
+            CanvasView,
+        );
+        host3.run_until_idle();
+        assert_eq!(find_retained_by_debug(&host3, "plot").len(), 1);
+        // NavHost: current route renders, pushes switch, unknown
+        // names empty quietly (the unmatched-Tabs precedent).
+        let host4 = ComponentHost::new();
+        let stack = host4.runtime().signal(oppa::NavStack::new(
+            oppa::Route::new("home").expect("route"),
+        ));
+        let routes = vec![
+            RouteView {
+                name: SharedString::from("home"),
+                content: Rc::new(route_home),
+            },
+            RouteView {
+                name: SharedString::from("settings"),
+                content: Rc::new(route_settings),
+            },
+        ];
+        host4.mount(
+            "NAV",
+            NavHostProps {
+                stack: stack.clone(),
+                routes: routes.clone(),
+            },
+            NavHost,
+        );
+        host4.run_until_idle();
+        assert_eq!(find_retained_by_debug(&host4, "route-home").len(), 1);
+        let mut moved = stack.get();
+        moved.push(oppa::Route::new("settings").expect("route"));
+        stack.set(moved);
+        host4.run_until_idle();
+        assert!(find_retained_by_debug(&host4, "route-home").is_empty());
+        assert_eq!(find_retained_by_debug(&host4, "route-settings").len(), 1);
+        let mut lost = stack.get();
+        lost.push(oppa::Route::new("void").expect("route"));
+        stack.set(lost);
+        host4.run_until_idle();
+        assert_eq!(find_retained_by_debug(&host4, "nav-empty").len(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 39a (decisions 377–379): DOM → framework value loop
+    // ------------------------------------------------------------------
+
+    #[derive(Clone)]
+    struct LoopCase {
+        props: TextInputProps,
+        count: Signal<u32>,
+    }
+    impl Props for LoopCase {}
+
+    fn loop_render(ctx: &Ctx, p: &LoopCase) -> VNode {
+        Column::new().gap(8).children([
+            ctx.child("oppa::LoopField", 1, &p.props, TextInput),
+            VNode::from(Text {
+                text: SharedString::from(format!("ticks {}", p.count.get())),
+                style: Text::body_secondary,
+            }),
+        ])
+    }
+
+    /// U8 value loop (decision 377): DOM `input` events arrive as
+    /// `InputEvent::Text` and set the controlled signal exactly per
+    /// keystroke (counted, not inferred), reporting through
+    /// `on_change` like native commits; an unrelated tick
+    /// re-renders around the field with value, caret, and node
+    /// identity intact and no echo; programmatic sets never report
+    /// (no loop — `on_change` is the commit path, not the set path).
+    #[test]
+    fn value_loop_feeds_report_and_ticks_preserve() {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        let value = host.runtime().signal(SharedString::from(""));
+        let count = host.runtime().signal(0u32);
+        let (notify, seen) = blowing::<SharedString>();
+        let props = TextInputProps {
+            on_change: Some(notify),
+            ..TextInputProps::new("Name", value.clone())
+        };
+        host.mount(
+            "Loop",
+            LoopCase {
+                props,
+                count: count.clone(),
+            },
+            loop_render,
+        );
+        host.run_until_idle();
+        // Focus first (typing implies browser focus; the feed
+        // itself never moves framework focus).
+        let field = node_by_debug(&host, "text-input");
+        press_node(&host, field);
+        assert_eq!(host.focused_node(), Some(field));
+        // Keystroke 1: the DOM value feeds exactly + reports.
+        host.inject_input(InputEvent::text(field, "h"));
+        host.run_until_idle();
+        assert_eq!(value.get().to_string(), "h");
+        assert_eq!(
+            seen.borrow()
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+            vec!["h".to_string()],
+            "platform commits report like native inserts"
+        );
+        assert_eq!(
+            host.focused_field_session().expect("session").caret(),
+            1,
+            "feed caret collapses to the end"
+        );
+        // Keystroke 2: full values stay exact (level-triggered —
+        // each event carries the whole current value).
+        host.inject_input(InputEvent::text(field, "hi"));
+        host.run_until_idle();
+        assert_eq!(value.get().to_string(), "hi");
+        assert_eq!(
+            seen.borrow()
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+            vec!["h".to_string(), "hi".to_string()],
+            "counted per step, never inferred"
+        );
+        // Unrelated tick: re-renders around the field — value,
+        // caret, and node identity intact, no echo.
+        count.set(1);
+        host.run_until_idle();
+        assert_eq!(value.get().to_string(), "hi");
+        assert_eq!(
+            host.focused_field_session().expect("session").caret(),
+            2,
+            "ticks never move the caret"
+        );
+        assert_eq!(
+            node_by_debug(&host, "text-input"),
+            field,
+            "no remount across ticks"
+        );
+        assert_eq!(seen.borrow().len(), 2, "ticks never echo");
+        // Programmatic sets flow to the value without reporting
+        // (no loop back into `on_change`).
+        value.set(SharedString::from("HELLO"));
+        host.run_until_idle();
+        assert_eq!(value.get().to_string(), "HELLO");
+        assert_eq!(seen.borrow().len(), 2, "sets never report");
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 39b (decision 380): reference-app coverage
+    // ------------------------------------------------------------------
+
+    /// The sink's Views tab mounts every Phase 38b–38c control
+    /// (Tree, Toolbar, Menubar, RichText, Canvas, Image, NavHost)
+    /// plus the Form validation/DatePicker and Layout Grid/Splitter
+    /// legs on their own tabs.
+    #[test]
+    fn kitchen_sink_views_tab_mounts_phase38_controls() {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        host.mount("Sink", (), KitchenSinkApp);
+        host.run_until_idle();
+        // Five tabs now (Form/Layout/Overlays/Platform/Views).
+        let tabs = find_retained_by_debug(&host, "tab-item");
+        assert_eq!(tabs.len(), 5);
+        press_node(&host, tabs[4]);
+        for debug in [
+            "sink-tree",
+            "toolbar-cell-0",
+            "menubar-bar",
+            "sink-rich",
+            "sink-plot",
+            "img",
+            "sink-views-home",
+        ] {
+            assert_eq!(
+                find_retained_by_debug(&host, debug).len(),
+                1,
+                "{debug} mounts on the Views tab"
+            );
+        }
+        // Form leg: the invalid email + date box mount.
+        press_node(&host, tabs[0]);
+        assert_eq!(find_retained_by_debug(&host, "sink-email-field").len(), 1);
+        assert_eq!(find_retained_by_debug(&host, "date").len(), 1);
+        // Layout leg: the grid + splitter mount.
+        press_node(&host, tabs[1]);
+        assert_eq!(find_retained_by_debug(&host, "sink::Layout::Grid").len(), 1);
+        assert_eq!(find_retained_by_debug(&host, "sink-split").len(), 1);
     }
 }

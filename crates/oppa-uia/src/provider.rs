@@ -21,9 +21,8 @@ use windows::Win32::System::Com::SAFEARRAY;
 use windows::Win32::System::Ole::{SafeArrayCreateVector, SafeArrayPutElement};
 use windows::Win32::System::Variant::{VARIANT, VT_ARRAY, VT_BOOL, VT_BSTR, VT_I4, VT_R8};
 use windows::Win32::UI::Accessibility::{
+    IInvokeProvider, IInvokeProvider_Impl, IRangeValueProvider, IRangeValueProvider_Impl,
     IRawElementProviderAdviseEvents, IRawElementProviderAdviseEvents_Impl,
-};
-use windows::Win32::UI::Accessibility::{
     IRawElementProviderFragment, IRawElementProviderFragmentRoot,
     IRawElementProviderFragmentRoot_Impl, IRawElementProviderFragment_Impl,
     IRawElementProviderSimple, IRawElementProviderSimple_Impl, ISelectionItemProvider,
@@ -34,12 +33,17 @@ use windows::Win32::UI::Accessibility::{
     ToggleState, ToggleState_Indeterminate, ToggleState_Off, ToggleState_On,
     UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
     UIA_ComboBoxControlTypeId, UIA_ControlTypePropertyId, UIA_EditControlTypeId,
-    UIA_GroupControlTypeId, UIA_IsEnabledPropertyId, UIA_ListItemControlTypeId, UIA_NamePropertyId,
-    UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId, UIA_SelectionItemPatternId,
-    UIA_SliderControlTypeId, UIA_StatusBarControlTypeId, UIA_TabControlTypeId,
-    UIA_TabItemControlTypeId, UIA_TogglePatternId, UIA_ToggleToggleStatePropertyId,
-    UIA_ValuePatternId, UIA_WindowControlTypeId, UiaAppendRuntimeId, UiaRect, UIA_CONTROLTYPE_ID,
-    UIA_PATTERN_ID, UIA_PROPERTY_ID,
+    UIA_FullDescriptionPropertyId, UIA_GroupControlTypeId, UIA_InvokePatternId,
+    UIA_IsDataValidForFormPropertyId, UIA_IsEnabledPropertyId, UIA_IsRequiredForFormPropertyId,
+    UIA_ListItemControlTypeId, UIA_MenuItemControlTypeId, UIA_NamePropertyId,
+    UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId, UIA_RangeValueIsReadOnlyPropertyId,
+    UIA_RangeValueLargeChangePropertyId, UIA_RangeValueMaximumPropertyId,
+    UIA_RangeValueMinimumPropertyId, UIA_RangeValuePatternId, UIA_RangeValueSmallChangePropertyId,
+    UIA_RangeValueValuePropertyId, UIA_SelectionItemPatternId, UIA_SliderControlTypeId,
+    UIA_StatusBarControlTypeId, UIA_TabControlTypeId, UIA_TabItemControlTypeId,
+    UIA_TogglePatternId, UIA_ToggleToggleStatePropertyId, UIA_TreeControlTypeId,
+    UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_WindowControlTypeId, UiaAppendRuntimeId,
+    UiaRect, UIA_CONTROLTYPE_ID, UIA_PATTERN_ID, UIA_PROPERTY_ID,
 };
 
 use super::tree::UiaTree;
@@ -47,7 +51,10 @@ use oppa::{NodeId, Role};
 
 /// Host-loop drivers the provider calls into for AT actions (and
 /// the text seam for Value reads). Uninstalled entries behave
-/// loudly (`E_NOTIMPL`), never as silent no-ops.
+/// loudly (`E_NOTIMPL`), never as silent no-ops. Every callback
+/// runs on the COM RPC/STA thread (decision 352): implementations
+/// must enqueue non-blocking work for the host loop's INPUT phase
+/// (ADR-0010) — never touch `ComponentHost` directly, never block.
 #[derive(Clone, Default)]
 pub struct UiaAction {
     /// Press-like activation for Toggle/Select (test wires this to
@@ -55,18 +62,28 @@ pub struct UiaAction {
     pub on_toggle: Option<Rc<dyn Fn(NodeId)>>,
     /// Current text for Value reads (the M1 editor seam).
     pub value_for: Option<Rc<dyn Fn(NodeId) -> String>>,
+    /// Invoke-class activation for Button/MenuItem (decision 352 —
+    /// G18): `IInvokeProvider::Invoke` enqueues through this.
+    pub on_invoke: Option<Rc<dyn Fn(NodeId)>>,
+    /// Range writes for Slider/ProgressBar (decision 352 — G18):
+    /// `IRangeValueProvider::SetValue` enqueues through this.
+    pub on_set_value: Option<Rc<dyn Fn(NodeId, f64)>>,
 }
 
 /// UIA control type for one framework role (the total table; G2 adds
-/// Button/Checkbox/Slider — Button/Slider expose no AT-action pattern
-/// in v1, OQ-G2-2; decision 241 adds Dialog as a Window — UIA has no
+/// Button/Checkbox/Slider — decision 352 adds Invoke on Button (and
+/// MenuItem below) plus RangeValue on Slider/ProgressBar, closing the
+/// OQ-G2-2 AT-action gap; decision 241 adds Dialog as a Window — UIA has no
 /// separate dialog type, dialog windows surface as windows; decision
 /// 244 adds RadioButton as its own type; decision 245 adds Tab +
 /// TabList as their own types; decision 247 adds ComboBox as its own
 /// type — ExpandCollapse for the open state is OQ-G2-2 class, the box
 /// exposes no AT-action pattern in v1; decision 251 adds ProgressBar
-/// as its own type — RangeValue for the percentage is OQ-G2-2 class,
-/// the bar exposes no AT-action pattern in v1; round 5.1 adds
+/// as its own type; decision 352 adds Tree/TreeItem as their own
+/// types (the Tree control; row expansion rides ExpandCollapse off
+/// the control's signal — the provider serves the type, the control
+/// owns the state) and MenuItem as its own type (migrated off
+/// ListItem so Invoke attaches to the real affordance); round 5.1 adds
 /// TextArea as Edit (same contract as TextField — multi-line is a
 /// Value-pattern detail UIA does not type separately)).
 pub fn uia_control_type(role: Role) -> UIA_CONTROLTYPE_ID {
@@ -83,11 +100,38 @@ pub fn uia_control_type(role: Role) -> UIA_CONTROLTYPE_ID {
         Role::TabList => UIA_TabControlTypeId,
         Role::ComboBox => UIA_ComboBoxControlTypeId,
         Role::ProgressBar => UIA_ProgressBarControlTypeId,
+        Role::Tree => UIA_TreeControlTypeId,
+        Role::TreeItem => UIA_TreeItemControlTypeId,
+        Role::MenuItem => UIA_MenuItemControlTypeId,
         // StatusBar is the closest stock type for a transient message
         // (decision 337 — the Toast card; announced, never focused).
         Role::Status => UIA_StatusBarControlTypeId,
         Role::Generic => UIA_GroupControlTypeId,
     }
+}
+
+/// Range floor for a mirrored node (decision 352): the Slider
+/// contract default (0.0) when the payload sets no bound.
+fn range_min(n: &super::tree::UiaNode) -> f64 {
+    n.min_value.unwrap_or(0.0) as f64
+}
+
+/// Range ceiling for a mirrored node (decision 352): the Slider
+/// contract default (100.0) when the payload sets no bound.
+fn range_max(n: &super::tree::UiaNode) -> f64 {
+    n.max_value.unwrap_or(100.0) as f64
+}
+
+/// Page-step for a mirrored node (decision 352): a tenth of the
+/// span (zero span steps zero — never an invented step).
+fn range_large_change(n: &super::tree::UiaNode) -> f64 {
+    (range_max(n) - range_min(n)) / 10.0
+}
+
+/// Arrow-step for a mirrored node (decision 352): a hundredth of
+/// the span (zero span steps zero).
+fn range_small_change(n: &super::tree::UiaNode) -> f64 {
+    (range_max(n) - range_min(n)) / 100.0
 }
 
 #[implement(
@@ -97,7 +141,9 @@ pub fn uia_control_type(role: Role) -> UIA_CONTROLTYPE_ID {
     IRawElementProviderAdviseEvents,
     IToggleProvider,
     ISelectionItemProvider,
-    IValueProvider
+    IValueProvider,
+    IInvokeProvider,
+    IRangeValueProvider
 )]
 pub struct OppaProvider {
     tree: Rc<RefCell<UiaTree>>,
@@ -220,6 +266,16 @@ fn var_bool(b: bool) -> VARIANT {
     v
 }
 
+fn var_r8(x: f64) -> VARIANT {
+    let mut v = VARIANT::default();
+    unsafe {
+        let inner = &mut *v.Anonymous.Anonymous;
+        inner.vt = VT_R8;
+        inner.Anonymous.dblVal = x;
+    }
+    v
+}
+
 fn safearray_i4(values: &[i32]) -> Result<*mut SAFEARRAY, Error> {
     unsafe {
         let psa = SafeArrayCreateVector(VT_I4, 0, values.len() as u32);
@@ -267,6 +323,10 @@ impl IRawElementProviderSimple_Impl for OppaProvider_Impl {
 
     fn GetPatternProvider(&self, patternid: UIA_PATTERN_ID) -> windows::core::Result<IUnknown> {
         let role = self.node(|n| n.role)?;
+        // RangeValue gates on a present numeric value (decision 352:
+        // `None` means no value interface — never an invented
+        // number); TextField Value keeps its `value_for` gate.
+        let has_range = self.node(|n| n.value_num.is_some()).unwrap_or(false);
         let supported = matches!(
             (role, patternid),
             (Role::Switch, UIA_TogglePatternId)
@@ -275,7 +335,12 @@ impl IRawElementProviderSimple_Impl for OppaProvider_Impl {
                 | (Role::RadioButton, UIA_SelectionItemPatternId)
                 | (Role::Tab, UIA_SelectionItemPatternId)
                 | (Role::TextField, UIA_ValuePatternId)
-        ) && (role != Role::TextField || self.actions.value_for.is_some());
+                | (Role::Button, UIA_InvokePatternId)
+                | (Role::MenuItem, UIA_InvokePatternId)
+                | (Role::Slider, UIA_RangeValuePatternId)
+                | (Role::ProgressBar, UIA_RangeValuePatternId)
+        ) && (role != Role::TextField || self.actions.value_for.is_some())
+            && ((role != Role::Slider && role != Role::ProgressBar) || has_range);
         if !supported {
             return Err(Error::from(E_NOINTERFACE));
         }
@@ -305,6 +370,37 @@ impl IRawElementProviderSimple_Impl for OppaProvider_Impl {
                 _ => ToggleState_Indeterminate.0,
             };
             Ok(var_i4(state))
+        } else if propertyid == UIA_IsRequiredForFormPropertyId {
+            // G7 validation (decision 352): the `required` payload
+            // mark, exact semantic match.
+            Ok(var_bool(n.required))
+        } else if propertyid == UIA_IsDataValidForFormPropertyId {
+            // G7 validation (decision 352): the `invalid` payload
+            // mark, inverted (valid-by-default — absent validation
+            // reports stock-valid, never a silent drop).
+            Ok(var_bool(!n.invalid))
+        } else if propertyid == UIA_FullDescriptionPropertyId {
+            // G7 validation (decision 352): the error text rides the
+            // accessible description (`""` when absent).
+            Ok(var_bstr(&n.error_message))
+        } else if propertyid == UIA_RangeValueValuePropertyId {
+            // G18 numeric value (decision 352): the payload's
+            // `value_num`; unset reports 0.0 (the pattern itself
+            // gates on presence — this arm only fires for served
+            // patterns, never an invented interface).
+            Ok(var_r8(n.value_num.unwrap_or(0.0) as f64))
+        } else if propertyid == UIA_RangeValueMinimumPropertyId {
+            Ok(var_r8(range_min(n)))
+        } else if propertyid == UIA_RangeValueMaximumPropertyId {
+            Ok(var_r8(range_max(n)))
+        } else if propertyid == UIA_RangeValueIsReadOnlyPropertyId {
+            // Read-only exactly when no range-write driver is
+            // installed (AT-driven edits need a driver — loud).
+            Ok(var_bool(self.actions.on_set_value.is_none()))
+        } else if propertyid == UIA_RangeValueLargeChangePropertyId {
+            Ok(var_r8(range_large_change(n)))
+        } else if propertyid == UIA_RangeValueSmallChangePropertyId {
+            Ok(var_r8(range_small_change(n)))
         } else if propertyid == UIA_BoundingRectanglePropertyId {
             let (x, y, w, h) = n.bounds;
             var_array_f64(&[x as f64, y as f64, w as f64, h as f64])
@@ -473,5 +569,59 @@ impl IValueProvider_Impl for OppaProvider_Impl {
 
     fn IsReadOnly(&self) -> windows::core::Result<BOOL> {
         Ok(BOOL::from(true))
+    }
+}
+
+impl IInvokeProvider_Impl for OppaProvider_Impl {
+    fn Invoke(&self) -> windows::core::Result<()> {
+        // Button/MenuItem activation (decision 352 — G18): enqueues
+        // through the host-loop callback (COM-thread rule above);
+        // uninstalled drivers fail loudly.
+        match &self.actions.on_invoke {
+            Some(f) => {
+                f(self.id);
+                Ok(())
+            }
+            None => Err(Error::from(E_NOTIMPL)),
+        }
+    }
+}
+
+impl IRangeValueProvider_Impl for OppaProvider_Impl {
+    fn SetValue(&self, val: f64) -> windows::core::Result<()> {
+        // Slider/ProgressBar writes (decision 352 — G18): enqueues
+        // through the host-loop callback; uninstalled drivers fail
+        // loudly (AT-driven edits need a driver).
+        match &self.actions.on_set_value {
+            Some(f) => {
+                f(self.id, val);
+                Ok(())
+            }
+            None => Err(Error::from(E_NOTIMPL)),
+        }
+    }
+
+    fn Value(&self) -> windows::core::Result<f64> {
+        self.node(|n| n.value_num.unwrap_or(0.0) as f64)
+    }
+
+    fn IsReadOnly(&self) -> windows::core::Result<BOOL> {
+        Ok(BOOL::from(self.actions.on_set_value.is_none()))
+    }
+
+    fn Maximum(&self) -> windows::core::Result<f64> {
+        self.node(range_max)
+    }
+
+    fn Minimum(&self) -> windows::core::Result<f64> {
+        self.node(range_min)
+    }
+
+    fn LargeChange(&self) -> windows::core::Result<f64> {
+        self.node(range_large_change)
+    }
+
+    fn SmallChange(&self) -> windows::core::Result<f64> {
+        self.node(range_small_change)
     }
 }
