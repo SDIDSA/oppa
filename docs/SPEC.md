@@ -36,7 +36,7 @@ contract test suite — not prose — defines sameness.
 
 - One normalized `InputEvent` (`Pointer` / `Scroll` / `Key` / `Ime` / `Focus`) everywhere.
 - Pointer: hit-test deepest-wins, later-sibling on ties, no root fallback; capture on Down, Up only inside the capture subtree, Cancel clears.
-- Keyboard: `Key(code, mods, state, repeat)`; Tab wraps in deterministic press-node DFS pre-order; Enter/Space pulse press; Escape blurs; Slider arrows step by `step` and `Home`/`End` jump to `min`/`max` (Phase 38a); other keys go to the focused handler else no-op.
+- Keyboard: `Key(code, mods, state, repeat)`; Tab wraps in deterministic press-node DFS pre-order; Enter/Space pulse press; Escape blurs; Slider arrows step by `step` and `Home`/`End` jump to `min`/`max` (Phase 38a); Tree rows walk with Up/Down (visible neighbors), Left (collapse, else parent), Right (expand, else first child); Splitter arrows nudge the fraction ±0.05; DatePicker arrows step days (Left/Right ±1, Up/Down ±7, `Home`/`End` month edges) — all pinning quietly at their ends (Phase 38b); other keys go to the focused handler else no-op.
 - Focus: at most one editing session; focus loss mid-composition commits; click follows focus.
 - IME: single `dispatch_ime_event` seam for scripted + platform feeds; `ImeOps` via `PlatformShell::set_ime`.
 
@@ -49,6 +49,7 @@ contract test suite — not prose — defines sameness.
 - Web display serves the measured font bytes (`@font-face` data URI); residual browser-shaper differences are stated tolerance, not contract.
 - Editing: controlled components (content = author signal; caret/selection/composition/undo = core session, survives hot swap). Authority: GPU backend owns on GPU, DOM `<input>` owns on Web, shared op-suite is the contract. Clipboard is plain-text only via the `Clipboard` trait; non-Win32 clipboard refuses loudly.
 - Form validation (Phase 38a, G7): `invalid` / `required` / `error_message` announce through `Semantics` (validators stay app-side — the payload only announces); `helper_text` renders a visual-only caption. `error_message` wins while `invalid`; controls without a message keep byte-identical trees.
+- Pickers (Phase 38b): `Splitter` fraction clamps into `min_first_px` / `min_second_px` (contradictions — negative/non-finite geometry or minima exceeding the total — refuse loudly); `DatePicker` binds every path into `[min, max]` (arrows pin, month flips past the bound are `None`/disabled, out-of-range days render handlerless, parses outside the bound are ignored); `Tree` flatten refuses missing parents and parent loops loudly.
 
 ## Transitions
 

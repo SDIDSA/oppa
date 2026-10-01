@@ -3827,6 +3827,1166 @@ pub fn ErrorBoundary(ctx: &Ctx, props: &ErrorBoundaryProps) -> VNode {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tree (Phase 38b, G12)
+// ---------------------------------------------------------------------------
+
+/// One hierarchy node: identity + label + parent link (`None` =
+/// root). Plain data over an author-owned [`Collection`](oppa::Collection)
+/// (commit order = sibling order — roots and children each keep it).
+#[derive(Clone, PartialEq, Debug)]
+pub struct TreeNode {
+    pub id: SharedString,
+    pub label: SharedString,
+    pub parent: Option<SharedString>,
+}
+
+impl TreeNode {
+    pub fn root(id: &str, label: &str) -> Self {
+        Self {
+            id: SharedString::from(id),
+            label: SharedString::from(label),
+            parent: None,
+        }
+    }
+
+    pub fn child(id: &str, label: &str, parent: &str) -> Self {
+        Self {
+            id: SharedString::from(id),
+            label: SharedString::from(label),
+            parent: Some(SharedString::from(parent)),
+        }
+    }
+}
+
+/// Tree props (controlled — `expanded` holds the open node ids,
+/// `selected` the chosen node; both author-owned signals). The
+/// hierarchy rides `nodes` (a [`Collection`](oppa::Collection) of
+/// [`TreeNode`]); the visible flatten re-derives live (appends grow
+/// the tree, removals collapse it — same frame, no remount).
+/// `row_height` is fixed per row (variable heights stay out —
+/// the Blocked prefix-sum rule); the viewport scrolls natively with
+/// an attached [`Scrollbar`].
+#[derive(Clone, Props)]
+pub struct TreeProps {
+    pub nodes: oppa::Collection<TreeNode>,
+    pub expanded: Signal<Vec<SharedString>>,
+    pub selected: Signal<Option<SharedString>>,
+    pub label: SharedString,
+    pub width: f32,
+    pub height: f32,
+    pub row_height: f32,
+    pub overscan: usize,
+    pub enabled: bool,
+    pub debug: SharedString,
+}
+
+/// Flattens the hierarchy to visible `(row, depth)` pairs in
+/// commit order (pure — headless-testable): roots first, each open
+/// node's children (commit order) recursed. Unknown parents and
+/// cycles refuse loudly (authoring bugs, never silent skips —
+/// a child naming a missing parent, or a parent loop, panics).
+pub fn tree_visible(
+    rows: &[oppa::Row<TreeNode>],
+    expanded: &[SharedString],
+) -> Vec<(oppa::Row<TreeNode>, usize)> {
+    use std::collections::HashSet;
+    let ids: HashSet<&str> = rows.iter().map(|r| r.value.id.as_ref()).collect();
+    for row in rows {
+        if let Some(p) = row.value.parent.as_ref() {
+            assert!(
+                ids.contains(p.as_ref()),
+                "tree child {:?} names missing parent {p:?} — refused, never silently dropped",
+                row.value.id.to_string(),
+            );
+        }
+    }
+    fn visit(
+        rows: &[oppa::Row<TreeNode>],
+        parent: Option<&str>,
+        expanded: &[SharedString],
+        depth: usize,
+        stack: &mut Vec<SharedString>,
+        out: &mut Vec<(oppa::Row<TreeNode>, usize)>,
+    ) {
+        for row in rows
+            .iter()
+            .filter(|r| r.value.parent.as_ref().map(|p| p.as_ref()) == parent)
+        {
+            let id = row.value.id.clone();
+            assert!(
+                !stack.iter().any(|s| s == &id),
+                "tree parent loop at {id:?} — refused, never an infinite flatten"
+            );
+            out.push((row.clone(), depth));
+            if expanded.iter().any(|e| e == &id) {
+                stack.push(id.clone());
+                let parent: SharedString = id;
+                visit(rows, Some(parent.as_ref()), expanded, depth + 1, stack, out);
+                stack.pop();
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut stack = Vec::new();
+    visit(rows, None, expanded, 0, &mut stack, &mut out);
+    out
+}
+
+/// Toggles `id` in the expanded list (pure — headless-testable):
+/// present → removed, absent → appended (append order is render
+/// order only, never semantic).
+pub fn tree_toggled(expanded: &[SharedString], id: &SharedString) -> Vec<SharedString> {
+    if expanded.iter().any(|e| e == id) {
+        expanded.iter().filter(|e| *e != id).cloned().collect()
+    } else {
+        let mut next = expanded.to_vec();
+        next.push(id.clone());
+        next
+    }
+}
+
+/// One tree row (private — mounted per visible slot through
+/// `ctx.child_keyed`, so slots recycle like [`VirtualList`] slots:
+/// expanding rebinds slot content, never remounts the viewport).
+#[derive(Clone)]
+struct TreeRowProps {
+    node: oppa::Row<TreeNode>,
+    depth: usize,
+    selected: bool,
+    expanded: bool,
+    has_children: bool,
+    row_height: f32,
+    width: f32,
+    enabled: bool,
+    on_select: Action,
+    on_toggle: Action,
+    nav: Rc<dyn Fn(NavDir)>,
+}
+
+/// Tree keyboard direction (one payload-less handler per direction —
+/// the arrow precedent, lock #11 stands).
+#[derive(Clone, Copy)]
+enum NavDir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl Props for TreeRowProps {}
+
+/// Vector chevron data (the Select-chevron precedent — real stroked
+/// paths, no symbol-font coverage): right when collapsed, down when
+/// open; leaves render a 12px spacer so labels align.
+fn tree_chevron(expanded: bool) -> &'static str {
+    if expanded {
+        "M 2 4 L 6 9 L 10 4"
+    } else {
+        "M 4 2 L 9 6 L 4 10"
+    }
+}
+
+fn TreeRow(ctx: &Ctx, props: &TreeRowProps) -> VNode {
+    let t = ctx.theme().tokens();
+    let semantics = Semantics::tree_item(props.selected)
+        .label(&props.node.value.label)
+        .disabled(!props.enabled);
+    let chevron = if props.has_children {
+        Path::new("tree-chevron")
+            .data(tree_chevron(props.expanded))
+            .stroke(t.text_primary, 2.0)
+            .size(12, 12)
+            .build()
+    } else {
+        Div("tree-spacer").style(Style::new().size(12, 12)).build()
+    };
+    // The chevron owns the toggle press (Enter/Space on it toggles
+    // through the router pulse); the row owns select + arrows.
+    let chevron = if props.enabled && props.has_children {
+        let toggle = props.on_toggle.clone();
+        Div("tree-chevron-hit")
+            .style(Style::new().size(20, 20).align_items(AlignItems::Center))
+            .on_press(move || toggle())
+            .child(chevron)
+    } else {
+        Div("tree-chevron-hit")
+            .style(Style::new().size(20, 20).align_items(AlignItems::Center))
+            .child(chevron)
+    };
+    let mut label = Text::new(props.node.value.label.clone());
+    if props.selected {
+        label = label.bold();
+    }
+    let label_vnode = if props.selected {
+        with_ink(VNode::from(label), t.primary)
+    } else {
+        VNode::from(label)
+    };
+    let row_style = Style::new()
+        .size(props.width, props.row_height)
+        .pad_left(props.depth as f32 * 16.0)
+        .gap(4)
+        .align_items(AlignItems::Center);
+    let builder = Row("tree-row")
+        .style(focus_ringed(ctx, props.enabled, row_style))
+        .semantics(semantics);
+    // All four arrows share the row press owner (handlers attach
+    // pre-`child` — `.child()`/`.children()` are terminal, so every
+    // handler rides the chain above the row content).
+    let builder = if props.enabled {
+        let select = props.on_select.clone();
+        let nav_u = props.nav.clone();
+        let nav_d = props.nav.clone();
+        let nav_l = props.nav.clone();
+        let nav_r = props.nav.clone();
+        builder
+            .on_press(move || select())
+            .on_key_up(move || nav_u(NavDir::Up))
+            .on_key_down(move || nav_d(NavDir::Down))
+            .on_key_left(move || nav_l(NavDir::Left))
+            .on_key_right(move || nav_r(NavDir::Right))
+    } else {
+        builder
+    };
+    builder.children([chevron, label_vnode])
+}
+
+/// Hierarchy view over a [`Collection`](oppa::Collection): visible
+/// rows flatten per render ([`tree_visible`]), window through the
+/// shared [`vlist_window`] math (binary-searched tops, overscan —
+/// the [`VirtualList`] precedent, fixed `row_height`), and recycle
+/// per-slot instances (`child_keyed` on the slot — expanding
+/// rebinds content, never remounts).
+///
+/// Interaction: row press selects (Enter/Space pulse it through the
+/// router); chevron press toggles expansion; arrows on the focused
+/// row move selection (Up/Down to the visible neighbors), collapse
+/// / ascend (Left: collapse when open, else select the parent),
+/// expand / descend (Right: expand when closed with children, else
+/// select the first child). Ends and leaves are quiet no-ops
+/// (controlled-contract edges, documented not silent). Disabled
+/// renders everything handlerless with `disabled` semantics.
+pub fn Tree(ctx: &Ctx, props: &TreeProps) -> VNode {
+    let offset = ctx.scroll_offset();
+    let y = offset.get();
+    let page = props.nodes.query(&oppa::CollectionQuery {
+        filter: None,
+        sort: None,
+        offset: 0,
+        limit: None,
+    });
+    let expanded = props.expanded.get();
+    let selected = props.selected.get();
+    let visible = tree_visible(&page.rows, &expanded);
+    let n = visible.len();
+    let rh = props.row_height;
+    assert!(
+        rh.is_finite() && rh > 0.0,
+        "tree row_height must be finite positive, got {rh} — refused, never a silent collapse"
+    );
+    let mut tops = Vec::with_capacity(n + 1);
+    let mut cursor = 0.0f32;
+    for _ in 0..n {
+        tops.push(cursor);
+        cursor += rh;
+    }
+    let total = cursor;
+    let (first, end) = vlist_window(&tops, total, y, props.height, props.overscan);
+    let width = props.width;
+    let children = visible[first..end]
+        .iter()
+        .enumerate()
+        .map(|(slot, (row, depth))| {
+            let idx = first + slot;
+            let id = row.value.id.clone();
+            let has_children = page
+                .rows
+                .iter()
+                .any(|r| r.value.parent.as_ref() == Some(&id));
+            let is_open = expanded.iter().any(|e| e == &id);
+            let is_sel = selected.as_ref() == Some(&id);
+            // Event-time nav (recomputes the visible list from live
+            // signals — the Slider fresh-geometry precedent, so keys
+            // never act on a stale flatten).
+            let nav_nodes = props.nodes.clone();
+            let nav_expanded = props.expanded.clone();
+            let nav_selected = props.selected.clone();
+            let nav = Rc::new(move |dir: NavDir| {
+                let page = nav_nodes.query(&oppa::CollectionQuery {
+                    filter: None,
+                    sort: None,
+                    offset: 0,
+                    limit: None,
+                });
+                let exp = nav_expanded.get();
+                let vis = tree_visible(&page.rows, &exp);
+                let sel = nav_selected.get();
+                let at = vis
+                    .iter()
+                    .position(|(r, _)| Some(&r.value.id) == sel.as_ref());
+                match dir {
+                    NavDir::Up => {
+                        if let Some(i) = at {
+                            if i > 0 {
+                                nav_selected.set(Some(vis[i - 1].0.value.id.clone()));
+                            }
+                        } else if !vis.is_empty() {
+                            nav_selected.set(Some(vis[0].0.value.id.clone()));
+                        }
+                    }
+                    NavDir::Down => {
+                        if let Some(i) = at {
+                            if i + 1 < vis.len() {
+                                nav_selected.set(Some(vis[i + 1].0.value.id.clone()));
+                            }
+                        } else if !vis.is_empty() {
+                            nav_selected.set(Some(vis[0].0.value.id.clone()));
+                        }
+                    }
+                    NavDir::Left => {
+                        let Some(i) = at else { return };
+                        let (row, _) = &vis[i];
+                        if exp.iter().any(|e| e == &row.value.id) {
+                            nav_expanded.set(tree_toggled(&exp, &row.value.id));
+                        } else if let Some(p) = row.value.parent.clone() {
+                            nav_selected.set(Some(p));
+                        }
+                    }
+                    NavDir::Right => {
+                        let Some(i) = at else { return };
+                        let (row, _) = &vis[i];
+                        let kids = page
+                            .rows
+                            .iter()
+                            .any(|r| r.value.parent.as_ref() == Some(&row.value.id));
+                        if kids && !exp.iter().any(|e| e == &row.value.id) {
+                            nav_expanded.set(tree_toggled(&exp, &row.value.id));
+                        } else if kids {
+                            let first_kid = page
+                                .rows
+                                .iter()
+                                .find(|r| r.value.parent.as_ref() == Some(&row.value.id));
+                            if let Some(k) = first_kid {
+                                nav_selected.set(Some(k.value.id.clone()));
+                            }
+                        }
+                    }
+                }
+            });
+            let sel_id = id.clone();
+            let sel_sig = props.selected.clone();
+            let exp_sig = props.expanded.clone();
+            let exp_list = expanded.clone();
+            let row_props = TreeRowProps {
+                node: row.clone(),
+                depth: *depth,
+                selected: is_sel,
+                expanded: is_open,
+                has_children,
+                row_height: rh,
+                width,
+                enabled: props.enabled,
+                on_select: action(move || sel_sig.set(Some(sel_id.clone()))),
+                on_toggle: action(move || exp_sig.set(tree_toggled(&exp_list, &id))),
+                nav,
+            };
+            Div("tree-slot")
+                .style(
+                    Style::new()
+                        .absolute_y(tops[idx] - y)
+                        .h(rh)
+                        .w(width)
+                        .build(),
+                )
+                .key(slot as u64)
+                .child(ctx.child_keyed(slot as u64, &row_props, TreeRow))
+        })
+        .collect::<Vec<_>>();
+    let area = oppa::ScrollArea(&props.debug)
+        .style(
+            Style::new()
+                .size(width, props.height)
+                .content_size(total)
+                .build(),
+        )
+        .semantics(
+            Semantics::tree()
+                .label(&props.label)
+                .disabled(!props.enabled),
+        )
+        .on_scroll(|| {})
+        .children(children);
+    // Disabled rows render handlerless inside (TreeRow gates on
+    // enabled — decision 213); the scroll container itself always
+    // scrolls (a viewport, not a control).
+    area
+}
+
+// ---------------------------------------------------------------------------
+// Splitter (Phase 38b, G13)
+// ---------------------------------------------------------------------------
+
+/// Splitter axis: `Vertical` splits left/right (the divider is a
+/// vertical bar, `ColResize`); `Horizontal` splits top/bottom
+/// (`RowResize`). One axis per instance (the Scrollbar-axis
+/// precedent — decision 354).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SplitterAxis {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+/// Splitter props (controlled — `fraction` is the author-owned
+/// first-pane share of the main axis, `0..1` clamped to the minima
+/// below). Panes are factories (`Rc`, the TabItem-content
+/// precedent — `VNode` is move-only, so factories rebuild per
+/// render; child `(name, key)` pairs inside panes must be unique
+/// across BOTH panes, the Tabs-namespace rule).
+#[derive(Clone, Props)]
+pub struct SplitterProps {
+    pub fraction: Signal<f32>,
+    pub axis: SplitterAxis,
+    pub width: f32,
+    pub height: f32,
+    pub divider_px: f32,
+    pub min_first_px: f32,
+    pub min_second_px: f32,
+    pub enabled: bool,
+    pub debug: SharedString,
+    pub first: Rc<dyn Fn(&Ctx) -> VNode>,
+    pub second: Rc<dyn Fn(&Ctx) -> VNode>,
+    pub on_change: Option<Change<f32>>,
+}
+
+/// Clamps `frac` into the minima (pure — headless-testable): the
+/// first pane keeps `min_first_px`, the second `min_second_px`
+/// (the divider straddles the fraction edge, hence the half-divider
+/// terms). Panics loudly on non-finite/negative geometry or minima
+/// exceeding the total (authoring contradictions, never silent
+/// snaps — the Grid-span precedent).
+pub fn splitter_fraction(
+    frac: f32,
+    total: f32,
+    divider: f32,
+    min_first: f32,
+    min_second: f32,
+) -> f32 {
+    if !frac.is_finite() {
+        panic!("splitter fraction must be finite, got {frac} — refused, never silent");
+    }
+    if !(total.is_finite() && total > 0.0) {
+        panic!("splitter total must be finite positive, got {total} — refused, never silent");
+    }
+    if !(divider.is_finite() && divider >= 0.0) {
+        panic!(
+            "splitter divider must be finite non-negative, got {divider} — refused, never silent"
+        );
+    }
+    if !(min_first.is_finite() && min_first >= 0.0) {
+        panic!("splitter min_first_px must be finite non-negative, got {min_first} — refused, never silent");
+    }
+    if !(min_second.is_finite() && min_second >= 0.0) {
+        panic!("splitter min_second_px must be finite non-negative, got {min_second} — refused, never silent");
+    }
+    if min_first + min_second + divider > total {
+        panic!(
+            "splitter minima ({min_first} + {min_second} + divider {divider}) exceed total {total} — refused, never a silent overlap"
+        );
+    }
+    let lo = (min_first + divider / 2.0) / total;
+    let hi = 1.0 - (min_second + divider / 2.0) / total;
+    frac.clamp(lo, hi)
+}
+
+/// Sets a clamped splitter fraction and reports it (the single
+/// funnel for the drag/arrow sites — the `apply_slider_value`
+/// precedent, so notification cannot drift from any one path).
+fn apply_split_fraction(
+    fraction: &Signal<f32>,
+    notify: &Option<Change<f32>>,
+    frac: f32,
+    total: f32,
+    divider: f32,
+    min_first: f32,
+    min_second: f32,
+) {
+    let clamped = splitter_fraction(frac, total, divider, min_first, min_second);
+    fraction.set(clamped);
+    if let Some(notify) = notify.as_ref() {
+        notify(clamped);
+    }
+}
+
+/// Two-pane draggable divider (Slider-drag precedent): the divider
+/// captures on press, every `Move` re-maps through
+/// `capture_position` over the container box (fresh geometry at
+/// event time — immune to body staleness), `Up`/`Cancel` clears.
+/// Arrows nudge by 0.05 (Left/Down down, Right/Up up — the Slider
+/// arrow precedent, axis-agnostic by design); ends clamp quietly.
+/// Disabled renders the panes with a handlerless divider (no tab
+/// stop either — decision 213).
+pub fn Splitter(ctx: &Ctx, props: &SplitterProps) -> VNode {
+    let total = match props.axis {
+        SplitterAxis::Vertical => props.width,
+        SplitterAxis::Horizontal => props.height,
+    };
+    let frac = splitter_fraction(
+        props.fraction.get(),
+        total,
+        props.divider_px,
+        props.min_first_px,
+        props.min_second_px,
+    );
+    let d = props.divider_px;
+    let first_px = frac * total - d / 2.0;
+    let cross = match props.axis {
+        SplitterAxis::Vertical => props.height,
+        SplitterAxis::Horizontal => props.width,
+    };
+    let t = ctx.theme().tokens();
+    let cursor = match props.axis {
+        SplitterAxis::Vertical => CursorIcon::ColResize,
+        SplitterAxis::Horizontal => CursorIcon::RowResize,
+    };
+    // Divider drag (the Slider-track precedent): the pointer
+    // coordinate over the container box maps to the fraction.
+    let host = ctx.host();
+    let (g_frac, g_notify) = (props.fraction.clone(), props.on_change.clone());
+    let (g_min_first, g_min_second) = (props.min_first_px, props.min_second_px);
+    let g_axis = props.axis;
+    let g_debug = props.debug.clone();
+    let g_d = d;
+    let drag_action = move || {
+        let Some((x, y)) = host.capture_position() else {
+            return;
+        };
+        let Some(box_id) = oppa::find_retained_by_debug(&host, &g_debug)
+            .into_iter()
+            .next()
+        else {
+            return;
+        };
+        let Some(b) = host.committed_box(box_id) else {
+            return;
+        };
+        let (coord, origin, extent) = match g_axis {
+            SplitterAxis::Vertical => (x, b.x, b.w),
+            SplitterAxis::Horizontal => (y, b.y, b.h),
+        };
+        if !(extent.is_finite() && extent > 0.0) {
+            return;
+        }
+        apply_split_fraction(
+            &g_frac,
+            &g_notify,
+            (coord - origin) / extent,
+            extent,
+            g_d,
+            g_min_first,
+            g_min_second,
+        );
+    };
+    let nudge = |dir: f32| {
+        let (fraction, notify) = (props.fraction.clone(), props.on_change.clone());
+        let (total, d, min_first, min_second) = (total, d, props.min_first_px, props.min_second_px);
+        move || {
+            apply_split_fraction(
+                &fraction,
+                &notify,
+                fraction.get() + dir * 0.05,
+                total,
+                d,
+                min_first,
+                min_second,
+            )
+        }
+    };
+    // Panes size explicitly (decision 213 — no content-derived
+    // sizes anywhere near a drag map).
+    let (first_style, divider_style, second_style) = match props.axis {
+        SplitterAxis::Vertical => (
+            Style::new().size(first_px.max(0.0), cross),
+            Style::new().size(d, cross).bg(t.border).cursor(cursor),
+            Style::new().size((total - frac * total - d / 2.0).max(0.0), cross),
+        ),
+        SplitterAxis::Horizontal => (
+            Style::new().size(cross, first_px.max(0.0)),
+            Style::new().size(cross, d).bg(t.border).cursor(cursor),
+            Style::new().size(cross, (total - frac * total - d / 2.0).max(0.0)),
+        ),
+    };
+    let first = Div(format!("{}-first", props.debug.as_ref()).as_str())
+        .style(first_style)
+        .child((props.first)(ctx));
+    let second = Div(format!("{}-second", props.debug.as_ref()).as_str())
+        .style(second_style)
+        .child((props.second)(ctx));
+    let divider = Div(format!("{}-divider", props.debug.as_ref()).as_str()).style(focus_ringed(
+        ctx,
+        props.enabled,
+        divider_style,
+    ));
+    let divider = if props.enabled {
+        divider
+            // Focus-only press (capture owner for drags + tab stop +
+            // focus for arrows — the Slider-root precedent, the
+            // closure is intentionally empty).
+            .on_press(|| {})
+            .on_drag(drag_action)
+            .on_key_left(nudge(-1.0))
+            .on_key_down(nudge(-1.0))
+            .on_key_right(nudge(1.0))
+            .on_key_up(nudge(1.0))
+    } else {
+        divider
+    };
+    // NOTE: `divider` is an `ElementBuilder` here (handlers attach
+    // pre-child); the divider itself is a childless bar (paints its
+    // `border`-ink fill, nothing else).
+    let divider = divider.build();
+    let inner = match props.axis {
+        SplitterAxis::Vertical => Row(format!("{}-inner", props.debug.as_ref()).as_str())
+            .children([first, divider, second]),
+        SplitterAxis::Horizontal => Div(format!("{}-inner", props.debug.as_ref()).as_str())
+            .children([first, divider, second]),
+    };
+    Div(&props.debug)
+        .style(Style::new().size(props.width, props.height))
+        .child(inner)
+}
+
+// ---------------------------------------------------------------------------
+// DatePicker (Phase 38b, G14)
+// ---------------------------------------------------------------------------
+
+/// Calendar date (proleptic Gregorian, no timezone — a picked day,
+/// never an instant). `month` is 1–12, `day` 1–31 (validated by
+/// [`Date::valid`]); ordering is chronological (derived `Ord`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Date {
+    pub year: i32,
+    pub month: u8,
+    pub day: u8,
+}
+
+/// Date failure (loud by construction — authoring bugs panic,
+/// user input parses to `None`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DateError {
+    OutOfMonth(u8),
+    OutOfDay(u8),
+}
+
+impl Date {
+    /// Builds a date, refusing out-of-range months/days loudly
+    /// (including Feb 30 — validated against the leap rule, never
+    /// silently normalized like a lenient parser would).
+    pub fn new(year: i32, month: u8, day: u8) -> Self {
+        if !(1..=12).contains(&month) {
+            panic!("date month must be 1..=12, got {month} — refused, never silent");
+        }
+        let dim = days_in_month(year, month);
+        if day < 1 || day > dim {
+            panic!(
+                "date day must be 1..={dim} for {year}-{month:02}, got {day} — refused, never silent"
+            );
+        }
+        Self { year, month, day }
+    }
+
+    /// Checked construction for parsed input (`None` on any
+    /// out-of-range field — user input is a query outcome, never a
+    /// failure).
+    pub fn valid(year: i32, month: u8, day: u8) -> Option<Self> {
+        if !(1..=12).contains(&month) {
+            return None;
+        }
+        let dim = days_in_month(year, month);
+        if day < 1 || day > dim {
+            return None;
+        }
+        Some(Self { year, month, day })
+    }
+}
+
+/// Leap rule (Gregorian — divisible by 4, except centuries unless
+/// divisible by 400).
+pub fn is_leap(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Month length (pure — headless-testable; panics loudly on month
+/// 0/13+, never a silent 30).
+pub fn days_in_month(year: i32, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap(year) {
+                29
+            } else {
+                28
+            }
+        }
+        m => panic!("month must be 1..=12, got {m} — refused, never silent"),
+    }
+}
+
+/// Days since 1970-01-01 (Howard Hinnant's algorithm — pure,
+/// headless-testable; the weekday/month-shift backbone).
+fn days_from_civil(year: i32, month: u8, day: u8) -> i32 {
+    let (mut y, m) = (year, month as i32);
+    y -= (m <= 2) as i32;
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn civil_from_days(z: i32) -> Date {
+    let zz = z + 719468;
+    let era = if zz >= 0 { zz } else { zz - 146096 } / 146097;
+    let doe = zz - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u8;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
+    y += (m <= 2) as i32;
+    Date {
+        year: y,
+        month: m,
+        day: d,
+    }
+}
+
+/// Monday-based weekday of a date (0 = Monday … 6 = Sunday; pure —
+/// 1970-01-01 was a Thursday, hence the +3).
+pub fn weekday_monday0(date: Date) -> u8 {
+    (days_from_civil(date.year, date.month, date.day) + 3).rem_euclid(7) as u8
+}
+
+/// Shifts a date by whole days, clamping the result into
+/// `[min, max]` (pure — the arrow-key backbone; out-of-range ends
+/// pin, never wrap).
+pub fn shift_days(date: Date, delta: i32, min: Option<Date>, max: Option<Date>) -> Date {
+    let moved = civil_from_days(days_from_civil(date.year, date.month, date.day) + delta);
+    clamp_date(moved, min, max)
+}
+
+/// Clamps a date into `[min, max]` (pure — `None` bounds are open).
+pub fn clamp_date(date: Date, min: Option<Date>, max: Option<Date>) -> Date {
+    let mut d = date;
+    if let Some(lo) = min {
+        if d < lo {
+            d = lo;
+        }
+    }
+    if let Some(hi) = max {
+        if d > hi {
+            d = hi;
+        }
+    }
+    d
+}
+
+/// Shifts the shown month, keeping the day where the target month
+/// allows (clamped to its length — Jan 31 → Feb 28/29, never a
+/// silent March spill). Returns `None` when the shifted month lies
+/// fully outside `[min, max]` (the prev/next disable rule).
+pub fn shift_month(date: Date, delta: i32, min: Option<Date>, max: Option<Date>) -> Option<Date> {
+    let total = date.year as i64 * 12 + (date.month as i64 - 1) + delta as i64;
+    let y = total.div_euclid(12) as i32;
+    let m = (total.rem_euclid(12) + 1) as u8;
+    let dim = days_in_month(y, m);
+    let first = Date {
+        year: y,
+        month: m,
+        day: 1,
+    };
+    let last = Date {
+        year: y,
+        month: m,
+        day: dim,
+    };
+    if let Some(lo) = min {
+        if last < lo {
+            return None;
+        }
+    }
+    if let Some(hi) = max {
+        if first > hi {
+            return None;
+        }
+    }
+    Some(Date {
+        year: y,
+        month: m,
+        day: date.day.min(dim),
+    })
+}
+
+/// Formats `YYYY-MM-DD` (the text-bridge spelling — fixed width,
+/// zero-padded, lexicographically sortable).
+pub fn format_date(date: Date) -> SharedString {
+    SharedString::from(format!(
+        "{:04}-{:02}-{:02}",
+        date.year, date.month, date.day
+    ))
+}
+
+/// Parses `YYYY-MM-DD` (strict — 4/2/2 digits with `-` separators;
+/// anything else is `None`, never a loud parse — user input is a
+/// query outcome). Out-of-range fields are `None` too (Feb 30
+/// parses to nothing, never a silent March 2).
+pub fn parse_date(s: &str) -> Option<Date> {
+    let mut parts = s.split('-');
+    let (y, m, d) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || y.len() != 4 || m.len() != 2 || d.len() != 2 {
+        return None;
+    }
+    let year: i32 = y.parse().ok()?;
+    let month: u8 = m.parse().ok()?;
+    let day: u8 = d.parse().ok()?;
+    Date::valid(year, month, day)
+}
+
+/// English month names (the popup header — fixed strings, never
+/// locale lookups; localization is app-side, stated).
+pub const MONTH_NAMES: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// Monday-first two-letter weekday headers.
+pub const WEEKDAY_HEADERS: [&str; 7] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+
+/// DatePicker props (controlled — `value` is the picked day,
+/// `open` the month-popup visibility; both author-owned signals).
+/// `min`/`max` bound every path (arrows pin, month flips refuse
+/// past the bound, out-of-range days render handlerless, parses
+/// outside the bound are ignored — one bound, never per-path
+/// second-guessing).
+#[derive(Clone, Props)]
+pub struct DatePickerProps {
+    pub value: Signal<Date>,
+    pub open: Signal<bool>,
+    pub min: Option<Date>,
+    pub max: Option<Date>,
+    pub enabled: bool,
+    pub width: f32,
+    pub label: SharedString,
+}
+
+fn date_in_bounds(date: Date, min: Option<Date>, max: Option<Date>) -> bool {
+    clamp_date(date, min, max) == date
+}
+
+/// Month-grid popup date picker: a `combobox` box (a [`TextInput`]
+/// parse bridge showing `YYYY-MM-DD` + a chevron toggle) over a
+/// `Portal` month [`Grid`](oppa::Grid) (the Select-popup
+/// precedent — `x(0)` + `absolute_y(36)`, out-of-flow, constant
+/// 32px root). Typing a valid in-bounds date commits it (invalid
+/// text is a quiet no-op — the controlled-contract edge, same class
+/// as an unmatched Select signal); picking a day sets the value and
+/// closes; prev/next flip the shown month (the value's month — the
+/// popup carries no cursor state, so month and value cannot drift).
+/// Arrows on the focused toggle step the value (Left/Right ±1 day,
+/// Up/Down ±7, `Home` month-first, `End` month-last — the Slider
+/// key precedent); Enter/Space toggles through the router pulse.
+/// Disabled drops every handler structurally (decision 213).
+pub fn DatePicker(ctx: &Ctx, props: &DatePickerProps) -> VNode {
+    let t = ctx.theme().tokens();
+    let value = props.value.get();
+    let is_open = props.open.get();
+    // Text bridge (the studio-inspector latch): the text signal
+    // mirrors the value; typing parses back into it.
+    let text = ctx.signal(format_date(value));
+    let spelled = format_date(value);
+    if text.get() != spelled {
+        text.set(spelled.clone());
+    }
+    let (p_value, p_min, p_max) = (props.value.clone(), props.min, props.max);
+    let commit: Change<SharedString> = Rc::new(move |s| {
+        let Some(d) = parse_date(&s) else { return };
+        if d != p_value.get() && date_in_bounds(d, p_min, p_max) {
+            p_value.set(d);
+        }
+    });
+    let text_props = TextInputProps {
+        label: props.label.clone(),
+        value: text,
+        placeholder: Some(SharedString::from("YYYY-MM-DD")),
+        enabled: props.enabled,
+        width: (props.width - 40.0).max(80.0),
+        height: 32.0,
+        style: Text::body_secondary,
+        debug: SharedString::from("date-text"),
+        on_change: Some(commit),
+        masked: false,
+        invalid: false,
+        required: false,
+        error_message: None,
+        helper_text: None,
+    };
+    let toggle = {
+        let open = props.open.clone();
+        action(move || open.set(!open.get()))
+    };
+    let chevron = Path::new("date-chevron")
+        .data(if is_open {
+            "M 2 6 L 6 2 L 10 6"
+        } else {
+            "M 2 2 L 6 6 L 10 2"
+        })
+        .stroke(t.text_primary, 2.0)
+        .size(12, 8)
+        .build();
+    // Keyboard day-steps (the Slider key precedent): arrows pin to
+    // the bounds (quiet no-ops past them); Home/End jump to the
+    // month edges. Enter/Space toggle through the router pulse.
+    let step = |delta: i32| {
+        let (v, min, max) = (props.value.clone(), props.min, props.max);
+        move || {
+            let next = shift_days(v.get(), delta, min, max);
+            if next != v.get() {
+                v.set(next);
+            }
+        }
+    };
+    let edge = |to_first: bool| {
+        let (v, min, max) = (props.value.clone(), props.min, props.max);
+        move || {
+            let cur = v.get();
+            let dim = days_in_month(cur.year, cur.month);
+            let end = if to_first {
+                Date {
+                    year: cur.year,
+                    month: cur.month,
+                    day: 1,
+                }
+            } else {
+                Date {
+                    year: cur.year,
+                    month: cur.month,
+                    day: dim,
+                }
+            };
+            let next = clamp_date(end, min, max);
+            if next != cur {
+                v.set(next);
+            }
+        }
+    };
+    let box_builder = Row("date-box")
+        .style(focus_ringed(
+            ctx,
+            props.enabled,
+            Style::new()
+                .size(props.width, 32)
+                .radius(4)
+                .border(1, t.border)
+                .bg(if props.enabled { t.surface } else { t.disabled })
+                .pad_x(8)
+                .gap(8)
+                .align_items(AlignItems::Center),
+        ))
+        .semantics(
+            Semantics::combobox()
+                .label(&spelled)
+                .disabled(!props.enabled),
+        );
+    let box_builder = if props.enabled {
+        box_builder
+            .on_press(move || toggle())
+            .on_key_left(step(-1))
+            .on_key_right(step(1))
+            .on_key_up(step(-7))
+            .on_key_down(step(7))
+            .on_key_home(edge(true))
+            .on_key_end(edge(false))
+    } else {
+        box_builder
+    };
+    // (The TextInput child owns its own press/focus — taps into the
+    // text focus the field for typing; taps on the chevron half climb
+    // to the box press and toggle the popup (knob→track precedent).
+    // Keyboard users step days with the box arrows from either half.)
+    let text_child = ctx.child_auto(&text_props, TextInput);
+    let select_box = box_builder.children([text_child, chevron]);
+    let mut children = vec![select_box];
+    if is_open {
+        let dim = days_in_month(value.year, value.month);
+        let lead = weekday_monday0(Date {
+            year: value.year,
+            month: value.month,
+            day: 1,
+        }) as usize;
+        let title = SharedString::from(format!(
+            "{} {}",
+            MONTH_NAMES[(value.month - 1) as usize],
+            value.year
+        ));
+        let can_prev = shift_month(value, -1, props.min, props.max).is_some();
+        let can_next = shift_month(value, 1, props.min, props.max).is_some();
+        let prev_value = props.value.clone();
+        let prev_btn = if props.enabled && can_prev {
+            let pv = prev_value.clone();
+            let (pmin, pmax) = (props.min, props.max);
+            ctx.child_keyed(
+                1000,
+                &ButtonProps {
+                    label: SharedString::from("<"),
+                    enabled: true,
+                    width: 32.0,
+                    height: 28.0,
+                    debug: SharedString::from("date-prev"),
+                    on_press: action(move || {
+                        if let Some(d) = shift_month(pv.get(), -1, pmin, pmax) {
+                            pv.set(Date {
+                                day: pv.get().day.min(days_in_month(d.year, d.month)),
+                                ..d
+                            });
+                        }
+                    }),
+                },
+                Button,
+            )
+        } else {
+            Div("date-prev-off")
+                .style(Style::new().size(32, 28).bg(t.disabled))
+                .build()
+        };
+        let next_btn = if props.enabled && can_next {
+            let nv = prev_value.clone();
+            let (pmin, pmax) = (props.min, props.max);
+            ctx.child_keyed(
+                1001,
+                &ButtonProps {
+                    label: SharedString::from(">"),
+                    enabled: true,
+                    width: 32.0,
+                    height: 28.0,
+                    debug: SharedString::from("date-next"),
+                    on_press: action(move || {
+                        if let Some(d) = shift_month(nv.get(), 1, pmin, pmax) {
+                            nv.set(Date {
+                                day: nv.get().day.min(days_in_month(d.year, d.month)),
+                                ..d
+                            });
+                        }
+                    }),
+                },
+                Button,
+            )
+        } else {
+            Div("date-next-off")
+                .style(Style::new().size(32, 28).bg(t.disabled))
+                .build()
+        };
+        let header = Row("date-header")
+            .style(Style::new().gap(8).align_items(AlignItems::Center))
+            .children([prev_btn, VNode::from(Text::new(title).bold()), next_btn]);
+        let mut cells: Vec<VNode> = WEEKDAY_HEADERS
+            .iter()
+            .map(|w| {
+                with_ink(
+                    VNode::from(Text::new(SharedString::from(*w)).size(12)),
+                    t.text_secondary,
+                )
+            })
+            .collect();
+        for _ in 0..lead {
+            cells.push(Div("date-blank").style(Style::new().size(28, 28)).build());
+        }
+        for day in 1..=dim {
+            let d = Date {
+                year: value.year,
+                month: value.month,
+                day,
+            };
+            let in_bounds = date_in_bounds(d, props.min, props.max);
+            let is_sel = d == value;
+            let mut day_label = Text::new(SharedString::from(format!("{day}"))).size(12);
+            if is_sel {
+                day_label = day_label.bold();
+            }
+            let day_text = if is_sel {
+                with_ink(VNode::from(day_label), t.primary)
+            } else {
+                VNode::from(day_label)
+            };
+            let cell = if props.enabled && in_bounds {
+                let (vv, oo) = (props.value.clone(), props.open.clone());
+                Div(format!("date-day-{day}").as_str())
+                    .style(
+                        Style::new()
+                            .size(28, 28)
+                            .radius(4)
+                            .bg(if is_sel { t.disabled } else { t.surface })
+                            .align_items(AlignItems::Center),
+                    )
+                    .on_press(move || {
+                        vv.set(d);
+                        oo.set(false);
+                    })
+                    .child(day_text)
+            } else {
+                Div(format!("date-day-{day}").as_str())
+                    .style(
+                        Style::new()
+                            .size(28, 28)
+                            .bg(t.disabled)
+                            .align_items(AlignItems::Center),
+                    )
+                    .child(with_ink(day_text, t.text_secondary))
+            };
+            cells.push(cell);
+        }
+        let grid = oppa::Grid("date-grid")
+            .style(
+                Style::new()
+                    .grid_cols(vec![oppa::GridTrack::Fr(Px::of(1.0)); 7])
+                    .gap(2),
+            )
+            .children(cells);
+        let panel = Div("date-panel")
+            .style(
+                Style::new()
+                    .radius(4)
+                    .border(1, t.border)
+                    .bg(t.surface)
+                    .pad_x(8)
+                    .pad_y(8)
+                    .gap(8),
+            )
+            .children([header, grid]);
+        let popup = Portal("date-popup")
+            .style(Style::new().x(0).absolute_y(36).w(props.width))
+            .child(panel);
+        children.push(popup);
+    }
+    // Constant 32px root (the Select-popup precedent): the box owns
+    // the height, the popup is out-of-flow.
+    Div("date")
+        .style(Style::new().size(props.width, 32))
+        .children(children)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8990,5 +10150,344 @@ mod tests {
         host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
         host.run_until_idle();
         assert_eq!(value.get(), 90.0, "Left steps down from max");
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 38b (decisions 368–370): Tree, Splitter, DatePicker
+    // ------------------------------------------------------------------
+
+    fn tree_nodes() -> Vec<TreeNode> {
+        vec![
+            TreeNode::root("a", "Alpha"),
+            TreeNode::child("a1", "Alpha-One", "a"),
+            TreeNode::child("a2", "Alpha-Two", "a"),
+            TreeNode::root("b", "Beta"),
+        ]
+    }
+
+    #[derive(Clone)]
+    struct TreeCase {
+        props: TreeProps,
+    }
+    impl Props for TreeCase {}
+
+    fn tree_render(ctx: &Ctx, p: &TreeCase) -> VNode {
+        ctx.child("oppa::Tree", 7, &p.props, Tree)
+    }
+
+    fn mount_tree() -> (
+        ComponentHost,
+        oppa::Collection<TreeNode>,
+        Signal<Vec<SharedString>>,
+        Signal<Option<SharedString>>,
+    ) {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        let rt = host.runtime();
+        let coll = oppa::Collection::new(&rt, oppa::fetch_key("test:tree"));
+        coll.ingest(tree_nodes());
+        let expanded = rt.signal(Vec::<SharedString>::new());
+        let selected = rt.signal(None::<SharedString>);
+        let props = TreeProps {
+            nodes: coll.clone(),
+            expanded: expanded.clone(),
+            selected: selected.clone(),
+            label: SharedString::from("Files"),
+            width: 280.0,
+            height: 200.0,
+            row_height: 28.0,
+            overscan: 2,
+            enabled: true,
+            debug: SharedString::from("tree"),
+        };
+        host.mount("Tree", TreeCase { props }, tree_render);
+        host.run_until_idle();
+        (host, coll, expanded, selected)
+    }
+
+    /// G12: the flatten shows roots only when collapsed, children
+    /// when expanded (pure); the toggle is symmetric.
+    #[test]
+    fn tree_visible_flattens_and_toggles() {
+        let rows: Vec<oppa::Row<TreeNode>> = tree_nodes()
+            .into_iter()
+            .enumerate()
+            .map(|(i, value)| oppa::Row {
+                id: oppa::RowId(i as u64),
+                value,
+            })
+            .collect();
+        let flat = tree_visible(&rows, &[]);
+        assert_eq!(
+            flat.iter()
+                .map(|(r, d)| (r.value.id.to_string(), *d))
+                .collect::<Vec<_>>(),
+            vec![("a".to_string(), 0), ("b".to_string(), 0)],
+            "collapsed shows roots only"
+        );
+        let open = vec![SharedString::from("a")];
+        let flat = tree_visible(&rows, &open);
+        assert_eq!(
+            flat.iter()
+                .map(|(r, d)| (r.value.id.to_string(), *d))
+                .collect::<Vec<_>>(),
+            vec![
+                ("a".to_string(), 0),
+                ("a1".to_string(), 1),
+                ("a2".to_string(), 1),
+                ("b".to_string(), 0),
+            ],
+            "expanded interleaves children in commit order"
+        );
+        let shut = tree_toggled(&open, &SharedString::from("a"));
+        assert!(shut.is_empty(), "toggle is symmetric");
+        let reopened = tree_toggled(&shut, &SharedString::from("b"));
+        assert_eq!(reopened, vec![SharedString::from("b")]);
+    }
+
+    /// G12: chevron expands, row press selects, arrows walk the
+    /// visible list, and roles announce Tree/TreeItem.
+    #[test]
+    fn tree_expands_selects_and_walks() {
+        let (host, _coll, expanded, selected) = mount_tree();
+        // Container announces the tree role.
+        let root = node_by_debug(&host, "tree");
+        let sem = host.retained_semantics(root).expect("semantics");
+        assert_eq!(sem.role, oppa::Role::Tree);
+        assert_eq!(sem.label.as_deref(), Some("Files"));
+        // Collapsed: two rows, both TreeItem.
+        assert_eq!(find_retained_by_debug(&host, "tree-row").len(), 2);
+        // Chevron expands "a" (first chevron hit in commit order).
+        let chevrons = find_retained_by_debug(&host, "tree-chevron-hit");
+        assert_eq!(chevrons.len(), 2);
+        press_node(&host, chevrons[0]);
+        assert_eq!(expanded.get(), vec![SharedString::from("a")]);
+        assert_eq!(find_retained_by_debug(&host, "tree-row").len(), 4);
+        // Row press selects (rows render in visible order).
+        let rows = find_retained_by_debug(&host, "tree-row");
+        press_node(&host, rows[1]);
+        assert_eq!(selected.get(), Some(SharedString::from("a1")));
+        let sem1 = host.retained_semantics(rows[1]).expect("semantics");
+        assert_eq!(sem1.role, oppa::Role::TreeItem);
+        assert_eq!(sem1.selected, Some(true));
+        // Down moves selection to the next visible row.
+        host.inject_input(InputEvent::key(keys::DOWN, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(selected.get(), Some(SharedString::from("a2")));
+        // Left on a leaf ascends to the parent.
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(selected.get(), Some(SharedString::from("a")));
+        // Left on the open parent collapses it.
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(expanded.get().is_empty(), "Left collapses the open node");
+        assert_eq!(find_retained_by_debug(&host, "tree-row").len(), 2);
+        // Right re-opens, Enter-equivalent press selects.
+        host.inject_input(InputEvent::key(keys::RIGHT, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(expanded.get(), vec![SharedString::from("a")]);
+    }
+
+    /// G13: minima clamp loudly-checked bounds; arrows nudge.
+    #[test]
+    fn splitter_fraction_clamps_and_arrows_nudge() {
+        assert_eq!(splitter_fraction(0.5, 400.0, 8.0, 40.0, 40.0), 0.5);
+        assert_eq!(
+            splitter_fraction(0.0, 400.0, 8.0, 40.0, 40.0),
+            (40.0 + 4.0) / 400.0,
+            "first minimum pins the low end"
+        );
+        assert_eq!(
+            splitter_fraction(1.0, 400.0, 8.0, 40.0, 40.0),
+            1.0 - (40.0 + 4.0) / 400.0,
+            "second minimum pins the high end"
+        );
+        // Mounted arrows nudge through the funnel.
+        let host = ComponentHost::new();
+        let frac = host.runtime().signal(0.5f32);
+        fn split_pane(_ctx: &Ctx) -> VNode {
+            Div("pane").child(VNode::from(Text {
+                text: SharedString::from("pane"),
+                style: Text::body_secondary,
+            }))
+        }
+        let props = SplitterProps {
+            fraction: frac.clone(),
+            axis: SplitterAxis::Vertical,
+            width: 400.0,
+            height: 300.0,
+            divider_px: 8.0,
+            min_first_px: 40.0,
+            min_second_px: 40.0,
+            enabled: true,
+            debug: SharedString::from("split"),
+            first: Rc::new(split_pane),
+            second: Rc::new(split_pane),
+            on_change: None,
+        };
+        host.mount("Split", props, Splitter);
+        host.run_until_idle();
+        let div = node_by_debug(&host, "split-divider");
+        press_node(&host, div);
+        assert_eq!(host.focused_node(), Some(div));
+        host.inject_input(InputEvent::key(keys::RIGHT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(
+            (frac.get() - 0.55).abs() < 1e-6,
+            "Right nudges +0.05, got {}",
+            frac.get()
+        );
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(
+            (frac.get() - 0.5).abs() < 1e-6,
+            "Left nudges back, got {}",
+            frac.get()
+        );
+        // Divider shows the resize cursor.
+        let cursor = host.with_retained_mut(|rec, styles| {
+            let n = rec.get(div).expect("live divider");
+            styles.get(n.style).cloned().unwrap_or_default().cursor
+        });
+        assert_eq!(cursor, Some(CursorIcon::ColResize));
+    }
+
+    /// G13/G14 pure cores: leap rule, known weekday (2026-10-01 is
+    /// a Thursday), parse/format round-trip, month shift clamping.
+    #[test]
+    fn date_math_shapes() {
+        assert!(is_leap(2024) && !is_leap(2025) && !is_leap(1900) && is_leap(2000));
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(2025, 2), 28);
+        // 2026-10-01: Thursday → Monday0 == 3.
+        assert_eq!(
+            weekday_monday0(Date {
+                year: 2026,
+                month: 10,
+                day: 1
+            }),
+            3
+        );
+        // Monday 2026-09-28 → 0.
+        assert_eq!(
+            weekday_monday0(Date {
+                year: 2026,
+                month: 9,
+                day: 28
+            }),
+            0
+        );
+        let d = Date::new(2026, 10, 1);
+        assert_eq!(format_date(d).to_string(), "2026-10-01");
+        assert_eq!(parse_date("2026-10-01"), Some(d));
+        assert_eq!(parse_date("2026-13-01"), None, "month 13 never parses");
+        assert_eq!(parse_date("2026-02-30"), None, "Feb 30 never parses");
+        assert_eq!(parse_date("10-01-2026"), None, "non-padded never parses");
+        assert_eq!(parse_date("hello"), None);
+        // Jan 31 shifted +1 clamps to Feb 28 (2025, non-leap).
+        let jan31 = Date::new(2025, 1, 31);
+        let feb = shift_month(jan31, 1, None, None).expect("in range");
+        assert_eq!((feb.year, feb.month, feb.day), (2025, 2, 28));
+        // Bound refusal: shifting past max is None (disable rule).
+        let oct = Date::new(2026, 10, 15);
+        assert_eq!(
+            shift_month(
+                oct,
+                1,
+                Some(Date::new(2026, 10, 1)),
+                Some(Date::new(2026, 10, 31))
+            ),
+            None,
+            "November lies fully past October max"
+        );
+        // Day steps pin to the bounds.
+        assert_eq!(
+            shift_days(
+                Date::new(2026, 10, 31),
+                1,
+                Some(Date::new(2026, 10, 1)),
+                Some(Date::new(2026, 10, 31))
+            ),
+            Date::new(2026, 10, 31),
+            "stepping past max pins"
+        );
+    }
+
+    /// G14: picking a day sets the value and closes; prev/next flip
+    /// the shown month; the text bridge parses; bounds refuse.
+    #[test]
+    fn date_picker_picks_flips_and_parses() {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        let value = host.runtime().signal(Date::new(2026, 10, 1));
+        let open = host.runtime().signal(false);
+        let props = DatePickerProps {
+            value: value.clone(),
+            open: open.clone(),
+            min: None,
+            max: None,
+            enabled: true,
+            width: 240.0,
+            label: SharedString::from("When"),
+        };
+        host.mount("DP", props, DatePicker);
+        host.run_until_idle();
+        // Closed: no popup in the tree.
+        assert!(find_retained_by_debug(&host, "date-popup").is_empty());
+        // The chevron half toggles (the box center belongs to the
+        // text bridge — taps there focus the field, the knob→track
+        // precedent: each half routes to its own press owner).
+        press_node(&host, node_by_debug(&host, "date-chevron"));
+        assert!(open.get());
+        assert_eq!(find_retained_by_debug(&host, "date-popup").len(), 1);
+        assert_eq!(find_retained_by_debug(&host, "date-grid").len(), 1);
+        // Pick the 15th: value sets, popup closes.
+        press_node(&host, node_by_debug(&host, "date-day-15"));
+        assert_eq!(value.get(), Date::new(2026, 10, 15));
+        assert!(!open.get(), "pick closes the popup");
+        // Reopen via the chevron, flip to November (day preserved).
+        press_node(&host, node_by_debug(&host, "date-chevron"));
+        press_node(&host, node_by_debug(&host, "date-next"));
+        assert_eq!(value.get(), Date::new(2026, 11, 15));
+        // Text bridge: a valid spelling commits.
+        press_node(&host, node_by_debug(&host, "date-text"));
+        let sess = host.focused_field_session().expect("session");
+        sess.select_all();
+        sess.insert("2026-12-25");
+        host.run_until_idle();
+        assert_eq!(value.get(), Date::new(2026, 12, 25));
+        // Invalid text never moves the value.
+        let sess = host.focused_field_session().expect("session");
+        sess.select_all();
+        sess.insert("not-a-date");
+        host.run_until_idle();
+        assert_eq!(value.get(), Date::new(2026, 12, 25));
+        // Bounds: days outside [min, max] are handlerless.
+        let host2 = ComponentHost::new();
+        host2.set_text_service(Box::new(FakeText));
+        let value2 = host2.runtime().signal(Date::new(2026, 10, 10));
+        let open2 = host2.runtime().signal(true);
+        host2.mount(
+            "DPB",
+            DatePickerProps {
+                value: value2.clone(),
+                open: open2.clone(),
+                min: Some(Date::new(2026, 10, 5)),
+                max: Some(Date::new(2026, 10, 20)),
+                enabled: true,
+                width: 240.0,
+                label: SharedString::from("When"),
+            },
+            DatePicker,
+        );
+        host2.run_until_idle();
+        let day1 = node_by_debug(&host2, "date-day-1");
+        assert!(
+            host2.retained_handlers(day1).is_empty(),
+            "out-of-bounds days carry no press"
+        );
+        press_node(&host2, node_by_debug(&host2, "date-day-10"));
+        assert_eq!(value2.get(), Date::new(2026, 10, 10));
     }
 }
