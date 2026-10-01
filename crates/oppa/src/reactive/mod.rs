@@ -778,6 +778,76 @@ impl Runtime {
             || !core.task_pump.outbox.lock().expect("task outbox lock").is_empty()
     }
 
+    /// Returns which sources currently contribute to `has_demand`.
+    pub fn demand_sources(&self) -> Vec<&'static str> {
+        let core = self.state.borrow();
+        let mut sources = Vec::new();
+        if core.frame_requested {
+            sources.push("frame_requested");
+        }
+        if core.reload_requested {
+            sources.push("reload_requested");
+        }
+        if !core.pending.is_empty() {
+            sources.push("pending");
+        }
+        if !core.animations.is_empty() {
+            sources.push("animations");
+        }
+        if !core.queued_events.is_empty() {
+            sources.push("queued_events");
+        }
+        if !core.queued_inputs.is_empty() {
+            sources.push("queued_inputs");
+        }
+        if !core.worker_queue.is_empty() {
+            sources.push("worker_queue");
+        }
+        if !core
+            .task_pump
+            .queue
+            .lock()
+            .expect("task queue lock")
+            .is_empty()
+        {
+            sources.push("task_pump_queue");
+        }
+        if !core
+            .task_pump
+            .outbox
+            .lock()
+            .expect("task outbox lock")
+            .is_empty()
+        {
+            sources.push("task_pump_outbox");
+        }
+        sources
+    }
+
+    /// Diagnostic query of labels for items currently in `pending`.
+    pub fn pending_labels(&self) -> Vec<String> {
+        let core = self.state.borrow();
+        core.pending
+            .iter()
+            .map(|d| match d {
+                crate::reactive::state::Dependent::Memo(id) => {
+                    format!(
+                        "Memo({:?}: {:?})",
+                        id,
+                        core.memos.try_get(*id).ok().and_then(|m| m.label.clone())
+                    )
+                }
+                crate::reactive::state::Dependent::Effect(id) => {
+                    format!(
+                        "Effect({:?}: {:?})",
+                        id,
+                        core.effects.try_get(*id).ok().and_then(|e| e.label.clone())
+                    )
+                }
+            })
+            .collect()
+    }
+
     /// Runs one frame if there is demand (input arrived, animation active,
     /// reload landed, `request_frame`, or unsettled dirt); otherwise the
     /// loop idles and this is a no-op. The frame request is consumed by the

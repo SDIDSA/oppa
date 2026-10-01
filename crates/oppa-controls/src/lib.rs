@@ -5947,7 +5947,7 @@ mod tests {
 
     /// Uniform-advance fake shaper (body 14px → 8.75px/char), so measured
     /// content widths prove which string is displayed.
-    struct FakeText;
+    pub(crate) struct FakeText;
 
     impl TextService for FakeText {
         fn enumerate_fonts(&self) -> Vec<oppa::FontInfo> {

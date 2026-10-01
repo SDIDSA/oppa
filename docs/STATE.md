@@ -133,11 +133,18 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   blocked by interactive browser session; Safari passes blocked by
   missing Apple hardware.
 
+- Phase 40c (decision 383, gate green 2026-10-01): Studio quiescence & demand
+  instrumentation — diagnostic `Runtime::demand_sources()` and `pending_labels()`
+  (mirrored on `ComponentHost` along with `has_demand()`); isolated headless
+  demand source to `Effect 0` (TaskStudio root) subscribed via `settled_box_by_debug`
+  (Scrollbar/Menubar) to `layout.generation`, perpetually dirtied by unshaped text
+  re-measure loops when `TextService` is absent; gated `needs_measure` on
+  `service.is_some()`; studio achieves quiescence in ≤ 2 frames across bare and
+  shaper-backed hosts; bounded-frame studio tests maintained by doctrine.
+
 ## Now (in progress)
 
-- Phase 40c: Studio quiescence — instrument which has_demand source keeps
-  full TaskStudio dirty headlessly; fix if bug, document as architecture
-  if by design; bounded-frame tests only.
+- Phase 40 complete (40a–40c green). Awaiting user selection of next deferred item before starting Phase 41.
 
 ## Next (accepted, not started)
 
@@ -166,5 +173,5 @@ Accepted-carry: weak-GPU sustained-cost standing rule.
 
 - Environmental flakes: `oppa-shell-win` live-Shift sampling; sandboxed clipboard returns NULL handle with `ERROR_SUCCESS` (loud skip); transient clipboard box contention in full-suite runs.
 - Stated edges: ZWJ-inside-regional-indicator double-click selects the joiner alone (pathological); right-held single-gesture drag-select stays out (tap-to-open).
-- Standing debt: hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question); full `TaskStudio` keeps frame demand headlessly without input (probe-verified pre-existing — `DesktopLoop` pumps it, E2E green; efficiency follow-up, not a correctness bug).
+- Standing debt: hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question); headless TaskStudio quiescence resolved (decision 383 — gated unshaped text re-measure); full studio tests remain bounded-frame by doctrine.
 - Deliberate non-goals (not debt): fixed decorative literals, `SELECTION_FILL`, OS title-bar theming; right-held menu drag-select; color-emoji rendering.

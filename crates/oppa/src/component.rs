@@ -1318,6 +1318,21 @@ impl ComponentHost {
         self.inner.rec.borrow().retained_count()
     }
 
+    /// True when the host runtime has outstanding frame demand.
+    pub fn has_demand(&self) -> bool {
+        self.inner.rt.has_demand()
+    }
+
+    /// Diagnostic query of which sources currently contribute to demand.
+    pub fn demand_sources(&self) -> Vec<&'static str> {
+        self.inner.rt.demand_sources()
+    }
+
+    /// Diagnostic query of labels for items currently in `pending`.
+    pub fn pending_labels(&self) -> Vec<String> {
+        self.inner.rt.pending_labels()
+    }
+
     /// Test/diagnostic reads of retained payloads (what the A11Y/PAINT
     /// stubs would consume downstream).
     pub fn retained_handlers(&self, id: NodeId) -> Vec<(EventKind, HandlerId)> {

@@ -1069,4 +1069,61 @@ mod tests {
             "File opens its menu"
         );
     }
+
+    #[test]
+    fn studio_demand_sources_instrumentation() {
+        use crate::tests::FakeText;
+        use oppa::ComponentHost;
+
+        // Bounded-frame harness (Decision 383) — never run_until_idle on full TaskStudio.
+        let host = ComponentHost::new();
+        host.mount(
+            "Studio",
+            StudioProps {
+                seed: sample_tasks(),
+                key: oppa::fetch_key("test:studio-instrument"),
+                hooks: None,
+            },
+            TaskStudio,
+        );
+        let mut ran_count = 0;
+        for _ in 0..5 {
+            if host.run_once() {
+                ran_count += 1;
+            }
+        }
+        assert!(ran_count <= 2, "bare studio settles in <= 2 frames");
+        assert!(!host.has_demand(), "bare studio achieves quiescence");
+        assert!(host.demand_sources().is_empty());
+        assert!(host.pending_labels().is_empty());
+
+        // Host with FakeText service:
+        let host_text = ComponentHost::new();
+        host_text.set_text_service(Box::new(FakeText));
+        host_text.mount(
+            "Studio",
+            StudioProps {
+                seed: sample_tasks(),
+                key: oppa::fetch_key("test:studio-instrument-text"),
+                hooks: None,
+            },
+            TaskStudio,
+        );
+        let mut ran_text_count = 0;
+        for _ in 0..5 {
+            if host_text.run_once() {
+                ran_text_count += 1;
+            }
+        }
+        assert!(
+            ran_text_count <= 2,
+            "studio with text service settles in <= 2 frames"
+        );
+        assert!(
+            !host_text.has_demand(),
+            "studio with text service achieves quiescence"
+        );
+        assert!(host_text.demand_sources().is_empty());
+        assert!(host_text.pending_labels().is_empty());
+    }
 }

@@ -758,7 +758,8 @@ fn run_layout(
         rec.get(*id)
             .is_some_and(|n| n.pass_dirty.contains(PassMask::LAYOUT))
     });
-    if !dropped && !layout_dirty && !needs_measure(rec, &engine.config, root) {
+    let needs_text = service.is_some() && needs_measure(rec, &engine.config, root);
+    if !dropped && !layout_dirty && !needs_text {
         stats.empty = true;
         return stats;
     }
