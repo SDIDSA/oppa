@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-01 (through Decision 370).
+Status: current. Last verified: 2026-10-01 (through Decision 372).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -74,24 +74,31 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   Up/Down/Left/Right/Enter, `Tree`/`TreeItem` roles), `Splitter`
   (G13: `Vertical`/`Horizontal` 2-pane divider, `ColResize` /
   `RowResize`, fraction signal + minima clamping, drag + arrow
-  nudge), `DatePicker` (G14: controlled `Date`, `Portal` month
+  nudge),   `DatePicker` (G14: controlled `Date`, `Portal` month
   `Grid` popup + `TextInput` `YYYY-MM-DD` parse bridge, min/max
   bounds on every path, arrow/Home/End day steps).
+- Phase 38c (decisions 371–372, gate green 2026-10-01): New
+  controls part 2 — `Toolbar` + `Menubar` + `FilePicker` (G21:
+  one shared bar recipe — container-owned focus, highlight
+  cursor, hit-test activation, Left/Right rove, Enter invokes;
+  `Menubar` opens a standalone `Menu` per title with a focus-edge
+  dismissal rule; `FilePicker` wraps open/save/folder
+  request/poll behind one trigger) + G22 wrappers (`RichText`
+  display, `Image` leaf + alt, `Canvas` spec replay, `NavHost`
+  stack switch — the Phase 36 leaves as components).
 
 ## Now (in progress)
 
 - Phase 38 (Control Catalog, Cookbook, Styling, Packaging & PWA):
-  38a–38b shipped (validation + slider keys; Tree, Splitter,
-  DatePicker); remaining: Toolbar/Menubar/FilePicker +
-  RichText/Image/Canvas/NavHost wrappers (G21–G22); G10/G11
-  cookbook + styling; theme/styling pass; desktop installers + PWA
-  packaging.
+  38a–38c shipped (validation + slider keys; Tree, Splitter,
+  DatePicker; bars, FilePicker, G22 wrappers); remaining: G23
+  data-dir helper; G10/G11 cookbook + styling; theme/styling
+  pass; desktop installers + PWA packaging.
 
 ## Next (accepted, not started)
 
-Ordered productization P1s (G10–G11, G19–G23): cookbook additions,
-styling page flip, packaging promotion, PWA story,
-Toolbar/Menubar/FilePicker, RichText/Image/Canvas/NavHost,
+Ordered productization P1s (G10–G11, G19–G20, G23): cookbook
+additions, styling page flip, packaging promotion, PWA story,
 persistence helpers.
 
 Planned v2 specs (unimplemented; full text in git history):
