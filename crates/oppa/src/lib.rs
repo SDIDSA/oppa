@@ -1,3 +1,21 @@
+//! Oppa core: reactive signals → components → retained tree →
+//! layout → display lists → backends (see `docs/ARCHITECTURE.md`;
+//! contracts in `docs/SPEC.md`, state in `docs/STATE.md`).
+//!
+//! Cookbook + styling (G10–G11) live on the control catalog
+//! (`oppa-controls` rustdocs: text-field binding,
+//! `VirtualList`/`Collection` paging, images/menus recipes, plus
+//! the current `ctx.theme()` / `host.set_theme` styling reference
+//! and token table) — one fact lives in one place, linked here,
+//! never copied (Constraint 9).
+//!
+//! App services at a glance: [`fetch`] (pluggable [`Fetcher`](fetch::Fetcher)
+//! + `cancel_fetch` → `Idle`), [`store`] (sync [`KvStore`](store::KvStore) +
+//! [`FsSandbox`](store::FsSandbox) + [`app_data_dir`] (G23) +
+//! write-through [`Persisted`](store::Persisted)), [`dialog`]
+//! (request/poll file dialogs), [`nav`] (`NavStack` + deep-link
+//! syntax + the BackPress chain).
+
 pub mod arena;
 pub mod clipboard;
 pub mod clock;
@@ -78,9 +96,9 @@ pub use render::{
 pub use semantics::{Num, Role, Semantics};
 pub use shell::{AppLifecycleState, Event, EventKind, PlatformShell};
 pub use store::{
-    Collection, CollectionPage, CollectionQuery, CollectionWriter, FsSandbox, InMemoryFs,
-    InMemoryKv, KvStore, NativeFs, PersistReport, Persisted, Row, RowFilter, RowId, RowSort,
-    StoreError,
+    app_data_dir, Collection, CollectionPage, CollectionQuery, CollectionWriter, FsSandbox,
+    InMemoryFs, InMemoryKv, KvStore, NativeFs, PersistReport, Persisted, Row, RowFilter, RowId,
+    RowSort, StoreError,
 };
 pub use style::{
     AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack, IntoPx,

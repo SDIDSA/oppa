@@ -30,6 +30,12 @@ output is yours, never committed. `OPPA_RENDERER` does not apply on
 web (the browser owns pixels); the module viewport is fixed at
 800x600 to match the harness.
 
+PWA shell (G20): `web/manifest.json` + `web/sw.js` (cache-first,
+versioned `CACHE` per release) ship with the template and are
+registered/linked out of the box — serve over http(s) (workers
+refuse `file://`), load once online, reload offline. Icons are
+your branding (none ships).
+
 Next steps: [contributing](../../docs/CONTRIBUTING.md) (gates + entry
 points), [architecture](../../docs/ARCHITECTURE.md) (web backend + shells),
 [glossary](../../docs/GLOSSARY.md).

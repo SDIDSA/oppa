@@ -23,6 +23,16 @@
 
 import init, { HelloApp } from "./pkg/hello_web.js";
 
+// PWA offline skeleton (G20, decision 374): cache-first shell for
+// the shipped app (serve over http(s) — workers refuse file://;
+// bump CACHE in sw.js per release). Registration failures warn
+// loudly, never throw (the app boots online regardless).
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch((err) => {
+    console.warn("oppa PWA: service worker registration failed", err);
+  });
+}
+
 const root = document.getElementById("oppa-root");
 const status = document.getElementById("oppa-status");
 

@@ -73,6 +73,14 @@ pub const WEB_FILES: &[TemplateFile] = &[
         path: "web/bootstrap.js",
         contents: include_str!("../../../templates/hello-web/web/bootstrap.js"),
     },
+    TemplateFile {
+        path: "web/manifest.json",
+        contents: include_str!("../../../templates/hello-web/web/manifest.json"),
+    },
+    TemplateFile {
+        path: "web/sw.js",
+        contents: include_str!("../../../templates/hello-web/web/sw.js"),
+    },
 ];
 
 /// Template source names the embedded lists must mirror (the

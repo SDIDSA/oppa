@@ -30,6 +30,7 @@ concept, this file wins.
 - **Bar recipe (highlight cursor)** — the shared Toolbar/Menubar interaction (decision 371): one press-owner container holds framework focus while a highlight cursor roves handlerless cells (Menu twins: effective/step/hit); Enter invokes, taps hit-test.
 - **FilePicker path** — the controlled picked destination (decision 371): `Some` on successful browse/save/pick (open takes the first path), untouched by dismissal; backends stay runner-owned, the control wraps request/poll.
 - **NavHost** — the declarative router (decision 372): renders the `NavStack` current route's factory; unknown names empty quietly; system back stays runner-owned (BackPress chain).
+- **App data dir (`app_data_dir`)** — the OS settings/cache home (decision 373): `%APPDATA%` / macOS support / `$XDG_DATA_HOME` or `~/.local/share` for one validated app-name segment (wasm refuses, escapes refuse); pairs with `NativeFs`.
 - **Range bounds (`value_num` / `min_value` / `max_value`)** — the numeric half of the Slider/ProgressBar announcement (decision 352); `value_text` stays the human half, and `None` means no value interface.
 - **AT action** — an assistive-technology invocation driving back into the framework (UIA Invoke/RangeValue, AT-SPI Action/Value, DOM native); always through host-loop callbacks, never direct framework access (decision 352).
 - **Grid** — the minimal 2D container (`Tag::Grid`, decision 353): `Px`/`Fr`/`Auto` track templates, row-major auto-flow with spans only (no explicit placement); variable-height virtualized rows stay out.

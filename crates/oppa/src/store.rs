@@ -23,16 +23,23 @@
 //!   and joined under the sandbox root — absolute paths and `..`
 //!   refuse loudly as `InvalidPath`. The jail is lexical (symlinks
 //!   inside the sandbox can still point out — documented bound,
-//!   OQ-G5-4), never a silent escape.
+//!   OQ-G5-4), never a silent escape: sandbox roots must be
+//!   canonicalized by the app when link traversal matters
+//!   (`std::fs::canonicalize` at open — the seam checks syntax,
+//!   the OS resolves links, stated split, never conflated).
+//! - **Per-platform roots.** [`app_data_dir`] resolves the OS data
+//!   dir for an app name (`%APPDATA%` on Windows, macOS
+//!   `Library/Application Support`, `$XDG_DATA_HOME` or
+//!   `~/.local/share` elsewhere; wasm refuses loudly — no
+//!   filesystem, `localStorage` covers it). Pair it with
+//!   [`NativeFs`] for the settings/cache home (G23).
 //! - **Loud failures.** [`StoreError`] names every refusal;
 //!   `Backend(String)` carries the OS message. Missing reads are
 //!   `Ok(None)` / `Err(NotFound)` (query, not failure — same split
 //!   as the clipboard's empty-`Ok(None)`).
 //!
-//! Out of scope: network fetch (OQ-G5-5), shell data-dir exposure
-//! (roots are app-chosen `PathBuf`s this round — per-platform
-//! conventions live in the decision doc), symlinks, file locking,
-//! watching.
+//! Out of scope: network fetch (OQ-G5-5), symlinks beyond the
+//! lexical bound above, file locking, watching.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -235,6 +242,69 @@ impl NativeFs {
     pub fn root(&self) -> &Path {
         &self.root
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-platform data dir (G23)
+// ---------------------------------------------------------------------------
+
+/// Resolves the OS app-data dir for `app_name` (G23 — the
+/// settings/cache home to pair with [`NativeFs`]).
+///
+/// Conventions (no new deps — `std::env` only):
+/// Windows reads `%APPDATA%`, macOS joins
+/// `~/Library/Application Support`, other native targets read
+/// `$XDG_DATA_HOME` else `~/.local/share`. wasm refuses loudly
+/// ([`StoreError::Unsupported`] — no filesystem there;
+/// `localStorage` covers it, stated).
+///
+/// `app_name` is a single path segment (empty names, separators,
+/// drive prefixes, and `..` refuse loudly as `InvalidKey` —
+/// a jail escape at the root would defeat [`FsSandbox`]).
+/// Missing home variables surface as `Backend` (environment
+/// failure, never a silent fallback dir).
+pub fn app_data_dir(app_name: &str) -> Result<PathBuf, StoreError> {
+    if app_name.is_empty() {
+        return Err(StoreError::InvalidKey(app_name.to_string()));
+    }
+    if app_name.contains(['/', '\\'])
+        || app_name.contains("..")
+        || Path::new(app_name).is_absolute()
+        || app_name.contains(':')
+    {
+        return Err(StoreError::InvalidKey(app_name.to_string()));
+    }
+    if cfg!(target_arch = "wasm32") {
+        return Err(StoreError::Unsupported("app_data_dir on wasm"));
+    }
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| StoreError::Backend("APPDATA is not set".to_string()))?
+    } else if cfg!(target_os = "macos") {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| StoreError::Backend("HOME is not set".to_string()))?;
+        home.join("Library/Application Support")
+    } else {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            let xdg = PathBuf::from(xdg);
+            if xdg.is_absolute() {
+                xdg
+            } else {
+                return Err(StoreError::InvalidKey(format!(
+                    "XDG_DATA_HOME is not absolute: {}",
+                    xdg.display()
+                )));
+            }
+        } else {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or_else(|| StoreError::Backend("HOME is not set".to_string()))?;
+            home.join(".local/share")
+        }
+    };
+    Ok(base.join(app_name))
 }
 
 impl FsSandbox for NativeFs {
@@ -1393,6 +1463,45 @@ mod tests {
             store.borrow().get("tasks").expect("reads"),
             Some(b"z".to_vec()),
             "next write replaces corrupt bytes"
+        );
+    }
+
+    /// Phase 38d (decision 373, G23): app names that could escape
+    /// the root refuse before any env is read (no env writes here —
+    /// validation is env-free, so parallel tests stay deterministic).
+    #[test]
+    fn app_data_dir_refuses_root_escapes() {
+        assert_eq!(app_data_dir(""), Err(StoreError::InvalidKey(String::new())));
+        for bad in [
+            "a/b",
+            "a\\b",
+            "..",
+            "../evil",
+            "a/../evil",
+            "/abs",
+            "C:/x",
+            "C:",
+        ] {
+            assert_eq!(
+                app_data_dir(bad),
+                Err(StoreError::InvalidKey(bad.to_string())),
+                "{bad:?} must not become a root segment"
+            );
+        }
+    }
+
+    /// Phase 38d (decision 373, G23): the resolved dir ends with
+    /// the app name (env reads only — no mutation, so parallel
+    /// tests stay deterministic; home variables are set on every
+    /// native target, wasm refuses by cfg and never runs here).
+    #[test]
+    fn app_data_dir_ends_with_app_name() {
+        let dir = app_data_dir("oppa-probe").expect("data dir resolves natively");
+        assert_eq!(
+            dir.file_name().and_then(|s| s.to_str()),
+            Some("oppa-probe"),
+            "the app name is the final segment: {}",
+            dir.display()
         );
     }
 }

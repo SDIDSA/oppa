@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-01 (through Decision 372).
+Status: current. Last verified: 2026-10-01 (through Decision 376).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -86,20 +86,30 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   request/poll behind one trigger) + G22 wrappers (`RichText`
   display, `Image` leaf + alt, `Canvas` spec replay, `NavHost`
   stack switch — the Phase 36 leaves as components).
+- Phase 38d (decisions 373–376, gate green 2026-10-01): Debt,
+  packaging & PWA — `app_data_dir(app_name)` per-platform roots
+  (G23: `%APPDATA%` / macOS support dir / `$XDG_DATA_HOME` or
+  `~/.local/share`, wasm refuses; root-escape names refuse;
+  symlink lexical bound re-documented); G10/G11 cookbook (3
+  recipes) + styling reference landed in crate rustdocs (zero new
+  `.md`); packaging promotion (G19: Windows release-exe +
+  tarball mechanics verified with outputs; rc/cargo-deb absent
+  stays manual/open); PWA story (G20: template `manifest.json` +
+  `sw.js` + registration flow through `cargo oppa new`, release
+  `.wasm` weighed at ~2.87 MB served).
 
 ## Now (in progress)
 
 - Phase 38 (Control Catalog, Cookbook, Styling, Packaging & PWA):
-  38a–38c shipped (validation + slider keys; Tree, Splitter,
-  DatePicker; bars, FilePicker, G22 wrappers); remaining: G23
-  data-dir helper; G10/G11 cookbook + styling; theme/styling
-  pass; desktop installers + PWA packaging.
+  38a–38d shipped — the catalog, cookbook/styling, data-dir,
+  installers, and PWA legs are done. Remaining: Phase 39 (web
+  value-loop U8 + reference apps + final audit).
 
 ## Next (accepted, not started)
 
-Ordered productization P1s (G10–G11, G19–G20, G23): cookbook
-additions, styling page flip, packaging promotion, PWA story,
-persistence helpers.
+Ordered productization P1s (closed this round): cookbook
+additions (G10), styling reference (G11), packaging promotion
+(G19), PWA story (G20), persistence data-dir helper (G23).
 
 Planned v2 specs (unimplemented; full text in git history):
 DOM→framework value-loop text entry.

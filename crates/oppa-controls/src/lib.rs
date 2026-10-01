@@ -38,11 +38,61 @@
 //!   headless trees get hit boxes without a text service; authors
 //!   override through the props' `width`/`height`.
 //!
-//! Controls: Button, Checkbox, Toggle, Slider, TextInput, Modal,
-//! Radio, RadioGroup, Tabs, Select, ProgressBar, Badge.
+//! Controls: Button, Checkbox, Toggle, Slider, TextInput, TextArea,
+//! Modal, Radio, RadioGroup, Tabs, Select, ProgressBar, Badge,
+//! Toast, Tooltip, Menu, ContextMenu, VirtualList, DataGrid,
+//! Scrollbar, ErrorBoundary, Tree, Splitter, DatePicker, Toolbar,
+//! Menubar, FilePicker, RichTextView, ImageView, CanvasView,
+//! NavHost, plus the `Uncontrolled*` self-managed companions.
 //!
 //! Per-control behavior is documented in this crate; catalog status
 //! lives in `docs/STATE.md` (Done).
+//!
+//! Cookbook (G10 — the three additions the page skipped; each names
+//! its precedent, the rule of the page):
+//!
+//! - **Text-field binding.** Controlled state in, committed edits
+//!   out: `let name = ctx.signal(SharedString::from(""))` renders
+//!   through `TextInputProps::new("Name", name.clone())`, and
+//!   `on_change` writes the store back (`Change<SharedString>` —
+//!   the `TaskStudio` inspector's `title_commit` is the shipped
+//!   spelling: guard on inequality, then `update_row`). The
+//!   [`EditSession`](oppa::EditSession) owns caret/selection/undo
+//!   across renders; validators stay app-side, `invalid` +
+//!   `error_message` only announce (decision 366).
+//! - **`VirtualList` / `Collection` paging.** Data lives in an
+//!   author-owned [`Collection`](oppa::Collection) (stable
+//!   [`RowId`](oppa::RowId)s, filter/sort/page queries with match
+//!   totals); [`VirtualList`] windows it through [`vlist_window`]
+//!   (binary-searched tops + overscan — never division) with per-slot
+//!   `child_keyed` recycling; background pages stream in through the
+//!   [`CollectionWriter`](oppa::CollectionWriter) rendezvous (rows
+//!   cross threads as data, ids assign on the UI thread) or
+//!   `spawn_fetch_page` (same drain). [`DataGrid`] is the same feed
+//!   with columns; [`Tree`] the same feed flattened hierarchically.
+//! - **Images and menus.** Static pixels deposit once via
+//!   [`ImageCache::insert_pixels`](oppa::ImageCache::insert_pixels)
+//!   (exact `w × h × 4` RGBA8, loud otherwise) and render through
+//!   [`ImageView`] (alt names it); `key_of` reverses ids for the DOM
+//!   leg. Menus compose [`MenuItem`] rows in a [`Menu`] portal
+//!   (container-owned focus, highlight cursor, hit-test activation)
+//!   wrapped by [`ContextMenu`] (cursor-anchored), [`Select`]
+//!   (box-anchored), or [`Menubar`] (bar-anchored titles).
+//!
+//! Styling (G11 — current, not Proposed): components read
+//! `ctx.theme().tokens()` (a tracked read — `host.set_theme(mode)`
+//! re-renders every themed control in place, instances and state
+//! survive) instead of literals. The token table
+//! ([`ThemeTokens`](oppa::ThemeTokens)): `background`, `surface`,
+//! `text_primary`, `text_secondary`, `primary`, `primary_pressed`,
+//! `border`, `focus_ring`, `disabled`, `error`. Rules: fills ride
+//! tokens; contrast ink on saturated accents stays literal white
+//! (both palettes keep `primary` saturated); keyboard focus paints
+//! a 2px inset `focus_ring` (paint-only — never layout, via
+//! `focus_ringed`); invalid fields edge in `error`; enabled
+//! clickables show `Pointer`/text fields `Text`, inert controls the
+//! platform arrow; decorative literals stay fixed and carry no text
+//! (deliberate non-goals, not debt).
 
 // Control components are `CamelCase` functions by framework convention
 // (`#[component] fn Name` — M2 authoring surface), hence the crate-level
