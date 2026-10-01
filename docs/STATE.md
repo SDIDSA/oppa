@@ -48,13 +48,19 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   `component_manifest!` monomorphized generics (`Name::<A>(P<A>)`,
   canonical symbols; bare/shorthand forms refuse loudly, proven
   end-to-end in a new reload binary).
+- Phase 37b (decisions 362–364, gate green 2026-10-01): App services —
+  `TaskId` cancellation (parked/queued never run, dependents unblock,
+  stage `Cancelled`; running sets a cooperative token) + pluggable
+  `Fetcher` (scripted/closure/wasm-binding) with `cancel_fetch`→`Idle`;
+  zero-stdout host-level ring diagnostics; signal/collection
+  write-through persistence over `KvStore` (seed-once, encode/decode;
+  seed warns + initial, writes panic, corrupt snapshots seed empty).
 
 ## Now (in progress)
 
-- Phase 37b (App Services): `TaskId` cancellation + pluggable
-  `Fetcher` trait (scripted + native/web hooks, G16); zero-stdout
-  ring-buffer diagnostic log sink (G17); signal-backed write-through
-  persistence over `KvStore`/`Collection`.
+- Phase 37c (`cargo-oppa` + reload recipe): `crates/cargo-oppa new`
+  scaffolding matching `templates/hello-*`; the G9 reload recipe
+  (docs + `oppa-reload` example wiring).
 
 ## Next (accepted, not started)
 

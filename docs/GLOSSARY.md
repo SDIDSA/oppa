@@ -31,4 +31,6 @@ concept, this file wins.
 - **Keyframes** — a multi-stop track over `bg`+`opacity` with per-segment easing and once/loop/ping-pong playback (decision 357); the committed target closes the final leg.
 - **Canvas (`CanvasOp`)** — a retained childless leaf painting a spec of rect/rounded-rect/path/text ops in local space (decision 358); lowers to existing `DrawOp`s, never a new one.
 - **Call-site keying** — instance identity from `(Location::caller(), ordinal)` (decision 360): `ctx.child_auto` for static children, `ctx.child_keyed` for keyed siblings; no `TypeId`, so reload state survives the rlib↔dylib boundary.
+- **Fetcher** — the pluggable fetch backend seam (decision 362): `fetch(url)` off-thread; scripted doubles, app closures, and the wasm platform binding meet here, never a built-in client.
+- **Persisted** — signal-backed write-through persistence (decision 364): reads track, writes hit the signal and the `KvStore` synchronously; collections snapshot values in commit order through the same hook.
 - **Slot** — a stable virtualization position in `ScrollArea`; keys are slots, not items.

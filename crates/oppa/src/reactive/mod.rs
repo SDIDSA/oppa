@@ -552,9 +552,24 @@ impl Runtime {
     }
 
     /// Current preparation stage of a task (`Done` once its body
-    /// returned, `None` for unknown or dropped ids).
+    /// returned, `Cancelled` for cancelled-before-running, `None` for
+    /// unknown or dropped ids).
     pub fn task_stage(&self, id: TaskId) -> Option<TaskStage> {
         self.state.borrow().task_pump.stage_of(id)
+    }
+
+    /// Cancels a task by id (Phase 37b, decision 362 — G16): see
+    /// [`TaskPump::cancel`](crate::worker::TaskPump::cancel) for the
+    /// parked/running/completed semantics. Returns true exactly when
+    /// the id named a live task.
+    pub fn cancel_task(&self, id: TaskId) -> bool {
+        self.state.borrow().task_pump.cancel(id)
+    }
+
+    /// True once the id was cancelled (Phase 37b): submit closures
+    /// and cooperative bodies consult this (never blocks).
+    pub fn is_task_cancelled(&self, id: TaskId) -> bool {
+        self.state.borrow().task_pump.is_cancelled(id)
     }
 
     /// Stage history in transition order (the strict-order proof —

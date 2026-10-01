@@ -638,6 +638,11 @@ struct HostInner {
     /// evaluated values through the resolve methods below. Core-side
     /// (lock #25 residence — evaluator internals are not contract).
     evaluator: RefCell<TransitionEvaluator>,
+    /// Zero-stdout diagnostic ring (Phase 37b, decision 363 — G17):
+    /// host-level, never global (hot crates stay ambient-free —
+    /// the `#[hot_crate]` lint sees no statics here). Nothing ever
+    /// prints; hosts drain for assertions and platform sinks.
+    diag: RefCell<crate::diag::RingLog>,
     /// TIME-drive registration flag (M8): one animation settles the
     /// evaluator while interpolations live; registered on the commit
     /// that creates them (TIME runs before EFFECTS, so upfront
@@ -911,6 +916,7 @@ impl ComponentHost {
             field_feeds: RefCell::new(HashMap::new()),
             fetch_gens: RefCell::new(HashMap::new()),
             evaluator: RefCell::new(TransitionEvaluator::new()),
+            diag: RefCell::new(crate::diag::RingLog::default_log()),
             trans_anim: Cell::new(false),
             close_requested_flag: Cell::new(false),
             longpress: RefCell::new(HashMap::new()),
@@ -2070,6 +2076,31 @@ impl ComponentHost {
     /// no instance re-created).
     pub fn set_theme(&self, mode: ThemeMode) {
         self.theme().set(mode);
+    }
+
+    /// Pushes one diagnostic entry (Phase 37b, decision 363 — G17):
+    /// the zero-stdout ring (never prints — hosts drain for
+    /// assertions and platform sinks). Untracked (logging never
+    /// schedules — diagnostics observe, never drive).
+    pub fn diag_log(&self, level: crate::diag::LogLevel, message: impl Into<String>) {
+        self.inner.diag.borrow_mut().push(level, message);
+    }
+
+    /// Live diagnostic count (never exceeds capacity).
+    pub fn diag_len(&self) -> usize {
+        self.inner.diag.borrow().len()
+    }
+
+    /// Overwritten diagnostic count (exact).
+    pub fn diag_dropped(&self) -> u64 {
+        self.inner.diag.borrow().dropped()
+    }
+
+    /// Takes diagnostics at or above `floor`, leaving the log
+    /// otherwise intact (below-floor entries keep their sequence
+    /// numbers — filters never destroy, takes never rewind).
+    pub fn take_diag_logs(&self, floor: crate::diag::LogLevel) -> Vec<crate::diag::LogEntry> {
+        self.inner.diag.borrow_mut().take_at_or_above(floor)
     }
 
     /// Mobile / app lifecycle state signal (Round 18.3, decision 322):
@@ -4453,11 +4484,14 @@ impl Ctx {
     /// swap is discarded, never applied half-swapped). Refuses loudly
     /// on wasm (no threads there — the platform binding drives the
     /// same signal from the promise callback, decision 221).
+    /// Returns the task id (Phase 37b — cancel via
+    /// [`Ctx::cancel_fetch`]; ignoring the return keeps the exact
+    /// pre-37b call shape).
     pub fn spawn_fetch<T: Clone + Send + 'static>(
         &self,
         key: u64,
         fetch: impl FnOnce() -> Result<T, String> + Send + 'static,
-    ) {
+    ) -> TaskId {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (key, fetch);
@@ -4473,14 +4507,21 @@ impl Ctx {
             let rt = self.rt.clone();
             rt.spawn_task(move |scope| {
                 let result = fetch();
+                // Cancelled fetches reset to Idle (never a stuck
+                // Loading, never a late Ready over the reset).
+                let cancelled = scope.is_cancelled();
                 scope.submit(move |rt| {
                     rt.keyed_state::<FetchState<T>>(key, || FetchState::Idle)
-                        .set(match result {
-                            Ok(v) => FetchState::Ready(v),
-                            Err(e) => FetchState::Failed(e),
+                        .set(if cancelled {
+                            FetchState::Idle
+                        } else {
+                            match result {
+                                Ok(v) => FetchState::Ready(v),
+                                Err(e) => FetchState::Failed(e),
+                            }
                         });
                 });
-            });
+            })
         }
     }
 
@@ -4494,13 +4535,14 @@ impl Ctx {
     /// exhausted after N attempts)")` — greppable, never confusable
     /// with a first-try failure). `attempts == 0` panics loudly (a
     /// zero-try fetch is an authoring bug, never a silent no-op).
-    /// Same wasm refusal as `spawn_fetch`.
+    /// Same wasm refusal as `spawn_fetch`. Returns the task id
+    /// (Phase 37b — cancel via [`Ctx::cancel_fetch`]).
     pub fn spawn_fetch_with_retry<T: Clone + Send + 'static>(
         &self,
         key: u64,
         attempts: u32,
         fetch: impl FnMut() -> Result<T, String> + Send + 'static,
-    ) {
+    ) -> TaskId {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (key, attempts, fetch);
@@ -4533,14 +4575,20 @@ impl Ctx {
                         }
                     }
                 };
+                // Cancelled fetches reset to Idle (the `spawn_fetch` rule).
+                let cancelled = scope.is_cancelled();
                 scope.submit(move |rt| {
                     rt.keyed_state::<FetchState<T>>(key, || FetchState::Idle)
-                        .set(match result {
-                            Ok(v) => FetchState::Ready(v),
-                            Err(e) => FetchState::Failed(e),
+                        .set(if cancelled {
+                            FetchState::Idle
+                        } else {
+                            match result {
+                                Ok(v) => FetchState::Ready(v),
+                                Err(e) => FetchState::Failed(e),
+                            }
                         });
                 });
-            });
+            })
         }
     }
 
@@ -4556,7 +4604,8 @@ impl Ctx {
     /// fresh query). Fresh searches swap by clearing first
     /// (`collection.clear()` + load page 0 — the documented recipe,
     /// not a flag). `attempts == 0` panics loudly; same wasm
-    /// refusal as `spawn_fetch`.
+    /// refusal as `spawn_fetch`. Returns the task id (Phase 37b —
+    /// cancel via [`Ctx::cancel_fetch`]).
     pub fn spawn_fetch_page<T: Clone + Send + 'static>(
         &self,
         collection_key: u64,
@@ -4607,9 +4656,18 @@ impl Ctx {
                         }
                     }
                 };
+                // Cancelled page loads reset to Idle (the
+                // `spawn_fetch` rule — never a stuck Loading,
+                // never rows over the reset).
+                let cancelled = scope.is_cancelled();
                 scope.submit(move |rt| {
                     let cur = rt.keyed_state::<u64>(gen_key, || 0).get();
                     if cur != gen {
+                        return;
+                    }
+                    if cancelled {
+                        rt.keyed_state::<FetchState<Vec<T>>>(state_key, || FetchState::Idle)
+                            .set(FetchState::Idle);
                         return;
                     }
                     match result {
@@ -4634,6 +4692,137 @@ impl Ctx {
     /// free function in component bodies).
     pub fn fetch_key(&self, name: &str) -> u64 {
         fetch_key(name)
+    }
+
+    /// Blessed fetch→render driver over a pluggable backend (Phase
+    /// 37b, decision 362 — G16): like [`Ctx::spawn_fetch`], but the
+    /// bytes come from a [`Fetcher`](crate::fetch::Fetcher)
+    /// (`ScriptedFetcher` doubles, app closures through
+    /// [`ClosureFetcher`](crate::fetch::ClosureFetcher), the wasm
+    /// platform binding outside threads). Refuses loudly on wasm
+    /// (same rule as `spawn_fetch`). Returns the task id (cancel via
+    /// [`Ctx::cancel_fetch`]).
+    pub fn spawn_fetch_with(
+        &self,
+        fetcher: std::sync::Arc<dyn crate::fetch::Fetcher>,
+        key: u64,
+        url: &str,
+    ) -> TaskId {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (fetcher, key, url);
+            panic!(
+                "spawn_fetch_with needs OS threads — unavailable on wasm; drive the \
+                 FetchState signal from the platform binding instead (promise \
+                 callback writes the keyed signal, then requests a frame — G7)"
+            );
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let url = url.to_string();
+            self.fetch_state::<String>(key).set(FetchState::Loading);
+            let rt = self.rt.clone();
+            rt.spawn_task(move |scope| {
+                let result = fetcher.fetch(&url);
+                // Cancelled fetches reset to Idle (the `spawn_fetch` rule).
+                let cancelled = scope.is_cancelled();
+                scope.submit(move |rt| {
+                    rt.keyed_state::<FetchState<String>>(key, || FetchState::Idle)
+                        .set(if cancelled {
+                            FetchState::Idle
+                        } else {
+                            match result {
+                                Ok(v) => FetchState::Ready(v),
+                                Err(e) => FetchState::Failed(e),
+                            }
+                        });
+                });
+            })
+        }
+    }
+
+    /// Cancels a fetch task and resets its state (Phase 37b, G16):
+    /// [`Ctx::cancel_task`] plus the `FetchState` back to `Idle`
+    /// (never a stuck `Loading`, never a late `Ready` over the
+    /// reset). Returns what `cancel_task` reported (false = already
+    /// completed or unknown — a completed `Ready`/`Failed` is kept,
+    /// never wiped). The recipe for abandoning a load.
+    pub fn cancel_fetch<T: Clone + Send + 'static>(&self, key: u64, id: TaskId) -> bool {
+        if !self.cancel_task(id) {
+            return false;
+        }
+        self.fetch_state::<T>(key).set(FetchState::Idle);
+        true
+    }
+
+    /// Signal-backed write-through persistence (Phase 37b, decision
+    /// 364): seeds `initial` from `store` under `key` on first run
+    /// (store wins when present and decodable), then hands a
+    /// [`Persisted`](crate::store::Persisted) handle whose reads
+    /// track and whose writes hit the signal AND the store
+    /// synchronously. Seed failures (backend read errors, undecodable
+    /// bytes) fall back to `initial` with a `Warn` diagnostic (boot
+    /// never crashes on corrupt settings — the fallback is
+    /// observable, never silent); write failures panic loudly (data
+    /// loss is never silent). Single-writer per key (this handle
+    /// owns the key — external writers between runs are last-read,
+    /// stated).
+    pub fn persisted<T: Clone + 'static>(
+        &self,
+        key: &str,
+        initial: T,
+        encode: impl Fn(&T) -> Vec<u8> + 'static,
+        decode: impl Fn(&[u8]) -> Option<T> + 'static,
+        store: std::rc::Rc<std::cell::RefCell<dyn crate::store::KvStore>>,
+    ) -> crate::store::Persisted<T> {
+        let seed = match store.borrow().get(key) {
+            Ok(Some(bytes)) => decode(&bytes).unwrap_or_else(|| {
+                self.host.diag_log(
+                    crate::diag::LogLevel::Warn,
+                    format!("persisted {key:?}: undecodable bytes — seeding initial"),
+                );
+                initial.clone()
+            }),
+            Ok(None) => initial.clone(),
+            Err(e) => {
+                self.host.diag_log(
+                    crate::diag::LogLevel::Warn,
+                    format!("persisted {key:?}: store read failed ({e}) — seeding initial"),
+                );
+                initial.clone()
+            }
+        };
+        // `signal` seeds once (later runs re-read the store but the
+        // seed is only consumed on first run — write-through keeps
+        // the store current, so re-reads agree anyway).
+        let signal = self.signal(seed);
+        crate::store::Persisted::new(signal, key, encode, store)
+    }
+
+    /// String specialization of [`Ctx::persisted`]: UTF-8 bytes
+    /// (invalid UTF-8 warns and seeds `initial`, like undecodable
+    /// bytes above).
+    pub fn persisted_string(
+        &self,
+        key: &str,
+        initial: &str,
+        store: std::rc::Rc<std::cell::RefCell<dyn crate::store::KvStore>>,
+    ) -> crate::store::Persisted<String> {
+        self.persisted(
+            key,
+            initial.to_string(),
+            |s: &String| s.as_bytes().to_vec(),
+            |b: &[u8]| String::from_utf8(b.to_vec()).ok(),
+            store,
+        )
+    }
+
+    /// Pushes one diagnostic entry (Phase 37b, decision 363 — G17):
+    /// the host-level zero-stdout ring (untracked — logging never
+    /// schedules). Reads drain through
+    /// [`ComponentHost::take_diag_logs`].
+    pub fn log(&self, level: crate::diag::LogLevel, message: impl Into<String>) {
+        self.host.diag_log(level, message);
     }
 
     /// Inline child component with its own instance scope (state keying).
@@ -4837,9 +5026,21 @@ impl Ctx {
     }
 
     /// Current preparation stage of a task (`Done` once its body
-    /// returned, `None` for unknown or dropped ids).
+    /// returned, `Cancelled` for cancelled-before-running, `None`
+    /// for unknown or dropped ids).
     pub fn task_stage(&self, id: TaskId) -> Option<TaskStage> {
         self.rt.task_stage(id)
+    }
+
+    /// Cancels a task by id (Phase 37b, decision 362 — G16): parked
+    /// or queued tasks never run (dependents still unblock);
+    /// running tasks observe it cooperatively (see
+    /// [`TaskScope::is_cancelled`](crate::worker::TaskScope::is_cancelled));
+    /// completed or unknown ids report false. Returns true exactly
+    /// when the id named a live task. Fetch drivers pair this with a
+    /// `FetchState::Idle` reset — see [`Ctx::cancel_fetch`].
+    pub fn cancel_task(&self, id: TaskId) -> bool {
+        self.rt.cancel_task(id)
     }
 
     /// Settled layout box for an effect (one-frame-delayed feedback): tracks

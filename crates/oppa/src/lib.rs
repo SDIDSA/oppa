@@ -2,6 +2,7 @@ pub mod arena;
 pub mod clipboard;
 pub mod clock;
 pub mod component;
+pub mod diag;
 pub mod dialog;
 pub mod editing;
 pub mod fetch;
@@ -37,13 +38,16 @@ pub use component::{
     MountHandle, OpaqueProps, Props, RenderFn, ScrollOffset, ScrollOffset2D, ScrollXY, Store,
     Theme, TimerId,
 };
+pub use diag::{LogEntry, LogLevel, RingLog};
 pub use dialog::{
     FileDialog, FileDialogOptions, FileFilter, FilePickerOptions, FolderDialog,
     FolderDialogOptions, PickError, SaveFileDialog, ScriptedDialog, ScriptedFolderDialog,
     ScriptedSaveDialog,
 };
 pub use editing::{EditSession, EditState, PasteOutcome, CARET_BLINK_PERIOD_SECS, EDIT_UNDO_DEPTH};
-pub use fetch::{fetch_key, page_gen_key, page_key, FetchState};
+pub use fetch::{
+    fetch_key, page_gen_key, page_key, ClosureFetcher, FetchState, Fetcher, ScriptedFetcher,
+};
 pub use handlers::{HandlerFn, HandlerId, HandlerRegistry};
 pub use hash::SymbolHash;
 pub use ime::{
@@ -75,7 +79,8 @@ pub use semantics::{Num, Role, Semantics};
 pub use shell::{AppLifecycleState, Event, EventKind, PlatformShell};
 pub use store::{
     Collection, CollectionPage, CollectionQuery, CollectionWriter, FsSandbox, InMemoryFs,
-    InMemoryKv, KvStore, NativeFs, Row, RowFilter, RowId, RowSort, StoreError,
+    InMemoryKv, KvStore, NativeFs, PersistReport, Persisted, Row, RowFilter, RowId, RowSort,
+    StoreError,
 };
 pub use style::{
     AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack, IntoPx,

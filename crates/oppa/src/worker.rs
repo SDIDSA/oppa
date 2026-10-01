@@ -21,9 +21,9 @@
 //! a task is possible; hosts performing swaps with in-flight tasks accept
 //! this window (reload-time only, bounded by task length).
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     Arc, Condvar, Mutex,
 };
 
@@ -114,11 +114,34 @@ impl WorkerQueue {
 pub struct TaskScope {
     generation: HotGeneration,
     outbox: Arc<Mutex<Vec<TaskResultItem>>>,
+    /// Cooperative cancellation token (Phase 37b, decision 362):
+    /// set by [`TaskPump::cancel`] — long bodies poll
+    /// [`TaskScope::is_cancelled`] and stop early; submits still
+    /// queue (the fetch drivers reset their own state on cancel —
+    /// a dropped submit could never do that).
+    cancelled: Arc<AtomicBool>,
+    /// This task's id, when minted (Phase 37b — always `Some` for
+    /// pump-spawned bodies; submit closures consult
+    /// `is_task_cancelled` through it).
+    id: Option<TaskId>,
 }
 
 impl TaskScope {
     pub fn generation(&self) -> HotGeneration {
         self.generation
+    }
+
+    /// This task's id (Phase 37b — `None` only for hand-built scopes,
+    /// never for pump-spawned bodies).
+    pub fn id(&self) -> Option<TaskId> {
+        self.id
+    }
+
+    /// True once [`TaskPump::cancel`] named this task's id (Phase
+    /// 37b): long bodies stop early instead of computing abandoned
+    /// results. Never blocks, never panics.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
     }
 
     /// Submits a UI-thread effect for the INPUT drain. Results tagged with
@@ -150,7 +173,11 @@ pub(crate) struct PendingTask {
 /// Ready → Done` in strict order (single worker thread, FIFO
 /// queue, id-ordered promotion — the order is total, therefore
 /// testable). Query via `Runtime::task_stage`; history via
-/// `Runtime::task_transitions`.
+/// `Runtime::task_transitions`. Phase 37b adds `Cancelled`: a
+/// task [`TaskPump::cancel`] removed before running (parked or
+/// queued) lands here — never run, dependents still unblock (the
+/// id marks completed for dep purposes, but the stage reads
+/// `Cancelled`, never `Done`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum TaskStage {
     /// Submitted, dependencies unmet (dep-free tasks skip this
@@ -163,6 +190,8 @@ pub enum TaskStage {
     Ready,
     /// Body returned (any outcome — deps gate order, not success).
     Done,
+    /// Cancelled before running (never runs; dependents unblock).
+    Cancelled,
 }
 
 /// Task identity: minted per submit, the dependency vocabulary
@@ -199,6 +228,13 @@ pub(crate) struct TaskPump {
     prep: Mutex<BTreeMap<TaskId, PrepEntry>>,
     /// Completed ids (the dependency vocabulary's ground truth).
     completed: Mutex<HashSet<TaskId>>,
+    /// Cancellation tokens (Phase 37b, decision 362): cancelled ids
+    /// map to a set token — running bodies poll it through
+    /// [`TaskScope::is_cancelled`], submit closures consult it
+    /// through [`TaskPump::is_cancelled`]. Entries persist (like the
+    /// transitions log — cancelled ids stay answered, never
+    /// re-minted).
+    cancelled: Mutex<HashMap<TaskId, Arc<AtomicBool>>>,
     /// Stage history in transition order (the strict-order proof —
     /// single worker thread, one push per transition).
     transitions: Mutex<Vec<(TaskId, TaskStage)>>,
@@ -217,6 +253,7 @@ impl TaskPump {
             tasks_dropped: AtomicU64::new(0),
             prep: Mutex::new(BTreeMap::new()),
             completed: Mutex::new(HashSet::new()),
+            cancelled: Mutex::new(HashMap::new()),
             transitions: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(1),
         }
@@ -242,12 +279,7 @@ impl TaskPump {
     ) -> TaskId {
         let id = TaskId(self.next_id.fetch_add(1, Ordering::SeqCst));
         self.log_transition(id, TaskStage::Queued);
-        if deps.iter().all(|d| {
-            self.completed
-                .lock()
-                .expect("task completed set")
-                .contains(d)
-        }) {
+        if deps.iter().all(|d| self.is_satisfied(d)) {
             self.schedule(id, generation, task);
         } else {
             self.prep.lock().expect("task prep table").insert(
@@ -307,35 +339,14 @@ impl TaskPump {
         self.log_transition(id, TaskStage::Done);
         self.tasks_done.fetch_add(1, Ordering::SeqCst);
         // Promote in id order (BTreeMap — deterministic).
-        let mut ready = Vec::new();
-        {
-            let completed = self.completed.lock().expect("task completed set");
-            let mut prep = self.prep.lock().expect("task prep table");
-            for (pid, entry) in prep.iter_mut() {
-                if entry.task.is_some() && entry.deps.iter().all(|d| completed.contains(d)) {
-                    ready.push(*pid);
-                }
-            }
-            // Collect bodies under lock, schedule after release.
-            let mut bodies = Vec::new();
-            for pid in ready {
-                if let Some(mut entry) = prep.remove(&pid) {
-                    if let Some(task) = entry.task.take() {
-                        bodies.push((pid, entry.generation, task));
-                    }
-                }
-            }
-            drop(prep);
-            drop(completed);
-            for (pid, generation, task) in bodies {
-                self.schedule(pid, generation, task);
-            }
-        }
+        self.promote_unblocked();
     }
 
-    /// Current stage (`Done` for completed, `None` for unknown /
-    /// dropped — drops count in `tasks_dropped`, stages log the
-    /// rest).
+    /// Current stage (`Done` for completed bodies, `Cancelled`
+    /// for cancelled-before-running, `None` for unknown ids —
+    /// drops count in `tasks_dropped`, stages log the rest). A
+    /// cancelled-then-finished body reads `Done` (it ran — the
+    /// flag through [`TaskPump::is_cancelled`] stays honest).
     pub fn stage_of(&self, id: TaskId) -> Option<TaskStage> {
         if let Some(entry) = self.prep.lock().expect("task prep table").get(&id) {
             return Some(entry.stage);
@@ -348,7 +359,160 @@ impl TaskPump {
         {
             return Some(TaskStage::Done);
         }
+        if self
+            .cancelled
+            .lock()
+            .expect("task cancelled set")
+            .contains_key(&id)
+        {
+            return Some(TaskStage::Cancelled);
+        }
         None
+    }
+
+    /// Dependency satisfaction (Phase 37b): completed bodies satisfy,
+    /// and so do cancelled-before-running ones (a cancelled dep
+    /// orders like a done one — dependents never hang on a task
+    /// that will never run).
+    fn is_satisfied(&self, id: &TaskId) -> bool {
+        if self
+            .completed
+            .lock()
+            .expect("task completed set")
+            .contains(id)
+        {
+            return true;
+        }
+        self.cancelled
+            .lock()
+            .expect("task cancelled set")
+            .contains_key(id)
+    }
+
+    /// True once [`TaskPump::cancel`] named the id (Phase 37b):
+    /// submit closures and cooperative bodies consult this (never
+    /// blocks, never panics). Flag-based (the run loop registers a
+    /// fresh token per run — presence alone would report every
+    /// running task cancelled). Stays true after completion (a
+    /// cancelled-then-finished body still reports cancelled — the
+    /// stage reads `Done`, the flag stays honest).
+    pub fn is_cancelled(&self, id: TaskId) -> bool {
+        self.cancelled
+            .lock()
+            .expect("task cancelled set")
+            .get(&id)
+            .is_some_and(|token| token.load(Ordering::SeqCst))
+    }
+
+    /// Cancels a task by id (Phase 37b, decision 362 — G16):
+    ///
+    /// - Parked (`Queued` bodies) or scheduled (`Ready` queue items)
+    ///   but not yet running: removed (never runs); dependents still
+    ///   unblock (cancellation satisfies deps like completion, but
+    ///   the stage reads `Cancelled`, never `Done`). Returns true.
+    /// - Already running (bodiless `Ready` record, no queue item,
+    ///   token registered): the cooperative token sets (bodies poll
+    ///   [`TaskScope::is_cancelled`]; fetch drivers reset their own
+    ///   state on cancel). The record stays — completion removes it.
+    ///   Returns true. Plain submits still apply unless the body
+    ///   checks — preemption is impossible on a thread boundary,
+    ///   stated, never silent.
+    /// - Completed or unknown: returns false (nothing to cancel —
+    ///   a completed result already applied or was discarded by tag).
+    ///
+    /// Race rule (stated): a cancel landing after the worker popped
+    /// the task but before it registered runs to completion normally
+    /// (returns false) — cancellation wins ties on the queue lock,
+    /// the run wins ties past it, never half-cancelled.
+    pub fn cancel(&self, id: TaskId) -> bool {
+        if self
+            .completed
+            .lock()
+            .expect("task completed set")
+            .contains(&id)
+        {
+            return false;
+        }
+        // Pre-run removal: parked bodies (prep entries still holding
+        // `task`) and queued items with their bodiless `Ready`
+        // records. A bodiless `Ready` record with no queue item is a
+        // RUNNING task — never removed here (completion owns its
+        // record; removing it would orphan the body's token and
+        // misreport the run as pre-run).
+        let mut removed = false;
+        {
+            let mut prep = self.prep.lock().expect("task prep table");
+            if prep.get(&id).is_some_and(|entry| entry.task.is_some()) {
+                prep.remove(&id);
+                removed = true;
+            }
+        }
+        {
+            let mut queue = self.queue.lock().expect("task queue lock");
+            let before = queue.len();
+            queue.retain(|t| t.id != Some(id));
+            if queue.len() != before {
+                removed = true;
+                // The queue item's bodiless `Ready` record drops with
+                // it (pre-run pair — a running task has no queue
+                // item, so its record is never touched here).
+                self.prep.lock().expect("task prep table").remove(&id);
+            }
+        }
+        if removed {
+            // Never runs: satisfy dependents (like completion, but
+            // the stage reads `Cancelled`), set the token for late
+            // cooperative checks, log, promote, and wake the worker
+            // (UI-side promotion — the worker may sleep while the
+            // queue was empty, unlike completion-side promotion).
+            self.cancelled
+                .lock()
+                .expect("task cancelled set")
+                .insert(id, Arc::new(AtomicBool::new(true)));
+            self.log_transition(id, TaskStage::Cancelled);
+            self.promote_unblocked();
+            self.wake.notify_one();
+            return true;
+        }
+        // Running (token registered by the run loop) or already
+        // cancelled (idempotent re-cancel): set and report true.
+        // Unknown ids report false and record nothing.
+        let cancelled = self.cancelled.lock().expect("task cancelled set");
+        match cancelled.get(&id) {
+            Some(token) => {
+                token.store(true, Ordering::SeqCst);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Runs the unblock scan shared by completion and cancellation
+    /// (id-ordered promotion — deterministic). Satisfaction covers
+    /// completed AND cancelled-before-running ids (dependents never
+    /// hang on a task that will never run).
+    fn promote_unblocked(&self) {
+        let mut ready = Vec::new();
+        {
+            let mut prep = self.prep.lock().expect("task prep table");
+            for (pid, entry) in prep.iter_mut() {
+                if entry.task.is_some() && entry.deps.iter().all(|d| self.is_satisfied(d)) {
+                    ready.push(*pid);
+                }
+            }
+            let mut bodies = Vec::new();
+            for pid in ready {
+                if let Some(mut entry) = prep.remove(&pid) {
+                    if let Some(task) = entry.task.take() {
+                        bodies.push((pid, entry.generation, task));
+                    }
+                }
+            }
+            drop(prep);
+            for (pid, generation, task) in bodies {
+                self.schedule(pid, generation, task);
+            }
+        }
     }
 
     /// Stage history in transition order (clone for tests).
@@ -415,6 +579,21 @@ pub(crate) fn run_task_pump(pump: Arc<TaskPump>) {
         let scope = TaskScope {
             generation: task.generation,
             outbox: pump.outbox.clone(),
+            cancelled: match task.id {
+                // Cooperative token, shared with `cancel` (entry
+                // API — a cancel that won the queue but lost the
+                // pop keeps its set token, so the body still
+                // observes it; never overwritten here, stated).
+                Some(id) => pump
+                    .cancelled
+                    .lock()
+                    .expect("task cancelled set")
+                    .entry(id)
+                    .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+                    .clone(),
+                None => Arc::new(AtomicBool::new(false)),
+            },
+            id: task.id,
         };
         (task.task)(scope);
         match task.id {

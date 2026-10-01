@@ -38,10 +38,19 @@
 //!   runtime — [`fetch_key`] hashes a `"route:name"` string (FNV-1a,
 //!   the handler-id hash), so two features never collide silently.
 //!
-//! Out of scope: fetch backends themselves (OQ-G5-5 owns network);
-//! cancellation tokens (generation discard already drops retired
-//! results — explicit cancel is OQ-G7-2); progress reporting
-//! (OQ-G7-3); a reload-harness example (G14 owns app/reload wiring).
+//! Out of scope: network backends themselves (OQ-G5-5 owns the socket;
+//! [`Fetcher`] is the seam — scripted doubles, app closures, and the
+//! platform binding meet here, never a built-in client); progress
+//! reporting (OQ-G7-3); a reload-harness example (G14 owns app/reload
+//! wiring).
+//!
+//! Phase 37b (decision 362 — G16) closes the two named gaps:
+//! [`TaskId`] cancellation (parked/queued tasks never run — the
+//! generation-discard rule already covered retired results; explicit
+//! cancel covers live ones) and the pluggable [`Fetcher`] trait.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::hash::fnv1a64;
 
@@ -76,12 +85,88 @@ pub fn page_gen_key(collection_key: u64, page: usize) -> u64 {
     fetch_key(&format!("page-gen:{collection_key}:{page}"))
 }
 
+/// Pluggable fetch backend (Phase 37b, decision 362 — G16): the seam
+/// OQ-G5-5 left open. `fetch` runs on the executor thread (blocking
+/// is expected — never touch reactive state here; return the bytes
+/// or the reason). Implementations: [`ScriptedFetcher`] (test
+/// doubles), app closures via [`ClosureFetcher`] (the native hook —
+/// wrap any blocking client), and the wasm platform binding (which
+/// resolves promises outside threads and writes the keyed signal
+/// directly — the G7 verdict-(b) split, not this trait).
+pub trait Fetcher: Send + Sync + 'static {
+    /// Human name for diagnostics (the decision-220 instrument —
+    /// counted, never inferred, so backends name themselves).
+    fn name(&self) -> &'static str;
+    /// Fetches `url` off-thread: `Ok(body)` or `Err(reason)`.
+    fn fetch(&self, url: &str) -> Result<String, String>;
+}
+
+/// Scripted fetch double (Phase 37b): route table for tests and
+/// previews — exact-URL match, `Err("unscripted url: {url}")` for
+/// misses (loud, never a silent empty). Clone shares the table
+/// (scripts stage mid-test through the shared handle).
+#[derive(Clone, Default)]
+pub struct ScriptedFetcher {
+    routes: Arc<Mutex<HashMap<String, Result<String, String>>>>,
+}
+
+impl ScriptedFetcher {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Scripts one URL (replaces any previous script for it — last
+    /// wins, stated).
+    pub fn script(&self, url: &str, result: Result<String, String>) {
+        self.routes
+            .lock()
+            .expect("script table lock")
+            .insert(url.to_string(), result);
+    }
+}
+
+impl Fetcher for ScriptedFetcher {
+    fn name(&self) -> &'static str {
+        "scripted"
+    }
+
+    fn fetch(&self, url: &str) -> Result<String, String> {
+        self.routes
+            .lock()
+            .expect("script table lock")
+            .get(url)
+            .cloned()
+            .unwrap_or_else(|| Err(format!("unscripted url: {url}")))
+    }
+}
+
+/// Closure fetch backend (Phase 37b — the native hook): wraps any
+/// `Fn(&str) -> Result<String, String> + Send + Sync` (a blocking
+/// HTTP client, a file reader, a test closure) as a [`Fetcher`].
+pub struct ClosureFetcher<F>(pub &'static str, pub F)
+where
+    F: Fn(&str) -> Result<String, String> + Send + Sync + 'static;
+
+impl<F> Fetcher for ClosureFetcher<F>
+where
+    F: Fn(&str) -> Result<String, String> + Send + Sync + 'static,
+{
+    fn name(&self) -> &'static str {
+        self.0
+    }
+
+    fn fetch(&self, url: &str) -> Result<String, String> {
+        (self.1)(url)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::component::{ComponentHost, Ctx, Props};
     use crate::reactive::Signal;
     use crate::vnode::{Div, VNode};
+    use crate::worker::{TaskId, TaskStage};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::sync::Arc;
@@ -612,5 +697,322 @@ mod tests {
         host.run_until_idle();
         let seen = props.seen.borrow();
         assert_eq!(seen.last(), Some(&FetchState::Ready("hi".to_string())));
+    }
+
+    /// Phase 37b (decision 362 — G16): cancelling a parked task
+    /// removes it before running (never runs, stage `Cancelled`),
+    /// and its dependents still unblock (dep-gating is order, and
+    /// a cancelled dep orders like a done one).
+    #[test]
+    fn cancel_parked_task_never_runs_and_unblocks_dependents() {
+        use std::sync::Mutex;
+        let host = ComponentHost::new();
+        let rt = host.runtime();
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        // `dep` parks forever (depends on an id that never completes).
+        let never = TaskId(u64::MAX - 1);
+        let m = ran.clone();
+        let dep: TaskId = rt.prepare_task(&[never], move |_scope| {
+            m.lock().expect("marker").push("dep-ran");
+        });
+        assert_eq!(rt.task_stage(dep), Some(TaskStage::Queued));
+        let m = ran.clone();
+        let after: TaskId = rt.prepare_task(&[dep], move |_scope| {
+            m.lock().expect("marker").push("after-ran");
+        });
+        assert!(rt.cancel_task(dep), "parked cancel reports true");
+        assert_eq!(rt.task_stage(dep), Some(TaskStage::Cancelled));
+        assert!(ran.lock().expect("marker").is_empty(), "never ran");
+        // Dependent unblocks off the cancellation (Cancelled orders
+        // like Done for dep purposes).
+        wait_for_tasks(&rt, 1);
+        host.run_until_idle();
+        assert_eq!(*ran.lock().expect("marker"), vec!["after-ran"]);
+        assert_eq!(rt.task_stage(after), Some(TaskStage::Done));
+        // Idempotent re-cancel, and unknown/completed report false.
+        assert!(rt.cancel_task(dep), "re-cancel stays true");
+        assert!(!rt.cancel_task(never), "unknown ids report false");
+        assert!(!rt.cancel_task(after), "completed ids report false");
+        let log = rt.task_transitions();
+        let walk: Vec<TaskStage> = log
+            .iter()
+            .filter(|(i, _)| *i == dep)
+            .map(|(_, s)| *s)
+            .collect();
+        assert_eq!(walk, vec![TaskStage::Queued, TaskStage::Cancelled]);
+    }
+
+    /// Phase 37b: cancelling a running task sets the cooperative
+    /// token (the body observes it and stops early — preemption is
+    /// impossible on a thread boundary, stated).
+    #[test]
+    fn cancel_running_task_sets_the_cooperative_token() {
+        use std::sync::mpsc::channel;
+        let host = ComponentHost::new();
+        let rt = host.runtime();
+        let (tx, rx) = channel::<()>();
+        // `started` proves the body runs (a queued task reports the
+        // same `Ready` stage as a running one — the flag, not the
+        // stage, makes "running" observable, so the cancel
+        // deterministically lands mid-run).
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let st = started.clone();
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s = stopped.clone();
+        let id: TaskId = rt.spawn_task(move |scope| {
+            st.store(true, std::sync::atomic::Ordering::SeqCst);
+            rx.recv().expect("gate");
+            if scope.is_cancelled() {
+                s.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+            panic!("cancelled body must observe the token");
+        });
+        let mut waited = 0;
+        while !started.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            waited += 1;
+            assert!(waited < 10_000, "task never started");
+        }
+        // The body blocks on the gate (cannot proceed without the
+        // send), so this cancel deterministically lands mid-run.
+        assert!(rt.cancel_task(id), "running cancel reports true");
+        tx.send(()).expect("unblock");
+        wait_for_tasks(&rt, 1);
+        assert!(
+            stopped.load(std::sync::atomic::Ordering::SeqCst),
+            "body observed the token"
+        );
+        assert!(rt.is_task_cancelled(id), "flag stays honest");
+    }
+
+    /// Phase 37b: a queued fetch cancelled behind a gate never runs
+    /// (no body, no submit — the submit path is unreachable), and a
+    /// running fetch cancelled mid-flight resets to `Idle` through
+    /// `cancel_fetch` (never a stuck `Loading`, never a late
+    /// `Ready` over the reset).
+    #[test]
+    fn cancel_queued_fetch_never_runs_and_resets_idle() {
+        use std::sync::mpsc::channel;
+        let host = ComponentHost::new();
+        let rt = host.runtime();
+        // Gate the worker (queued fetches park behind it — submit
+        // logs `Ready` synchronously, so the queued state is
+        // deterministic, never a race). The `gated` flag proves the
+        // gate holds the worker (spawn-then-cancel cannot slip
+        // ahead of it).
+        let (gate_tx, gate_rx) = channel::<()>();
+        let gated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let g = gated.clone();
+        rt.spawn_task(move |_scope| {
+            g.store(true, std::sync::atomic::Ordering::SeqCst);
+            gate_rx.recv().expect("gate");
+        });
+        let mut waited = 0;
+        while !gated.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            waited += 1;
+            assert!(waited < 10_000, "gate never engaged");
+        }
+        let key = fetch_key("test:cancel-queued");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let r = ran.clone();
+        #[derive(Clone)]
+        struct QueueProbe {
+            key: u64,
+            id_slot: Rc<Cell<Option<TaskId>>>,
+            ran: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Props for QueueProbe {}
+        fn queue_render(ctx: &Ctx, p: &QueueProbe) -> VNode {
+            // Spawn once (the id slot gates re-spawns — bodies
+            // re-run, spawns do not).
+            if p.id_slot.get().is_none() {
+                let r = p.ran.clone();
+                let id = ctx.spawn_fetch(p.key, move || {
+                    r.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok::<String, _>("late".to_string())
+                });
+                p.id_slot.set(Some(id));
+            }
+            Div("probe").build()
+        }
+        let id_slot = Rc::new(Cell::new(None));
+        host.mount(
+            "Queue",
+            QueueProbe {
+                key,
+                id_slot: id_slot.clone(),
+                ran: r,
+            },
+            queue_render,
+        );
+        // Single frames only (never `run_until_idle` — a task parked
+        // behind the gate is permanent frame demand by design: task
+        // traffic wakes the loop for its results, so idling past an
+        // unreleased gate would spin forever, correctly).
+        for _ in 0..100 {
+            host.run_once();
+            if id_slot.get().is_some() {
+                break;
+            }
+        }
+        let id = id_slot.get().expect("spawned id");
+        assert_eq!(
+            rt.task_stage(id),
+            Some(TaskStage::Ready),
+            "fetch queues behind the gate"
+        );
+        // Cancel pre-run (runtime-level — the `cancel_fetch` recipe
+        // below covers the state half through a body).
+        assert!(rt.cancel_task(id), "queued cancel reports true");
+        assert_eq!(rt.task_stage(id), Some(TaskStage::Cancelled));
+        gate_tx.send(()).expect("unblock");
+        wait_for_tasks(&rt, 1);
+        host.run_until_idle();
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "cancelled body never ran"
+        );
+        assert_eq!(
+            rt.keyed_state::<FetchState<String>>(key, || FetchState::Idle)
+                .get(),
+            FetchState::Loading,
+            "no submit ever ran (the state half resets explicitly)"
+        );
+    }
+
+    /// Phase 37b: `cancel_fetch` cancels mid-flight and resets to
+    /// `Idle` synchronously (the recipe — `cancel_task` plus the
+    /// state reset, one call).
+    #[test]
+    fn cancel_fetch_resets_midflight_to_idle() {
+        use std::sync::mpsc::channel;
+        use std::sync::Mutex;
+        let host = ComponentHost::new();
+        let key = fetch_key("test:cancel-midflight");
+        let (tx, rx) = channel::<()>();
+        let rx = Arc::new(Mutex::new(Some(rx)));
+        #[derive(Clone)]
+        struct MidProbe {
+            key: u64,
+            gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
+            id_slot: Rc<Cell<Option<TaskId>>>,
+            cancel_now: Rc<Cell<bool>>,
+        }
+        impl Props for MidProbe {}
+        fn mid_render(ctx: &Ctx, p: &MidProbe) -> VNode {
+            if p.id_slot.get().is_none() {
+                let gate = p.gate.clone();
+                let id = ctx.spawn_fetch(p.key, move || {
+                    // Block until the test releases (cancel lands
+                    // mid-flight deterministically — drops release
+                    // too, and the token decides, never the gate).
+                    let rx = gate.lock().expect("gate").take().expect("gate once");
+                    let _ = rx.recv();
+                    Ok::<String, _>("late".to_string())
+                });
+                p.id_slot.set(Some(id));
+            } else if p.cancel_now.get() {
+                p.cancel_now.set(false);
+                assert!(
+                    ctx.cancel_fetch::<String>(p.key, p.id_slot.get().expect("id")),
+                    "mid-flight cancel reports true"
+                );
+            }
+            Div("probe").build()
+        }
+        let props = MidProbe {
+            key,
+            gate: rx,
+            id_slot: Rc::new(Cell::new(None)),
+            cancel_now: Rc::new(Cell::new(false)),
+        };
+        let handle = host.mount("Mid", props.clone(), mid_render);
+        host.run_until_idle();
+        // Fetch is blocked in-flight (Loading shows); re-run with
+        // the cancel flag (same body, second pass cancels).
+        props.cancel_now.set(true);
+        handle.set_props(props.clone());
+        host.run_until_idle();
+        assert_eq!(
+            host.runtime()
+                .keyed_state::<FetchState<String>>(key, || FetchState::Idle)
+                .get(),
+            FetchState::Idle,
+            "cancel_fetch resets synchronously"
+        );
+        // Release the gate (drop wakes `recv` with `Err` in both
+        // worlds — queued-cancel never took the receiver, mid-flight
+        // observes the token; the token decides, never the gate).
+        drop(tx);
+        wait_for_tasks(&host.runtime(), 1);
+        host.run_until_idle();
+        assert_eq!(
+            host.runtime()
+                .keyed_state::<FetchState<String>>(key, || FetchState::Idle)
+                .get(),
+            FetchState::Idle,
+            "no late Ready over the reset"
+        );
+    }
+
+    /// Phase 37b (decision 362): the `Fetcher` seam — scripted
+    /// doubles serve routes and refuse unscripted URLs loudly;
+    /// `spawn_fetch_with` drives `FetchState` like `spawn_fetch`.
+    #[test]
+    fn fetcher_seam_scripts_and_drives_state() {
+        let fetcher = ScriptedFetcher::new();
+        assert_eq!(fetcher.name(), "scripted");
+        fetcher.script("https://a.test/x", Ok("body-x".to_string()));
+        assert_eq!(fetcher.fetch("https://a.test/x"), Ok("body-x".to_string()));
+        assert!(
+            fetcher
+                .fetch("https://a.test/missing")
+                .unwrap_err()
+                .contains("unscripted url"),
+            "misses refuse loudly"
+        );
+        // Closure backends name themselves (the native hook).
+        let answering = ClosureFetcher("native-test", |url: &str| Ok(format!("got:{url}")));
+        assert_eq!(answering.name(), "native-test");
+        assert_eq!(
+            answering.fetch("u").expect("closure fetch"),
+            "got:u".to_string()
+        );
+        // The driver serves scripted bytes through FetchState.
+        let host = ComponentHost::new();
+        let key = fetch_key("test:fetcher-drive");
+        let signal = host
+            .runtime()
+            .keyed_state::<FetchState<String>>(key, || FetchState::Idle);
+        #[derive(Clone)]
+        struct DriveProbe {
+            key: u64,
+            fetcher: ScriptedFetcher,
+        }
+        impl Props for DriveProbe {}
+        fn drive_render(ctx: &Ctx, p: &DriveProbe) -> VNode {
+            let f = std::sync::Arc::new(p.fetcher.clone());
+            ctx.spawn_fetch_with(f, p.key, "https://a.test/x");
+            Div("probe").build()
+        }
+        fetcher.script("https://a.test/x", Ok("driven".to_string()));
+        host.mount(
+            "Drive",
+            DriveProbe {
+                key,
+                fetcher: fetcher.clone(),
+            },
+            drive_render,
+        );
+        host.run_until_idle();
+        wait_for_tasks(&host.runtime(), 1);
+        host.run_until_idle();
+        assert_eq!(
+            signal.get(),
+            FetchState::Ready("driven".to_string()),
+            "scripted bytes drive state"
+        );
     }
 }
