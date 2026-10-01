@@ -132,6 +132,11 @@ impl CustomGpuBackend {
         self.images.remove(&id).is_some()
     }
 
+    /// True when the backend holds pre-decoded pixels for `id`.
+    pub fn has_image(&self, id: ImageId) -> bool {
+        self.images.contains_key(&id)
+    }
+
     pub fn insert_cached(&mut self, cache: &oppa::ImageCache, id: ImageId) {
         let Some((width, height, rgba)) = cache.pixels_of(id) else {
             panic!(

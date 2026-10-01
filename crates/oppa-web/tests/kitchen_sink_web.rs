@@ -78,6 +78,14 @@ fn paint_now(
     let plan = app
         .host()
         .with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+    let images = app.host().images();
+    for op in &plan.ops {
+        if let oppa::DrawOp::RImg { image, .. } = op {
+            if !cpu.has_image(*image) && images.pixels_of(*image).is_some() {
+                cpu.insert_cached(&images, *image);
+            }
+        }
+    }
     cpu.paint(surf, &plan).expect("cpu paints the plan");
     cpu.pixmap(surf)
         .expect("pixmap reads back")
@@ -285,6 +293,22 @@ fn sink_all_tabs_modal_and_platform_with_new_pixels() {
     );
     let html = press_labeled(&mut app, "Count++");
     assert!(html.contains("count 1"), "counter renders, {html}");
+    frames.push(paint_now(&app, &mut cpu, surf, &mut cursor));
+
+    // Views tab (index 4): tree, toolbar, menubar, rich text, canvas, image, navhost.
+    let tabs = find_retained_by_debug(app.host(), "tab-item");
+    let b = app.host().committed_box(tabs[4]).expect("tab laid out");
+    let html = app
+        .click(b.x + b.w / 2.0, b.y + b.h / 2.0)
+        .expect("views press touches");
+    assert!(
+        !find_retained_by_debug(app.host(), "sink-tree").is_empty(),
+        "tree mounts on views tab"
+    );
+    assert!(
+        html.contains("sink-logo") || html.contains("data:image/png;base64"),
+        "image data URI renders in dom patch: {html}"
+    );
     frames.push(paint_now(&app, &mut cpu, surf, &mut cursor));
 
     for (i, frame) in frames.iter().enumerate() {

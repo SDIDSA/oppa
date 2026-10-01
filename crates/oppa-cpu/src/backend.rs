@@ -222,6 +222,11 @@ impl CpuBackend {
         self.images.remove(&id).is_some()
     }
 
+    /// True when the backend holds pre-decoded pixels for `id`.
+    pub fn has_image(&self, id: ImageId) -> bool {
+        self.images.contains_key(&id)
+    }
+
     /// Deposits one cache entry's pre-decoded pixels (Phase 36 PR4,
     /// decision 359 — the static image path): pulls `(width, height,
     /// RGBA8)` from the [`ImageCache`](oppa::ImageCache) and inserts

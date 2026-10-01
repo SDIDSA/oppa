@@ -50,6 +50,7 @@ fn commit_and_sync(
     let mode = host.theme().mode();
     builder.set_theme_mode(mode);
     dom.set_theme_mode(mode);
+    dom.set_images(host.images());
     let stats = host
         .with_retained_mut(|rec, styles| dom.sync(rec, styles, sheet).expect("dom sync failed"));
     let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
@@ -232,7 +233,8 @@ impl WasmHost {
         let (clock, host) = Self::boot();
         host.mount(name, props, render);
         host.run_until_idle();
-        Self::shell(host, clock, oppa::ImageCache::new())
+        let images = host.images();
+        Self::shell(host, clock, images)
     }
 
     /// The full host (the testkit escape-hatch rule applied to the

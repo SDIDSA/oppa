@@ -17,9 +17,9 @@ use std::rc::Rc;
 use oppa::store::KvStore;
 use oppa::{
     AlignItems, CanvasOp, Color, Column, Ctx, Div, Ease, FetchState, FileDialog, FilePickerOptions,
-    FlexWrap, FontWeight, GridTrack, ImageCache, JustifyContent, KeyframeMode, KeyframeStop,
-    Keyframes, Px, Row, ScriptedDialog, SharedString, Signal, Style, Text, TextSpan, ThemeMode,
-    ThemeTokens, VNode,
+    FlexWrap, FontWeight, GridTrack, JustifyContent, KeyframeMode, KeyframeStop, Keyframes, Px,
+    Row, ScriptedDialog, SharedString, Signal, Style, Text, TextSpan, ThemeMode, ThemeTokens,
+    VNode,
 };
 
 use crate::{
@@ -175,7 +175,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
     let nav_stack = ctx.signal(oppa::NavStack::new(
         oppa::Route::new("home").expect("route names parse"),
     ));
-    let img_cache = ctx.signal(ImageCache::new());
+    let img_cache = ctx.signal(ctx.images());
     // Bar feedback (G21): toolbar/menubar actions land here.
     let bar_note = ctx.signal(SharedString::from("no command yet"));
     // ---- Overlay state (Tab 3) ----

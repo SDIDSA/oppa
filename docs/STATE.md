@@ -151,10 +151,16 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   pixel-oracle tested (<5% shadow tolerance, exact geometry/images) against
   `oppa-cpu`; integrated into `DesktopLoop` in `oppa-app` with CLI/env
   override (`OPPA_RENDERER=custom_gpu`).
+- Phase 41b (decision 385, gate green 2026-10-01): Host-level ImageCache & runner
+  image sync — `ComponentHost` and `Ctx` own shared `ImageCache`; `DomBackend`
+  syncs host images per commit; `DesktopLoop` (and testkit harnesses) upload
+  static pixels into CPU, Vello, and CustomGpu backends via `insert_cached`;
+  `KitchenSinkApp` Views tab deposits into `ctx.images()`; web Views tab crash
+  eliminated with full tab roundtrip proven in Edge headless.
 
 ## Now (in progress)
 
-- Phase 41 complete (decision 384 green). Awaiting user selection of next deferred item (Items #2–#9).
+- Phase 41 complete (decisions 384–385 green). Awaiting user selection of next deferred item (Items #2–#9).
 
 ## Next (accepted, not started)
 

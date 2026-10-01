@@ -53,6 +53,7 @@ this table in place and never rewrite history. All ADRs are Accepted.
 | [0001](10-decisions/ADR-0001-pipeline-ownership-dom-web.md) | Web verification sweep (decision 382) | c3 CDP/Edge re-baseline executed and green; Firefox full-leg automation, PWA load-once-offline, Safari passes recorded in Blocked with exact blockers |
 | [0004](10-decisions/ADR-0004-framework-owned-layout.md) | Headless studio quiescence & demand instrumentation (decision 383) | `Runtime::demand_sources`/`pending_labels` queries (+ `ComponentHost` proxies); gated unshaped text re-measure on `service.is_some()`; studio achieves quiescence in ≤ 2 frames; studio tests remain bounded-frame by doctrine |
 | [0009](10-decisions/ADR-0009-rasterizer-vello.md) | Custom GPU rasterizer on wgpu render pipelines (decision 384) | Instanced SDF quads (analytical AA, rounded rects, circles), closed-form separable 2D Gaussian erf shadows, dynamic glyph atlas, Lyon vector path tessellation, direct swapchain render passes, zero compute shaders |
+| [0014](10-decisions/ADR-0014-app-storage.md) | Host-level ImageCache ownership + runner image sync (decision 385) | `ComponentHost::images`/`Ctx::images` share host-level registry; `DomBackend` syncs host images per commit; `DesktopLoop` and test harnesses upload cached images via `insert_cached`; KitchenSink Views tab loads into shared cache |
 
 Superseded decisions: none currently. If a decision is replaced, replace its row
 here (1 line) — the old ADR file stays frozen in git, not in this table.

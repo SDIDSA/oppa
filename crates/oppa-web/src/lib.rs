@@ -276,7 +276,7 @@ impl WebApp {
         let settings_on = host.runtime().signal(settings_boot(&settings));
         // Demo image id (Round 4.4): preloaded before mount so the
         // scene and the backend resolve the same handle.
-        let images = oppa::ImageCache::new();
+        let images = host.images();
         let img_dot = images.load(DOT_SRC);
         host.mount(
             "WebScene",

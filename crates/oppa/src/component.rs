@@ -680,6 +680,9 @@ struct HostInner {
     /// Next timer id (monotonic — ids never repeat, so a stale
     /// cleanup cancel can never kill a newer timer).
     next_timer: Cell<u64>,
+    /// Host-level image cache (Phase 36 PR4 / Phase 38c, decision 359):
+    /// shared image registry holding loaded URLs and pre-decoded static pixels.
+    images: RefCell<ImageCache>,
 }
 
 /// One host-tracked component timer (Round 21.1, decision 328):
@@ -924,6 +927,7 @@ impl ComponentHost {
             flings: RefCell::new(Vec::new()),
             timers: RefCell::new(Vec::new()),
             next_timer: Cell::new(1),
+            images: RefCell::new(ImageCache::new()),
         });
         // Framework-owned INPUT router (M5): hit-test + capture/focus +
         // dispatch over each queued InputEvent, inside INPUT's BatchGuard.
@@ -2092,6 +2096,17 @@ impl ComponentHost {
     /// no instance re-created).
     pub fn set_theme(&self, mode: ThemeMode) {
         self.theme().set(mode);
+    }
+
+    /// App-wide image cache (Phase 36 PR4 / Phase 38c, decision 359):
+    /// shared image registry holding loaded URLs and pre-decoded static pixels.
+    pub fn images(&self) -> ImageCache {
+        self.inner.images.borrow().clone()
+    }
+
+    /// Sets or replaces the host-level image cache.
+    pub fn set_images(&self, images: ImageCache) {
+        *self.inner.images.borrow_mut() = images;
     }
 
     /// Pushes one diagnostic entry (Phase 37b, decision 363 — G17):
@@ -4455,6 +4470,12 @@ impl Ctx {
     /// sessions, and signals survive — only colors re-derive).
     pub fn theme(&self) -> Theme {
         self.host.theme()
+    }
+
+    /// App-wide image cache (Phase 36 PR4 / Phase 38c, decision 359):
+    /// components load URLs or deposit pre-decoded static pixels here.
+    pub fn images(&self) -> ImageCache {
+        self.host.images()
     }
 
     /// Mobile / app lifecycle state (Round 18.3, decision 322):

@@ -1040,6 +1040,25 @@ impl DesktopLoop {
         self.last_caret_shown = self.builder.caret().is_some();
         self.last_plan = Some(plan.clone());
         let damage = plan.damage.len();
+        let images = self.host.images();
+        for op in &plan.ops {
+            if let oppa::DrawOp::RImg { image, .. } = op {
+                if !self.cpu.has_image(*image) && images.pixels_of(*image).is_some() {
+                    self.cpu.insert_cached(&images, *image);
+                }
+                if self.active == RendererKind::Gpu
+                    && !self.vello.has_image(*image)
+                    && images.pixels_of(*image).is_some()
+                {
+                    self.vello.insert_cached(&images, *image);
+                } else if self.active == RendererKind::CustomGpu
+                    && !self.custom_gpu.has_image(*image)
+                    && images.pixels_of(*image).is_some()
+                {
+                    self.custom_gpu.insert_cached(&images, *image);
+                }
+            }
+        }
         self.cpu
             .paint(self.surface, &plan)
             .map_err(|e| format!("desktop loop: cpu paint: {e:?}"))?;
