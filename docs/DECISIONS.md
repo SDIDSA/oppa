@@ -1,0 +1,28 @@
+# Decisions (current)
+
+Status: current. Last verified: 2026-10-01.
+One line per active decision. Rationale lives in the linked ADR; rounds update
+this table in place and never rewrite history. All ADRs are Accepted.
+
+| ADR | Decision | Essence |
+|---|---|---|
+| [0001](10-decisions/ADR-0001-pipeline-ownership-dom-web.md) | Pipeline ownership split; DOM web backend | Own scene→pixels on desktop/mobile; on Web own the scene, browser owns pixels |
+| [0002](10-decisions/ADR-0002-accessibility-in-contract.md) | Accessibility in the renderer contract day one | Semantic tree is computed from the UI model and emitted with every commit |
+| [0003](10-decisions/ADR-0003-two-tree-retained-model.md) | Two-tree retained model, fine-grained reactivity | Ephemeral VNode discarded; stable-identity retained tree is what layout/render consume |
+| [0004](10-decisions/ADR-0004-framework-owned-layout.md) | Framework-owned layout | One layout engine; renderers never lay out |
+| [0005](10-decisions/ADR-0005-typed-styles-no-cascade.md) | Typed styles, no cascade | Interned `StyleId`; themes are token tables, not stylesheets |
+| [0006](10-decisions/ADR-0006-rust-core.md) | Rust core | Core and components in Rust, no language runtime |
+| [0007](10-decisions/ADR-0007-handlers-as-ids-generational.md) | Handlers-as-ids, generational storage | Handlers are `(NodeId, kind)`; stale access panics loudly |
+| [0008](10-decisions/ADR-0008-hot-reload.md) | Hot-reload harness | Manifest-scan dylib; desktop sub-second, Web wasm swap, Android restart-only |
+| [0009](10-decisions/ADR-0009-rasterizer-vello.md) | Vello desktop GPU, CPU fallback | Buy the rasterizer, own everything above the display list; Skia hatch costed-unbuilt |
+| [0010](10-decisions/ADR-0010-scheduler-threading.md) | Phase scheduler, single UI thread | `TIME→INPUT→RELOAD→EFFECTS→LAYOUT→PAINT/COMMIT→A11Y`; per-surface present |
+| [0011](10-decisions/ADR-0011-web-scroll-and-transitions.md) | Native web scroll, binding-edge transition stamp | Browser owns scroll physics; `suppress_transitions` lasts exactly one commit |
+| [0012](10-decisions/ADR-0012-text-editing-authority.md) | Text-editing authority | GPU backend owns on GPU, DOM `<input>` owns on Web; shared op-suite is the contract |
+| [0013](10-decisions/ADR-0013-state-residence.md) | Core-side state residence | Surviving state lives core-side; generation-tagged tasks; memo-write panics |
+| [0014](10-decisions/ADR-0014-app-storage.md) | Sync KV + sandboxed-file storage seams | Sync KV now; async backends deferred |
+
+Superseded decisions: none currently. If a decision is replaced, replace its row
+here (1 line) — the old ADR file stays frozen in git, not in this table.
+Deferred v2 items: custom GPU rasterizer, desktop native-hybrid presenters,
+grid/variable-height rows, tween DSL, text-stack consolidation, wasm-on-Android
+runtime, beyond-static images, cross-field undo, macOS/iOS.

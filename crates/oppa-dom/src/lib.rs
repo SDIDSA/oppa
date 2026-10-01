@@ -9,7 +9,7 @@
 //! plans, same damage discipline — the builder is shared, no raster or
 //! DOM code is) and shares nothing else with the other backends.
 //!
-//! What it does (decisions 111–114, carried to `04-planning/state.md`):
+//! What it does (decisions 111–114; rationale in git history):
 //!
 //! - [`DomBackend`] absorbs [`TreeDiff`](oppa::TreeDiff)s into a
 //!   `NodeId`-keyed element registry (Add/Remove/Move/Update — the M2

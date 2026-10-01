@@ -7,7 +7,7 @@
 //! with the G5 stores (picked paths feed `FsSandbox`) and G8 images
 //! (picked bytes feed `decode_image`).
 //!
-//! Design (see decisions 230–231 in `docs/04-planning/state.md`):
+//! Design (see decisions 230–231; rationale in git history):
 //!
 //! - **Request/poll completion (230).** `request_open` shows the
 //!   dialog (or queues it); `poll_open` returns `None` while it is

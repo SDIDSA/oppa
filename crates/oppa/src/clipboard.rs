@@ -7,7 +7,7 @@
 //! the [`EditSession`](crate::editing::EditSession) copy/cut/paste ops
 //! that consume it.
 //!
-//! Design (see decisions 209–211 in `docs/04-planning/state.md`):
+//! Design (see decisions 209–211; rationale in git history):
 //!
 //! - **Async-capable, sync-friendly (209).** `write_text` is fire-and-
 //!   forget (every platform can queue a write synchronously, including
@@ -32,7 +32,7 @@
 use std::fmt;
 
 /// Clipboard failure (loud by construction — see
-/// `docs/05-implementation/error-handling.md`).
+/// `docs/CONTRIBUTING.md`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClipboardError {
     /// This shell has no clipboard backend yet (default seam state).

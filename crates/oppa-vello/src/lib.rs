@@ -13,7 +13,7 @@
 //! replay + vsync-cadence present ledger) → [`GpuOracle`](oracle::GpuOracle)
 //! (CPU-vs-Vello pixel compare, the M4 oracle extended across rasterizers).
 //!
-//! Contract interpretation (M6 decisions, carried to `04-planning/state.md`):
+//! Contract interpretation (M6 decisions; rationale in git history):
 //!
 //! - `Caps`: `max_layers` 64 (scene stack, not pixmap masks),
 //!   `blur_backdrop` false (the [`DrawOp::Shadow`](oppa::DrawOp) op carries

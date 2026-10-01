@@ -22,4 +22,6 @@ says so — no historical reasoning is invented.
 | [0014](ADR-0014-app-storage.md) | Sync KV + sandboxed-file seams; async backends deferred | Accepted (V3 G5 #216–#217) |
 
 Full locked list (#1–#29) with round origins: `12-archive/DESIGN.md` §7.
-Deferred v2 items: [non-goals](../00-vision/non-goals.md).
+Deferred v2 items: [DECISIONS.md](../DECISIONS.md) (bottom list).
+Note: ADR source lines may name pre-consolidation paths
+(`docs/04-planning/*`, `docs/11-experiments/*`) — resolve via git history.

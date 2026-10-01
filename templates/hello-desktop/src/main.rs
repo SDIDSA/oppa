@@ -2,9 +2,8 @@
 //! Same shape as `cargo run -p oppa-controls --example hello` but in
 //! your own crate: one signal, one button, one text row.
 //!
-//! Your app grows from here: add controls from `oppa-controls`,
-//! app architecture from the cookbook
-//! (`docs/09-api/cookbook.md`), headless tests from `oppa-testkit`.
+//! Your app grows from here: add controls from `oppa-controls`
+//! (see `docs/ARCHITECTURE.md`), headless tests from `oppa-testkit`.
 
 use oppa::{AlignItems, Column, Ctx, SharedString, Style, Text, VNode};
 use oppa_app::{run_desktop, WindowOptions};

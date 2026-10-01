@@ -4,7 +4,8 @@
 
 Cross-platform GUI framework (Rust): retained declarative scene graph
 × fine-grained reactivity → diff-driven presenters. Targets: Windows,
-Linux, Android, Web. See [`docs/00-vision/vision.md`](docs/00-vision/vision.md).
+Linux, Android, Web. Priorities: rendering performance > developer
+ergonomics > binary size > hot reload.
 
 ## Major layers (and where they live)
 
@@ -15,34 +16,32 @@ signals/state → components → VNode (ephemeral) → RetainedNode tree
 
 | Layer | Code | Docs |
 |---|---|---|
-| Reactive core + scheduler + storage | `crates/oppa/src/reactive/`, `arena.rs`, `worker.rs`, `clock.rs`, `handlers.rs` | `docs/02-architecture/runtime.md`, `docs/03-spec/ui/propagation.md` |
-| Components + reconciler | `component.rs`, `vnode.rs`, `reconciler.rs`, `style.rs`, `semantics.rs`, `interner.rs`, `pass_mask.rs`, `hash.rs` | `docs/01-design/widget-model.md`, `docs/03-spec/ui/widget-tree.md` |
-| Text | `text.rs`, `ime.rs`, `crates/oppa-text-dwrite/` | `docs/02-architecture/text/overview.md`, `docs/03-spec/text/` |
-| Shell | `shell.rs`, `crates/oppa-shell-win/` | `docs/02-architecture/windowing/overview.md` |
-| Macros | `crates/oppa-macros/` | `docs/09-api/widget.md` |
-| Spike rig (not product) | `crates/spike-textedit/`, `spike/` | `docs/11-experiments/` |
+| Reactive core + scheduler + storage | `crates/oppa/src/reactive/`, `arena.rs`, `worker.rs`, `clock.rs`, `handlers.rs` | `docs/ARCHITECTURE.md`, `docs/SPEC.md` |
+| Components + reconciler | `component.rs`, `vnode.rs`, `reconciler.rs`, `style.rs`, `semantics.rs`, `interner.rs`, `pass_mask.rs`, `hash.rs` | `docs/ARCHITECTURE.md`, `docs/SPEC.md` |
+| Text | `text.rs`, `ime.rs`, `crates/oppa-text-dwrite/` | `docs/ARCHITECTURE.md`, `docs/SPEC.md` |
+| Shell | `shell.rs`, `crates/oppa-shell-win/` | `docs/ARCHITECTURE.md`, `docs/06-platforms/` |
+| Macros | `crates/oppa-macros/` | `docs/ARCHITECTURE.md` |
+| Spike rig (not product) | `crates/spike-textedit/`, `spike/` | not authoritative |
 
-Missing by design (planned): none in the M0–M10 chain — layout engine (M3),
-backends (M4/M6/M7), emitters, and the hot-reload harness (M2b) all shipped
-(see `docs/HANDOFF-V1.md` and `docs/04-planning/state.md`). Do not assume a
-feature exists without checking `state.md`; genuinely open items live in
-`docs/04-planning/backlog.md` and the Phase 19 brief
-(`docs/04-planning/production-readiness-plan.md`).
+v1 milestone chain M0–M10 closed; productization through Phase 35 closed
+(Decisions 1–351). Current state — and only current state — lives in
+`docs/STATE.md`. Do not assume a feature exists without checking it;
+genuinely open items live in `docs/STATE.md` (Next / Blocked).
 
 ## Doc entry points
 
-- Architecture: `docs/02-architecture/overview.md`
-- Specs: `docs/03-spec/` (behavioral contracts)
-- Decisions: `docs/10-decisions/README.md` (ADRs 0001–0013; full lock
-  list `12-archive/DESIGN.md` §7)
-- Planning: `docs/04-planning/backlog.md`, `current-sprint.md`
-- Implementation: `docs/05-implementation/` (start: `getting-started.md`)
-- Raw records: `12-archive/DESIGN.md`, `12-archive/BUILD-ORDER.md`, `04-planning/state.md`, `04-planning/rounds.md`
+- Architecture (current): `docs/ARCHITECTURE.md`
+- Contracts (current): `docs/SPEC.md`
+- State (current): `docs/STATE.md` — the only planning file
+- Decisions (current): `docs/DECISIONS.md` (rationale: `docs/10-decisions/`)
+- Platforms: `docs/06-platforms/<windows|linux|android|web>/overview.md`
+- Contributing: `docs/CONTRIBUTING.md`
+- Glossary: `docs/GLOSSARY.md`
+- Frozen history (read-only): `docs/12-archive/` + git log
 
 ## Agent rule
 
-An agent working on a subsystem needs `PROJECT.md` + the relevant
-architecture overview + the relevant spec + the relevant ADRs + the
-relevant implementation guide — not the whole tree. Status labels
-(Current / Planned / Proposed / Experimental / Superseded) are
-mandatory reading: never present planned architecture as implemented.
+An agent working on a subsystem needs `PROJECT.md` + `docs/ARCHITECTURE.md`
++ `docs/SPEC.md` + `docs/STATE.md` + the relevant ADR / platform page —
+not the whole tree. Living docs describe `HEAD`: overwrite superseded text
+in place; history is `git log`.
