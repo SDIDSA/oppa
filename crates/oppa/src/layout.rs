@@ -47,7 +47,7 @@ use crate::interner::Interner;
 use crate::pass_mask::PassMask;
 use crate::reactive::{untrack, Runtime, Signal};
 use crate::reconciler::Reconciler;
-use crate::style::{AlignItems, FlexWrap, JustifyContent, Style};
+use crate::style::{AlignItems, FlexWrap, GridTrack, JustifyContent, Style};
 use crate::text::{
     round_to_device_px, BreakSource, FontId, ShapedRun, TextError, TextService, TextStyle,
 };
@@ -937,6 +937,35 @@ fn resolve_floor(style: &Style, dpr: f32) -> f32 {
     c * dpr
 }
 
+/// Min/max clamp on the committed box (Phase 36 PR2a, decision 353):
+/// resolved sizes clamp into `[min, max]`; an *explicit* `w`/`h`
+/// outside the clamp refuses loudly (an authoring contradiction —
+/// never a silent snap). A `min > max` contradiction refuses loudly
+/// too. Runs in [`LayoutEngine::commit_box`](LayoutEngine)
+/// so every arm (Row/Column/Grid/Stack/Scroll/portal/text)
+/// honors it from one site.
+fn resolve_clamp(style: &Style, dpr: f32) -> (Option<f32>, Option<f32>, Option<f32>, Option<f32>) {
+    let cvt = |name: &str, v: Option<crate::style::Px>| {
+        v.map(|p| {
+            let v = p.get();
+            check_layout_px(name, v, false);
+            v * dpr
+        })
+    };
+    let min_w = cvt("min_w", style.min_w);
+    let min_h = cvt("min_h", style.min_h);
+    let max_w = cvt("max_w", style.max_w);
+    let max_h = cvt("max_h", style.max_h);
+    for (lo, hi, axis) in [(min_w, max_w, "width"), (min_h, max_h, "height")] {
+        if let (Some(lo), Some(hi)) = (lo, hi) {
+            if lo > hi {
+                panic!("layout: min_{axis} {lo} exceeds max_{axis} {hi} — contradictory clamp, never a silent pick");
+            }
+        }
+    }
+    (min_w, min_h, max_w, max_h)
+}
+
 fn check_leftover(axis: &str, v: f32) {
     if !v.is_finite() {
         panic!("layout: {axis} leftover is non-finite ({v}) — NaN/Inf never lays out silently");
@@ -1005,6 +1034,8 @@ impl<'a> LayoutCtx<'a> {
 
     /// Commits one box, snapping the position to the device grid (extents
     /// stay subpixel). Counts real changes for the publish decision.
+    /// Phase 36 PR2a: min/max clamping applies here (see
+    /// [`resolve_clamp`]) — one site, every arm.
     #[allow(clippy::too_many_arguments)] // one call site; a params struct buys nothing
     fn commit_box(
         &mut self,
@@ -1019,6 +1050,33 @@ impl<'a> LayoutCtx<'a> {
     ) {
         // Commit positions snap to the device grid; extents stay subpixel
         // (coordinate-system spec: rounding at commit positions only).
+        let style = self.style_of(id);
+        let (explicit_w, explicit_h) = resolve_explicit(&style, self.dpr);
+        let (min_w, min_h, max_w, max_h) = resolve_clamp(&style, self.dpr);
+        // Explicit sizes outside the clamp are authoring contradictions
+        // (loud, never a silent snap); resolved sizes clamp.
+        if let Some(e) = explicit_w {
+            if min_w.is_some_and(|m| e < m) || max_w.is_some_and(|m| e > m) {
+                panic!(
+                    "layout: explicit w {e} outside clamp [{:?}, {:?}] — contradictory size, never a silent snap (node {id:?})",
+                    min_w.unwrap_or(f32::NEG_INFINITY),
+                    max_w.unwrap_or(f32::INFINITY),
+                );
+            }
+        }
+        if let Some(e) = explicit_h {
+            if min_h.is_some_and(|m| e < m) || max_h.is_some_and(|m| e > m) {
+                panic!(
+                    "layout: explicit h {e} outside clamp [{:?}, {:?}] — contradictory size, never a silent snap (node {id:?})",
+                    min_h.unwrap_or(f32::NEG_INFINITY),
+                    max_h.unwrap_or(f32::INFINITY),
+                );
+            }
+        }
+        let w = min_w.map(|m| w.max(m)).unwrap_or(w);
+        let w = max_w.map(|m| w.min(m)).unwrap_or(w);
+        let h = min_h.map(|m| h.max(m)).unwrap_or(h);
+        let h = max_h.map(|m| h.min(m)).unwrap_or(h);
         let want = LayoutBox {
             x: round_to_device_px(x, self.dpr),
             y: round_to_device_px(y, self.dpr),
@@ -1253,6 +1311,22 @@ impl<'a> LayoutCtx<'a> {
                 inherited_px,
                 inherited_weight,
             ),
+            Tag::Grid => self.layout_grid(
+                id,
+                &children,
+                ox,
+                oy,
+                content_x,
+                content_y,
+                pad,
+                gap,
+                explicit_w,
+                explicit_h,
+                given_w,
+                content_floor,
+                inherited_px,
+                inherited_weight,
+            ),
             // Overlay layer (Round 1.4, decision 255): viewport-anchored,
             // never parent-flow — parents skip portal children and lay
             // them through this arm, which ignores ox/oy/given but
@@ -1351,11 +1425,18 @@ impl<'a> LayoutCtx<'a> {
         // placed at the cursor afterwards). Margins ride the advance and
         // the cross extent (Decision 249); absent margins are zeros, so
         // this math is bit-identical to the pre-margin flow.
+        // Phase 36 PR2a (decision 353): `flex_grow` children measure
+        // intrinsically (their base size) and join the pass-2 share
+        // pool with `weight = grow`; `fill_width` rides the same pool
+        // with weight 1 (no flex present = bit-identical to the old
+        // equal split). Explicit `w` always wins (flex ignored —
+        // stated, the CSS flex-basis rule).
         let mut fixed_w = 0.0f32;
         let mut max_h = 0.0f32;
         let mut max_margin_h = 0.0f32;
         let mut fills: Vec<NodeId> = Vec::new();
         let mut fills_h: Vec<NodeId> = Vec::new();
+        let mut flex_base: HashMap<NodeId, f32> = HashMap::new();
         let mut sizes: HashMap<NodeId, Size> = HashMap::new();
         let mut flow_count = 0usize;
         let mut portals: Vec<NodeId> = Vec::new();
@@ -1378,6 +1459,27 @@ impl<'a> LayoutCtx<'a> {
             }
             if cs.fill_width {
                 fills.push(*child);
+            } else if cs.w.is_none() && cs.flex_grow.is_some_and(|g| g.get() > 0.0) {
+                // Flexible base: measured intrinsically, grown in pass 2.
+                let s = self.layout_node(
+                    *child,
+                    0.0,
+                    0.0,
+                    None,
+                    None,
+                    0.0,
+                    0.0,
+                    inherited_px,
+                    inherited_weight,
+                );
+                flex_base.insert(*child, s.w);
+                fills.push(*child);
+                // Base sizes do NOT join fixed_w (they grow from the
+                // remainder pool — the CSS flex-basis rule); the base
+                // floors the share below (grow never shrinks).
+                max_h = max_h.max(s.h);
+                max_margin_h = max_margin_h.max(s.h + m.y());
+                sizes.insert(*child, s);
             } else {
                 let s = self.layout_node(
                     *child,
@@ -1396,24 +1498,50 @@ impl<'a> LayoutCtx<'a> {
                 sizes.insert(*child, s);
             }
         }
-        // Pass 2: distribute the remainder equally among fill children.
+        // Pass 2: distribute the remainder by weight among fill/flex children.
         // Fixed margins already sit inside `fixed_w`, so shares split
         // what is left; fill-child margins offset position (never
         // shrink the share — overflow stays overflow, stated).
+        // Phase 36 PR2a (decision 353): one weighted pool — `fill_width`
+        // rides weight 1 with base 0 (no flex present = the old equal
+        // split exactly), `flex_grow` rides its factor over its
+        // intrinsic base. Bases leave the pool first (the CSS
+        // flex-basis rule); the base floors the share (grow never
+        // shrinks — shrink is the opt-in `flex_shrink` arm below).
         if !fills.is_empty() {
             self.stats.layout_passes = self.stats.layout_passes.max(2);
             let gaps = gap * flow_count.saturating_sub(1) as f32;
+            let flex_bases: f32 = fills.iter().filter_map(|c| flex_base.get(c).copied()).sum();
             let remainder = content_w
-                .map(|cw| (cw - fixed_w - gaps).max(0.0))
+                .map(|cw| (cw - fixed_w - flex_bases - gaps).max(0.0))
                 .unwrap_or(0.0);
             check_leftover("row fill", remainder);
-            let share = remainder / fills.len() as f32;
-            if !share.is_finite() {
-                panic!("layout: row fill share is non-finite ({share})");
+            let total: f32 = fills
+                .iter()
+                .map(|c| {
+                    self.style_of(*c)
+                        .flex_grow
+                        .map(|g| g.get())
+                        .filter(|g| *g > 0.0)
+                        .unwrap_or(1.0)
+                })
+                .sum();
+            if !total.is_finite() || total <= 0.0 {
+                panic!("layout: row fill weights non-finite or empty (total {total})");
             }
             for child in fills {
                 let cs = self.style_of(child);
                 let m = resolve_margin(&cs, self.dpr);
+                let weight = cs
+                    .flex_grow
+                    .map(|g| g.get())
+                    .filter(|g| *g > 0.0)
+                    .unwrap_or(1.0);
+                let base = flex_base.get(&child).copied().unwrap_or(0.0);
+                let share = base + remainder * weight / total;
+                if !share.is_finite() {
+                    panic!("layout: row flex share is non-finite ({share})");
+                }
                 let s = self.layout_node(
                     child,
                     0.0,
@@ -1476,7 +1604,67 @@ impl<'a> LayoutCtx<'a> {
                 }
             }
         }
-        let extent_w = extent_w_pre;
+        // Phase 36 PR2a (decision 353): opt-in shrink. A constrained
+        // row overflowing its content width gives the excess back
+        // proportionally to `flex_shrink × laid width` (the CSS
+        // scaled-shrink rule); children without `flex_shrink` (or
+        // with explicit `w`) never shrink — overflow stays overflow,
+        // the shipped single-line rule. Shrunk children re-lay into
+        // the smaller width (re-wrap is correct for text); the extent
+        // re-derives, so a fully absorbed excess justifies clean.
+        let mut extent_w = extent_w_pre;
+        if let Some(cw) = content_w {
+            let overflow = extent_w - cw;
+            if overflow > f32::EPSILON {
+                let shrinkable: Vec<(NodeId, f32, f32)> = sizes
+                    .iter()
+                    .filter_map(|(child, s)| {
+                        let cs = self.style_of(*child);
+                        let f = cs.flex_shrink.map(|p| p.get()).unwrap_or(0.0);
+                        if f > 0.0 && cs.w.is_none() && s.w > 0.0 {
+                            Some((*child, s.w, f * s.w))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let total: f32 = shrinkable.iter().map(|(_, _, w)| w).sum();
+                if total > 0.0 && total.is_finite() {
+                    self.stats.layout_passes = self.stats.layout_passes.max(2);
+                    for (child, base, weight) in shrinkable {
+                        let new_w = (base - overflow * weight / total).max(0.0);
+                        if !new_w.is_finite() {
+                            panic!("layout: row shrink width non-finite ({new_w})");
+                        }
+                        if (new_w - base).abs() > f32::EPSILON {
+                            let s = self.layout_node(
+                                child,
+                                0.0,
+                                0.0,
+                                Some(new_w),
+                                None,
+                                0.0,
+                                0.0,
+                                inherited_px,
+                                inherited_weight,
+                            );
+                            sizes.insert(child, s);
+                        }
+                    }
+                    let mut sum_w = 0.0f32;
+                    max_h = 0.0;
+                    max_margin_h = 0.0;
+                    for (child, s) in &sizes {
+                        let cs = self.style_of(*child);
+                        let m = resolve_margin(&cs, self.dpr);
+                        sum_w += s.w + m.x();
+                        max_h = max_h.max(s.h);
+                        max_margin_h = max_margin_h.max(s.h + m.y());
+                    }
+                    extent_w = sum_w + gap * flow_count.saturating_sub(1) as f32;
+                }
+            }
+        }
         // Justify (main axis X): leftover distribution.
         let leftover = content_w.map(|cw| cw - extent_w).unwrap_or(0.0);
         check_leftover("row justify", leftover);
@@ -1587,7 +1775,9 @@ impl<'a> LayoutCtx<'a> {
     /// - `fill_width` children never trigger a break; each takes an equal
     ///   share of its line's remainder (re-laid into the share — the
     ///   pass-2 rule; margins never shrink the share; a clamped-to-zero
-    ///   remainder keeps overflow as overflow).
+    ///   remainder keeps overflow as overflow). `flex_grow` children
+    ///   ride this same fill-equivalent path per line (Phase 36 PR2a:
+    ///   weights do not cross line breaks — equal shares, stated).
     /// - The main-axis `gap` doubles as the cross-axis line gap;
     ///   `justify_content` applies per line; `align_items` (including
     ///   Stretch max-grow, and `fill_height` grown the same way) applies
@@ -1634,7 +1824,12 @@ impl<'a> LayoutCtx<'a> {
             if cs.absolute_y.is_some() || cs.x.is_some() {
                 continue; // out-of-flow on at least one axis; placed later
             }
-            let is_fill = cs.fill_width;
+            // Phase 36 PR2a (decision 353): `flex_grow` rides the
+            // fill-equivalent path per line (equal shares — weights do
+            // not cross line breaks, stated); `flex_shrink` is ignored
+            // (over-wide lone children overflow — the existing rule).
+            let is_fill =
+                cs.fill_width || (cs.w.is_none() && cs.flex_grow.is_some_and(|g| g.get() > 0.0));
             if !is_fill {
                 let s = self.layout_node(
                     *child,
@@ -1992,6 +2187,11 @@ impl<'a> LayoutCtx<'a> {
         // Fill-child margins do not shrink the share (same rule as
         // Row fill_width); fixed margins already sit inside the
         // fixed sum below.
+        // Phase 36 PR2a (decision 353): one weighted pool on the
+        // height axis — `fill_height` rides weight 1 with base 0 (no
+        // flex present = the old equal split exactly), `flex_grow`
+        // rides its factor over its intrinsic base (explicit `h`
+        // always wins — flex ignored, the Row rule).
         let content_h_fill = explicit_h.map(|h| (h - pad.y()).max(0.0));
         if let Some(content_h) = content_h_fill {
             let fill_h: HashSet<NodeId> = flow_ids
@@ -1999,7 +2199,18 @@ impl<'a> LayoutCtx<'a> {
                 .copied()
                 .filter(|child| {
                     let cs = self.style_of(*child);
-                    cs.fill_height && cs.h.is_none()
+                    // Flex is a Column contract (Row owns the width
+                    // axis; Div is block-lite and ignores both shares
+                    // — stated on the `flex_grow` field docs).
+                    let grown = if tag == Tag::Column {
+                        cs.flex_grow
+                            .map(|g| g.get())
+                            .filter(|g| *g > 0.0)
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+                    (cs.fill_height || grown > 0.0) && cs.h.is_none()
                 })
                 .collect();
             if !fill_h.is_empty() {
@@ -2014,17 +2225,64 @@ impl<'a> LayoutCtx<'a> {
                     fixed_h += s.h + m.y();
                 }
                 let gaps = gap * flow_ids.len().saturating_sub(1) as f32;
-                let remainder = (content_h - fixed_h - gaps).max(0.0);
+                // Flex bases leave the pool first (the Row rule):
+                // pool members riding `flex_grow` (not `fill_height`)
+                // keep their intrinsic base; `fill_height` bases are 0
+                // (never measured into the pool — the old rule).
+                let flex_bases: f32 = fill_h
+                    .iter()
+                    .map(|child| {
+                        let cs = self.style_of(*child);
+                        if cs.fill_height {
+                            0.0
+                        } else {
+                            sizes.get(child).map(|s| s.h).unwrap_or(0.0)
+                        }
+                    })
+                    .sum();
+                let remainder = (content_h - fixed_h - flex_bases - gaps).max(0.0);
                 check_leftover("column fill", remainder);
-                let share = remainder / fill_h.len() as f32;
-                if !share.is_finite() {
-                    panic!("layout: column fill share is non-finite ({share})");
+                let total: f32 = fill_h
+                    .iter()
+                    .map(|child| {
+                        // Div ignores flex (see the pool filter above).
+                        if tag != Tag::Column {
+                            return 1.0;
+                        }
+                        let cs = self.style_of(*child);
+                        cs.flex_grow
+                            .map(|g| g.get())
+                            .filter(|g| *g > 0.0)
+                            .unwrap_or(1.0)
+                    })
+                    .sum();
+                if !total.is_finite() || total <= 0.0 {
+                    panic!("layout: column fill weights non-finite or empty (total {total})");
                 }
                 for child in fill_h {
                     let s = sizes
                         .get(&child)
                         .copied()
                         .unwrap_or(Size { w: 0.0, h: 0.0 });
+                    let cs = self.style_of(child);
+                    let flex_here = tag == Tag::Column;
+                    let weight = if flex_here {
+                        cs.flex_grow
+                            .map(|g| g.get())
+                            .filter(|g| *g > 0.0)
+                            .unwrap_or(1.0)
+                    } else {
+                        1.0
+                    };
+                    let base = if cs.fill_height || !flex_here {
+                        0.0
+                    } else {
+                        s.h
+                    };
+                    let share = base + remainder * weight / total;
+                    if !share.is_finite() {
+                        panic!("layout: column flex share is non-finite ({share})");
+                    }
                     let grown = s.h.max(share);
                     if (grown - s.h).abs() > f32::EPSILON {
                         self.set_box_h(child, grown);
@@ -2088,7 +2346,7 @@ impl<'a> LayoutCtx<'a> {
         }
         // Height extent carries the vertical margins (Decision 249);
         // absent margins are zeros, so this sums exactly the old way.
-        let extent_h_pre: f32 = if flow_ids.is_empty() {
+        let mut extent_h_pre: f32 = if flow_ids.is_empty() {
             0.0
         } else {
             let mut sum_h = 0.0f32;
@@ -2100,6 +2358,58 @@ impl<'a> LayoutCtx<'a> {
             }
             sum_h + gap * flow_ids.len().saturating_sub(1) as f32
         };
+        // Phase 36 PR2a (decision 353): opt-in vertical shrink on the
+        // Column axis. Heights do not drive measurement (unlike widths
+        // — re-laying into a smaller height re-measures identically),
+        // so shrink clamps the committed box in place (`set_box_h`
+        // min-grow, the Stretch max-grow mirror; the subtree keeps its
+        // relative positions, only the outer `h` changes — content past
+        // the box overflows visibly, the CSS-overflow rule). Children
+        // without `flex_shrink` (or with explicit `h`) never shrink.
+        // Div ignores the whole arm (block-lite — the pool-filter rule).
+        if tag == Tag::Column {
+            if let Some(content_h) = content_h_fill {
+                let overflow = extent_h_pre - content_h;
+                if overflow > f32::EPSILON {
+                    let shrinkable: Vec<(NodeId, f32, f32)> = flow_ids
+                        .iter()
+                        .filter_map(|child| {
+                            let cs = self.style_of(*child);
+                            let f = cs.flex_shrink.map(|p| p.get()).unwrap_or(0.0);
+                            let h = sizes.get(child).map(|s| s.h).unwrap_or(0.0);
+                            if f > 0.0 && cs.h.is_none() && h > 0.0 {
+                                Some((*child, h, f * h))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let total: f32 = shrinkable.iter().map(|(_, _, w)| w).sum();
+                    if total > 0.0 && total.is_finite() {
+                        for (child, base, weight) in shrinkable {
+                            let new_h = (base - overflow * weight / total).max(0.0);
+                            if !new_h.is_finite() {
+                                panic!("layout: column shrink height non-finite ({new_h})");
+                            }
+                            if (new_h - base).abs() > f32::EPSILON {
+                                self.set_box_h(child, new_h);
+                                if let Some(s) = sizes.get(&child).copied() {
+                                    sizes.insert(child, Size { w: s.w, h: new_h });
+                                }
+                            }
+                        }
+                        let mut sum_h = 0.0f32;
+                        for c in &flow_ids {
+                            let h = sizes.get(c).map(|s| s.h).unwrap_or(0.0);
+                            let cs = self.style_of(*c);
+                            let m = resolve_margin(&cs, self.dpr);
+                            sum_h += h + m.y();
+                        }
+                        extent_h_pre = sum_h + gap * flow_ids.len().saturating_sub(1) as f32;
+                    }
+                }
+            }
+        }
         // Justify (main axis Y): leftover distribution.
         let content_h_box = explicit_h.map(|h| (h - pad.y()).max(0.0));
         let effective_content_h = content_h_box.unwrap_or(extent_h_pre);
@@ -2496,6 +2806,366 @@ impl<'a> LayoutCtx<'a> {
         let w = explicit_w.or(given_w).unwrap_or(extent.w + pad.x());
         let h = explicit_h.unwrap_or(extent.h + pad.y());
         self.commit_box(id, ox, oy, w, h, extent.w, extent.h, Vec::new());
+        Size { w, h }
+    }
+
+    /// Minimal 2D grid container (Phase 36 PR2a, decision 353 — G15):
+    /// column/row templates from [`Style::grid_cols`]/
+    /// [`Style::grid_rows`](crate::style::Style) ([`GridTrack`]
+    /// tracks), children in row-major auto-flow with
+    /// [`Style::col_span`]/[`Style::row_span`].
+    ///
+    /// Rules (all stated, never silent):
+    /// - Empty `grid_cols` = one `Auto` track; empty `grid_rows` =
+    ///   fully implicit `Auto` rows. Rows beyond the template append
+    ///   implicit `Auto` rows (CSS auto-flow rule).
+    /// - `Px` tracks are fixed; `Fr` tracks split the leftover after
+    ///   fixed + content tracks proportionally (unconstrained parents
+    ///   have no leftover — `Fr` falls back to `Auto`, the
+    ///   Wrap-unconstrained precedent). `Auto` tracks size to the max
+    ///   intrinsic of their non-spanning children.
+    /// - Spans default 1; span 0 refuses loudly; a column span wider
+    ///   than the template refuses loudly (ambiguous — never a silent
+    ///   clamp). A span not fitting the row remainder wraps to the
+    ///   next row (CSS auto-flow placement).
+    /// - No explicit placement (no col/row start — spans only);
+    ///   `align_items`/`justify_content` do not apply inside cells
+    ///   (children sit top-left of their cell — stated ignore, the
+    ///   portal-gap precedent); `gap` spaces tracks on both axes;
+    ///   pads inset the content box; margins ride the child origin
+    ///   (Decision 249) and count in the track content.
+    /// - `x`/`absolute_y` children bypass flow (out-of-flow, the
+    ///   Row/Column bypass precedent) and never grow the extent;
+    ///   portals never join flow (Round 1.4). `flex_wrap = Wrap` on a
+    ///   grid refuses loudly (only Row wraps — the ScrollArea
+    ///   precedent).
+    #[allow(clippy::too_many_arguments)]
+    fn layout_grid(
+        &mut self,
+        id: NodeId,
+        children: &[NodeId],
+        ox: f32,
+        oy: f32,
+        content_x: f32,
+        content_y: f32,
+        pad: Pad,
+        gap: f32,
+        explicit_w: Option<f32>,
+        explicit_h: Option<f32>,
+        given_w: Option<f32>,
+        content_floor: f32,
+        inherited_px: f32,
+        inherited_weight: crate::text::FontWeight,
+    ) -> Size {
+        if self
+            .style_of(id)
+            .flex_wrap
+            .is_some_and(|w| w == FlexWrap::Wrap)
+        {
+            panic!(
+                "layout: flex_wrap=Wrap on Grid is not supported — only Row wraps; remove Wrap or use a Row"
+            );
+        }
+        let template = self.style_of(id);
+        let cols: Vec<GridTrack> = if template.grid_cols.is_empty() {
+            vec![GridTrack::Auto]
+        } else {
+            template.grid_cols.clone()
+        };
+        let row_tpl: Vec<GridTrack> = template.grid_rows.clone();
+        let ncols = cols.len();
+        // Flow collection + auto-flow placement (row-major with span
+        // wrap; occupancy marks every covered cell).
+        let mut flow: Vec<(NodeId, usize, usize, u32, u32)> = Vec::new();
+        let mut portals: Vec<NodeId> = Vec::new();
+        let mut occupied: Vec<Vec<bool>> = Vec::new();
+        let ensure_row = |occupied: &mut Vec<Vec<bool>>, r: usize, ncols: usize| {
+            while occupied.len() <= r {
+                occupied.push(vec![false; ncols]);
+            }
+        };
+        for child in children {
+            if self.is_portal(*child) {
+                portals.push(*child);
+                continue;
+            }
+            let cs = self.style_of(*child);
+            if cs.x.is_some() || cs.absolute_y.is_some() {
+                continue; // out-of-flow; placed after
+            }
+            let cspan = cs.col_span.unwrap_or(1);
+            let rspan = cs.row_span.unwrap_or(1);
+            if cspan == 0 || rspan == 0 {
+                panic!(
+                    "layout: grid span of 0 refuses loudly — spans start at 1 (child {child:?})"
+                );
+            }
+            if cspan as usize > ncols {
+                panic!(
+                    "layout: grid col_span {cspan} wider than the {ncols}-column template — ambiguous, never a silent clamp (child {child:?})"
+                );
+            }
+            // Row-major cursor: first (r, c) whose span fits free cells.
+            let (mut r, mut c) = flow
+                .last()
+                .map(|(_, lr, lc, ls, _)| (*lr, *lc + *ls as usize))
+                .unwrap_or((0, 0));
+            loop {
+                if c + cspan as usize > ncols {
+                    r += 1;
+                    c = 0;
+                }
+                ensure_row(&mut occupied, r + rspan as usize - 1, ncols);
+                let free = (0..cspan as usize).all(|dc| !occupied[r][c + dc]);
+                if free {
+                    break;
+                }
+                c += 1;
+            }
+            ensure_row(&mut occupied, r + rspan as usize - 1, ncols);
+            for dr in 0..rspan as usize {
+                for dc in 0..cspan as usize {
+                    occupied[r + dr][c + dc] = true;
+                }
+            }
+            flow.push((*child, r, c, cspan, rspan));
+        }
+        let nrows = occupied.len();
+        // Phase 1: intrinsic measure (origin, re-laid into cells after).
+        let mut sizes: HashMap<NodeId, Size> = HashMap::new();
+        for (child, _, _, _, _) in &flow {
+            let s = self.layout_node(
+                *child,
+                0.0,
+                0.0,
+                None,
+                None,
+                0.0,
+                0.0,
+                inherited_px,
+                inherited_weight,
+            );
+            sizes.insert(*child, s);
+        }
+        // Column widths: Px fixed; Auto = max non-spanning content;
+        // Fr = leftover share (Auto fallback when unconstrained).
+        let outer_w = explicit_w.or(given_w);
+        let content_w = outer_w.map(|w| (w - pad.x()).max(0.0));
+        let gaps_w = gap * ncols.saturating_sub(1) as f32;
+        let mut col_w = vec![0.0f32; ncols];
+        for (ci, track) in cols.iter().enumerate() {
+            match track {
+                GridTrack::Px(px) => col_w[ci] = px.get() * self.dpr,
+                GridTrack::Auto => {
+                    let mut best = 0.0f32;
+                    for (child, _, c, cspan, _) in &flow {
+                        if *cspan == 1 && *c == ci {
+                            let s = sizes.get(child).copied().unwrap_or(Size { w: 0.0, h: 0.0 });
+                            let cs = self.style_of(*child);
+                            let m = resolve_margin(&cs, self.dpr);
+                            best = best.max(s.w + m.x());
+                        }
+                    }
+                    col_w[ci] = best;
+                }
+                GridTrack::Fr(_) => {}
+            }
+        }
+        let total_fr: f32 = cols
+            .iter()
+            .filter_map(|t| match t {
+                GridTrack::Fr(w) => Some(w.get()),
+                _ => None,
+            })
+            .sum();
+        let mut fr_fallback_auto = false;
+        if total_fr > 0.0 {
+            match content_w {
+                Some(cw) => {
+                    let fixed: f32 = col_w.iter().sum();
+                    let remainder = (cw - fixed - gaps_w).max(0.0);
+                    check_leftover("grid fr columns", remainder);
+                    if !remainder.is_finite() || !total_fr.is_finite() {
+                        panic!(
+                            "layout: grid fr share non-finite (remainder {remainder}, total {total_fr})"
+                        );
+                    }
+                    for (ci, track) in cols.iter().enumerate() {
+                        if let GridTrack::Fr(w) = track {
+                            col_w[ci] = remainder * w.get() / total_fr;
+                        }
+                    }
+                }
+                None => fr_fallback_auto = true,
+            }
+        }
+        if fr_fallback_auto {
+            for (ci, track) in cols.iter().enumerate() {
+                if matches!(track, GridTrack::Fr(_)) {
+                    let mut best = 0.0f32;
+                    for (child, _, c, cspan, _) in &flow {
+                        if *cspan == 1 && *c == ci {
+                            let s = sizes.get(child).copied().unwrap_or(Size { w: 0.0, h: 0.0 });
+                            let cs = self.style_of(*child);
+                            let m = resolve_margin(&cs, self.dpr);
+                            best = best.max(s.w + m.x());
+                        }
+                    }
+                    col_w[ci] = best;
+                }
+            }
+        }
+        // Cell widths (spanned cells sum tracks + inner gaps), then
+        // phase 2: re-lay children into their cell width (re-wrap is
+        // correct for text — the stretch second-pass precedent).
+        let cell_x = |c: usize, span: u32| -> f32 {
+            let span = span as usize;
+            col_w[c..c + span].iter().sum::<f32>() + gap * span.saturating_sub(1) as f32
+        };
+        self.stats.layout_passes = self.stats.layout_passes.max(2);
+        for (child, _, c, cspan, _) in &flow {
+            let s = self.layout_node(
+                *child,
+                0.0,
+                0.0,
+                Some(cell_x(*c, *cspan)),
+                None,
+                0.0,
+                0.0,
+                inherited_px,
+                inherited_weight,
+            );
+            sizes.insert(*child, s);
+        }
+        // Row heights from second-pass sizes; Px fixed; Fr shares the
+        // explicit-height remainder (Auto fallback unconstrained);
+        // implicit rows (beyond the template) are always Auto.
+        let mut row_h = vec![0.0f32; nrows];
+        for (r, slot) in row_h.iter_mut().enumerate() {
+            let track = row_tpl.get(r).copied().unwrap_or(GridTrack::Auto);
+            match track {
+                GridTrack::Px(px) => *slot = px.get() * self.dpr,
+                GridTrack::Auto => {
+                    let mut best = 0.0f32;
+                    for (child, rr, _, _, rspan) in &flow {
+                        if *rspan == 1 && *rr == r {
+                            let s = sizes.get(child).copied().unwrap_or(Size { w: 0.0, h: 0.0 });
+                            let cs = self.style_of(*child);
+                            let m = resolve_margin(&cs, self.dpr);
+                            best = best.max(s.h + m.y());
+                        }
+                    }
+                    *slot = best;
+                }
+                GridTrack::Fr(_) => {}
+            }
+        }
+        let row_fr: f32 = row_tpl
+            .iter()
+            .filter_map(|t| match t {
+                GridTrack::Fr(w) => Some(w.get()),
+                _ => None,
+            })
+            .sum();
+        if row_fr > 0.0 {
+            match explicit_h {
+                Some(eh) => {
+                    let content_h = (eh - pad.y()).max(0.0);
+                    let gaps_h = gap * nrows.saturating_sub(1) as f32;
+                    let fixed: f32 = row_h.iter().sum();
+                    let remainder = (content_h - fixed - gaps_h).max(0.0);
+                    check_leftover("grid fr rows", remainder);
+                    if !remainder.is_finite() || !row_fr.is_finite() {
+                        panic!(
+                            "layout: grid fr row share non-finite (remainder {remainder}, total {row_fr})"
+                        );
+                    }
+                    for (r, track) in row_tpl.iter().enumerate() {
+                        if let GridTrack::Fr(w) = track {
+                            row_h[r] = remainder * w.get() / row_fr;
+                        }
+                    }
+                }
+                None => {
+                    for (r, track) in row_tpl.iter().enumerate() {
+                        if matches!(track, GridTrack::Fr(_)) {
+                            let mut best = 0.0f32;
+                            for (child, rr, _, _, rspan) in &flow {
+                                if *rspan == 1 && *rr == r {
+                                    let s = sizes
+                                        .get(child)
+                                        .copied()
+                                        .unwrap_or(Size { w: 0.0, h: 0.0 });
+                                    let cs = self.style_of(*child);
+                                    let m = resolve_margin(&cs, self.dpr);
+                                    best = best.max(s.h + m.y());
+                                }
+                            }
+                            row_h[r] = best;
+                        }
+                    }
+                }
+            }
+        }
+        // Place: cell origins accumulate tracks + gaps; margins offset
+        // the child origin (Decision 249); spanning children cover
+        // their tracks + inner gaps.
+        let mut col_x = vec![0.0f32; ncols + 1];
+        for ci in 0..ncols {
+            col_x[ci + 1] = col_x[ci] + col_w[ci] + gap;
+        }
+        let mut row_y = vec![0.0f32; nrows + 1];
+        for r in 0..nrows {
+            row_y[r + 1] = row_y[r] + row_h[r] + gap;
+        }
+        for (child, r, c, _, _) in &flow {
+            let cs = self.style_of(*child);
+            let m = resolve_margin(&cs, self.dpr);
+            let cx = content_x + col_x[*c] + m.left;
+            let cy = content_y + row_y[*r] + m.top;
+            if !cx.is_finite() || !cy.is_finite() {
+                panic!("layout: grid cell origin non-finite ({cx}, {cy})");
+            }
+            self.reposition(*child, cx, cy);
+        }
+        // Out-of-flow second pass (x/absolute_y bypass flow and the
+        // extent — the Row/Column bypass precedent).
+        for child in children {
+            if self.is_portal(*child) {
+                continue;
+            }
+            let cs = self.style_of(*child);
+            let (x_off, ay_off) = resolve_offsets(&cs, self.dpr);
+            if x_off.is_none() && ay_off.is_none() {
+                continue;
+            }
+            let cx = x_off.map(|v| content_x + v).unwrap_or(content_x);
+            let cy = ay_off.map(|ay| content_y + ay).unwrap_or(content_y);
+            self.layout_node(
+                *child,
+                cx,
+                cy,
+                None,
+                None,
+                0.0,
+                0.0,
+                inherited_px,
+                inherited_weight,
+            );
+        }
+        self.layout_portals(
+            &portals,
+            content_x,
+            content_y,
+            inherited_px,
+            inherited_weight,
+        );
+        let extent_w: f32 = col_w.iter().sum::<f32>() + gaps_w;
+        let extent_h: f32 = row_h.iter().sum::<f32>() + gap * nrows.saturating_sub(1) as f32;
+        let extent_h = extent_h.max(content_floor);
+        let w = explicit_w.or(given_w).unwrap_or(extent_w + pad.x());
+        let h = explicit_h.unwrap_or(extent_h + pad.y());
+        self.commit_box(id, ox, oy, w, h, extent_w, extent_h, Vec::new());
         Size { w, h }
     }
 

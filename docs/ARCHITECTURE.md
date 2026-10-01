@@ -19,7 +19,7 @@ on a single UI thread. Workers hand results back through the `INPUT` queue.
 |---|---|---|
 | Reactive core + scheduler + storage | `crates/oppa/src/reactive/`, `arena.rs`, `worker.rs`, `clock.rs`, `handlers.rs`, `store.rs` | signals/memos/effects, topo-by-depth propagation (≤1 run/node/pass, 3-pass budget), timer registry, generational-arena storage |
 | Components + reconciler | `component.rs`, `vnode.rs`, `reconciler.rs`, `style.rs`, `semantics.rs`, `interner.rs`, `pass_mask.rs`, `hash.rs` | VNode→retained diff → `TreeDiff`, typed interned styles, `SemanticsDiff`, handler-id registry |
-| Layout (M3, current) | `crates/oppa/src/layout.rs` | measure/position/`LayoutBox` per node; v1 = flexbox subset + block-lite + absolute; DPR rounding at commit |
+| Layout (M3, current) | `crates/oppa/src/layout.rs` | measure/position/`LayoutBox` per node; flexbox subset + block-lite + absolute + minimal grid (Px/Fr/Auto tracks, auto-flow spans) with weighted flex shares and min/max clamps; DPR rounding at commit |
 | Input + events (M5, current) | `crates/oppa/src/input.rs`, host router in `component.rs` | one normalized `InputEvent` enum, hit-test walk, pressed/hovered/focused state, Tab order |
 | Text | `crates/oppa/src/text.rs`, `ime.rs` + `crates/oppa-text-dwrite/` (Windows), `crates/oppa-text-rustybuzz/`, `crates/oppa-text-linux/`, `crates/oppa-text-android/` | `TextService` shaping/measure/fallback, cluster caret + hit-test, editing sessions, IME normalization |
 | Rendering contract + backends | `crates/oppa/src/render.rs` + `crates/oppa-cpu/` (M4, current), `crates/oppa-vello/` (M6, current), `crates/oppa-dom/` (M7, current) | `RendererBackend` / `FramePlan` / `Caps` / `DrawOp`; FramePlan builder + headless oracle in CPU backend |

@@ -76,8 +76,9 @@ pub use store::{
     InMemoryKv, KvStore, NativeFs, Row, RowFilter, RowId, RowSort, StoreError,
 };
 pub use style::{
-    AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, IntoPx, JustifyContent,
-    LinearGradient, MsExt, Px, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens, Transition,
+    AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack, IntoPx,
+    JustifyContent, LinearGradient, MsExt, Px, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens,
+    Transition,
 };
 pub use system_theme::{ScriptedThemeSource, SystemThemeSource};
 pub use text::{
@@ -87,9 +88,9 @@ pub use text::{
 };
 pub use transition::{ease_at, AnimProp, TransitionEvaluator};
 pub use vnode::{
-    stamp_handler_owner, Children, Column, Custom, Div, Element, ElementBuilder, ImageId, Img,
-    Path, PathSpec, Portal, Row, ScrollArea, SharedString, Stack, StrokeDesc, Tag, Text, TextArea,
-    TextBuilder, TextClass, TextField, VNode,
+    stamp_handler_owner, Children, Column, Custom, Div, Element, ElementBuilder, Grid, ImageId,
+    Img, Path, PathSpec, Portal, Row, ScrollArea, SharedString, Stack, StrokeDesc, Tag, Text,
+    TextArea, TextBuilder, TextClass, TextField, VNode,
 };
 pub use window::{ScriptedWindowControl, WindowCall, WindowControl, WindowIcon};
 pub use worker::{HotGeneration, TaskId, TaskScope, TaskStage, WorkerQueue, WorkerResult};

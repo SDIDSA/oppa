@@ -8,7 +8,7 @@ concept, this file wins.
 - **Component** — a plain function `fn(&Ctx, &P) -> VNode`. Not a class; exists only in the ephemeral layer.
 - **VNode** — the ephemeral tree a component returns (`Element | Text | Fragment | Hole`). Discarded after reconciliation.
 - **RetainedNode / retained tree** — the stable-identity tree layout and renderers consume. Keyed by `NodeId` (generational arena id).
-- **Tag** — the closed set of node kinds (`Div, Stack, Row, Column, Text, Image, ScrollArea` + `Custom(u64)` escape hatch).
+- **Tag** — the closed set of node kinds (`Div, Stack, Row, Column, Text, Image, ScrollArea, Grid` + `Custom(u64)` escape hatch).
 - **Style / StyleId** — typed style structs, interned into `StyleId`. Never "CSS class" or "stylesheet".
 - **TreeDiff** — structural update (added/removed/moved ids + per-node payload deltas) sent to renderer backends.
 - **FramePlan** — per-frame ordered display list + damage + layer plans, built from dirty subtrees only.
@@ -24,4 +24,6 @@ concept, this file wins.
 - **Validation marks (`invalid` / `required` / `error_message`)** — form-validation announcement payload (decision 352); validators stay app-side, the payload only announces.
 - **Range bounds (`value_num` / `min_value` / `max_value`)** — the numeric half of the Slider/ProgressBar announcement (decision 352); `value_text` stays the human half, and `None` means no value interface.
 - **AT action** — an assistive-technology invocation driving back into the framework (UIA Invoke/RangeValue, AT-SPI Action/Value, DOM native); always through host-loop callbacks, never direct framework access (decision 352).
+- **Grid** — the minimal 2D container (`Tag::Grid`, decision 353): `Px`/`Fr`/`Auto` track templates, row-major auto-flow with spans only (no explicit placement); variable-height virtualized rows stay out.
+- **Flex share** — weighted `flex_grow` remainder split over the intrinsic base (decision 353); `fill_width`/`fill_height` ride the same pool with weight 1; opt-in `flex_shrink` absorbs overflow.
 - **Slot** — a stable virtualization position in `ScrollArea`; keys are slots, not items.

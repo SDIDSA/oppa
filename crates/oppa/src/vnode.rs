@@ -50,6 +50,16 @@ pub enum Tag {
     Text,
     Image,
     ScrollArea,
+    /// Minimal 2D grid container (Phase 36 PR2a, decision 353 — G15):
+    /// column/row templates ride [`Style::grid_cols`]/
+    /// [`Style::grid_rows`] ([`GridTrack`](crate::style::GridTrack)),
+    /// children place row-major auto-flow with
+    /// [`Style::col_span`]/[`Style::row_span`]. Lays out 2D like a
+    /// block container with explicit tracks (fixed `Px`, proportional
+    /// `Fr`, content `Auto`); paints its background shape like `Div`
+    /// (no new [`DrawOp`](crate::render::DrawOp), no backend change —
+    /// the `border`-as-`Rect` precedent).
+    Grid,
     /// Vector shape (decision 291): a resolution-independent SVG-path
     /// leaf. Carries a [`PathSpec`] payload (see [`Path`]); lays out
     /// block-lite like `Image` (explicit size or zero); paints one
@@ -510,6 +520,13 @@ pub fn Stack(debug: &str) -> ElementBuilder {
 /// `ScrollArea("list")` — §4.2 constructor shape.
 pub fn ScrollArea(debug: &str) -> ElementBuilder {
     ElementBuilder::new(Tag::ScrollArea, debug)
+}
+
+/// `Grid("sheet")` — Phase 36 PR2a (decision 353, G15) constructor
+/// shape: the template rides the style (`.grid_cols(..)` /
+/// `.grid_rows(..)`), children place row-major auto-flow.
+pub fn Grid(debug: &str) -> ElementBuilder {
+    ElementBuilder::new(Tag::Grid, debug)
 }
 
 /// `Portal("menu")` — overlay layer (Round 1.4, decision 255):

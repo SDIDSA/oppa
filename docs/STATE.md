@@ -15,15 +15,17 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   MenuItem}`; DOM `aria-invalid/required/errormessage/valuenow/min/max`,
   AT-SPI Action + Value in the wire tree, UIA Invoke + RangeValue with
   COM-thread → host-loop marshaling; MenuItem control migrated off ListItem.
+- Phase 36 PR2a (decision 353, gate green 2026-10-01): Layout Grid — 2D
+  `Tag::Grid` (`GridTrack::{Px, Fr, Auto}`, templates, spans, auto-flow),
+  `flex_grow`/`flex_shrink` (weighted pool, `fill` ≡ weight 1, explicit
+  wins, opt-in shrink), `min`/`max` clamping (resolved clamp, explicit
+  contradictions refuse); all pre-existing layout suites byte-identical.
 
 ## Now (in progress)
 
-- Phase 36 PR2 (Core Engine v2): Layout v2 — 2D `Tag::Grid`
-  (`GridTrack::{Px, Fr, Auto}`, `grid_cols`/`grid_rows`,
-  `col_span`/`row_span`), `flex_grow`/`flex_shrink`, `min`/`max`
-  clamping on `Style`, 2D `ScrollArea` (`ScrollOffset { x, y }`,
-  horizontal thumb, `content_w` overflow, `Shift+Wheel` routing);
-  existing callers migrate in the same PRs.
+- Phase 36 PR2b (Core Engine v2): 2D `ScrollArea` — `ScrollOffset { x, y }`
+  unification, horizontal thumb, `content_w` overflow, `Shift+Wheel`
+  routing; existing scroll callers migrate in the same PR.
 
 ## Next (accepted, not started)
 

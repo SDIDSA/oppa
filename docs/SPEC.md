@@ -19,7 +19,8 @@ contract test suite — not prose — defines sameness.
 
 ## Layout
 
-- v1 = flexbox subset + block-lite + absolute (`.x` / `.absolute_y`). No grid, no variable-height rows.
+- Flexbox subset + block-lite + absolute (`.x` / `.absolute_y`) + minimal grid (`Tag::Grid`: Px/Fr/Auto tracks, row-major auto-flow, spans; no explicit placement). No variable-height rows.
+- `flex_grow` splits the remainder by weight over the intrinsic base (`fill` ≡ weight 1); `flex_shrink` absorbs overflow opt-in; explicit sizes always win; resolved sizes clamp into `min`/`max` (explicit contradictions refuse loudly).
 - Text is pre-shaped before positioning. Shaping units are device px (`font_px × DPR`); one `round_to_device_px` at commit positions only, extents stay subpixel.
 - Effects reading settled metrics re-run next-frame `EFFECTS`.
 

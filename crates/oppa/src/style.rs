@@ -139,6 +139,19 @@ pub struct LinearGradient {
     pub horizontal: bool,
 }
 
+/// One grid track (Phase 36 PR2a, decision 353 — G15 minimal Grid):
+/// `Px` is a fixed device-px width/height, `Fr` is a proportional
+/// share of the leftover after fixed + content tracks (weight as
+/// bit-exact [`Px`], the opacity precedent — unitless factors ride
+/// bits so payloads stay `Eq + Hash`), `Auto` sizes to its content
+/// (max intrinsic of the non-spanning children in the track).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum GridTrack {
+    Px(Px),
+    Fr(Px),
+    Auto,
+}
+
 /// Declarative transition: "interpolate style delta A→B over this duration"
 /// (§9.4). Data only in M2; honored by the M8 evaluator, suppressed for one
 /// commit by the binding-edge stamp.
@@ -311,12 +324,47 @@ impl ThemeTokens {
 
 /// The typed style struct (DESIGN §2.2: layout + paint + behavior fields, no
 /// specificity, no cascade merging). Only the fields the §4 examples consume
-/// plus the M2 diff needs are modeled; grid and variable-height rows are
-/// explicit v2 scope and have no fields here.
+/// plus the M2 diff needs are modeled; variable-height rows are explicit
+/// v2 scope and have no fields here (grid lands in Phase 36 PR2a,
+/// decision 353).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Style {
     pub w: Option<Px>,
     pub h: Option<Px>,
+    /// Minimum / maximum clamp on the laid size (Phase 36 PR2a,
+    /// decision 353): applied after track/flex resolution, before the
+    /// box commits (explicit `w`/`h` outside the clamp refuse loudly
+    /// at layout — an authoring contradiction, never a silent snap).
+    pub min_w: Option<Px>,
+    pub min_h: Option<Px>,
+    pub max_w: Option<Px>,
+    pub max_h: Option<Px>,
+    /// Main-axis flex shares (Phase 36 PR2a, decision 353): unitless
+    /// factors as bit-exact [`Px`] (the opacity precedent). `Row`
+    /// children with `flex_grow` split leftover width proportionally
+    /// (replacing the all-or-nothing `fill_width` split); `flex_shrink`
+    /// shrinks over-wide children proportionally (default: overflow,
+    /// the shipped single-line rule — shrink is opt-in, never a
+    /// silent reflow). `Column` mirrors on the height axis. Other
+    /// containers ignore both (loud? No: ignored — same class as
+    /// `fill_width` outside Row/Column, stated).
+    pub flex_grow: Option<Px>,
+    pub flex_shrink: Option<Px>,
+    /// Grid templates (Phase 36 PR2a, decision 353 — G15): column/row
+    /// track lists for `Tag::Grid` containers. Empty = one `Auto`
+    /// track (content-driven). Only `Grid` consumes these — any other
+    /// tag with tracks panics loudly (unimplemented axis, the
+    /// `flex_wrap`-on-Column precedent, not silent single-axis).
+    pub grid_cols: Vec<GridTrack>,
+    pub grid_rows: Vec<GridTrack>,
+    /// Grid item spans (Phase 36 PR2a, decision 353): column/row span
+    /// of a `Grid` child (default 1; 0 refuses loudly). Placement is
+    /// row-major auto-flow (no explicit start — spans only); rows
+    /// beyond the template append implicit `Auto` rows (CSS auto-flow
+    /// rule, documented); a column span wider than the template
+    /// refuses loudly (ambiguous — never a silent clamp).
+    pub col_span: Option<u32>,
+    pub row_span: Option<u32>,
     pub radius: Option<Px>,
     /// Per-corner radius overrides (Round 11.1, decision 305): each
     /// set corner wins over `radius` (the uniform shorthand); unset
@@ -426,6 +474,70 @@ impl StyleBuilder {
 
     pub fn h(mut self, h: impl IntoPx) -> Self {
         self.inner.h = Some(h.into_px());
+        self
+    }
+
+    /// Minimum laid width (Phase 36 PR2a): clamps the resolved size
+    /// (see the `min_w` field docs for the loud rule).
+    pub fn min_w(mut self, w: impl IntoPx) -> Self {
+        self.inner.min_w = Some(w.into_px());
+        self
+    }
+
+    /// Minimum laid height (see [`Self::min_w`]).
+    pub fn min_h(mut self, h: impl IntoPx) -> Self {
+        self.inner.min_h = Some(h.into_px());
+        self
+    }
+
+    /// Maximum laid width (see [`Self::min_w`]).
+    pub fn max_w(mut self, w: impl IntoPx) -> Self {
+        self.inner.max_w = Some(w.into_px());
+        self
+    }
+
+    /// Maximum laid height (see [`Self::min_w`]).
+    pub fn max_h(mut self, h: impl IntoPx) -> Self {
+        self.inner.max_h = Some(h.into_px());
+        self
+    }
+
+    /// Main-axis flex-grow share (Phase 36 PR2a — Row width /
+    /// Column height; see the `flex_grow` field docs).
+    pub fn flex_grow(mut self, f: impl IntoPx) -> Self {
+        self.inner.flex_grow = Some(f.into_px());
+        self
+    }
+
+    /// Over-wide flex-shrink factor (Phase 36 PR2a — opt-in shrink,
+    /// see the `flex_shrink` field docs).
+    pub fn flex_shrink(mut self, f: impl IntoPx) -> Self {
+        self.inner.flex_shrink = Some(f.into_px());
+        self
+    }
+
+    /// Grid column template (Phase 36 PR2a — `Tag::Grid` containers;
+    /// see the `grid_cols` field docs).
+    pub fn grid_cols(mut self, tracks: Vec<GridTrack>) -> Self {
+        self.inner.grid_cols = tracks;
+        self
+    }
+
+    /// Grid row template (see [`Self::grid_cols`]).
+    pub fn grid_rows(mut self, tracks: Vec<GridTrack>) -> Self {
+        self.inner.grid_rows = tracks;
+        self
+    }
+
+    /// Grid column span (Phase 36 PR2a — `Grid` children; default 1).
+    pub fn col_span(mut self, n: u32) -> Self {
+        self.inner.col_span = Some(n);
+        self
+    }
+
+    /// Grid row span (see [`Self::col_span`]).
+    pub fn row_span(mut self, n: u32) -> Self {
+        self.inner.row_span = Some(n);
         self
     }
 
@@ -944,5 +1056,45 @@ mod tests {
         assert_eq!(pointed.cursor, Some(CursorIcon::Pointer));
         assert_ne!(pointed, texted, "cursor kind participates in identity");
         assert_ne!(pointed, plain, "cursor presence participates in identity");
+    }
+
+    #[test]
+    fn phase36_grid_flex_and_clamp_participate_in_identity() {
+        let plain: Style = Style::new().build();
+        assert!(plain.grid_cols.is_empty() && plain.grid_rows.is_empty());
+        assert_eq!((plain.col_span, plain.row_span), (None, None));
+        assert_eq!((plain.flex_grow, plain.flex_shrink), (None, None));
+        let grid: Style = Style::new()
+            .grid_cols(vec![
+                GridTrack::Px(Px::of(100.0)),
+                GridTrack::Fr(Px::of(1.0)),
+            ])
+            .grid_rows(vec![GridTrack::Auto])
+            .col_span(2)
+            .flex_grow(1)
+            .min_w(50)
+            .max_w(400)
+            .build();
+        assert_ne!(
+            grid, plain,
+            "grid/flex/clamp presence participates in identity"
+        );
+        assert_eq!(
+            grid.grid_cols,
+            vec![GridTrack::Px(Px::of(100.0)), GridTrack::Fr(Px::of(1.0))]
+        );
+        let mut t = crate::interner::Interner::new();
+        let same: Style = Style::new()
+            .grid_cols(vec![
+                GridTrack::Px(Px::of(100.0)),
+                GridTrack::Fr(Px::of(1.0)),
+            ])
+            .grid_rows(vec![GridTrack::Auto])
+            .col_span(2)
+            .flex_grow(1)
+            .min_w(50)
+            .max_w(400)
+            .build();
+        assert_eq!(grid.clone().intern(&mut t), same.intern(&mut t));
     }
 }

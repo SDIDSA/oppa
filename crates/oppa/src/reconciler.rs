@@ -820,6 +820,20 @@ fn style_layout_bits(s: &Style) -> impl Eq + '_ {
             s.margin_left,
             s.margin_right,
         ),
+        // Phase 36 PR2a (decision 353): flex shares, clamps, and
+        // grid templates/spans all move layout — a fourth row (the
+        // tuple-nesting precedent above; `Vec<GridTrack>` is `Eq`).
+        (
+            s.flex_grow,
+            s.flex_shrink,
+            s.min_w,
+            s.min_h,
+            s.max_w,
+            s.max_h,
+            s.col_span,
+            s.row_span,
+        ),
+        (s.grid_cols.clone(), s.grid_rows.clone()),
     )
 }
 

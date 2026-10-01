@@ -1331,7 +1331,9 @@ impl DomBackend {
                         view: (vw, vh),
                     }
                 }
-                Tag::Div | Tag::Row | Tag::Column | Tag::Stack | Tag::Portal => HtmlKind::Block,
+                Tag::Div | Tag::Row | Tag::Column | Tag::Stack | Tag::Portal | Tag::Grid => {
+                    HtmlKind::Block
+                }
             }
         };
         let is_root = rec.root() == Some(id);

@@ -22,6 +22,7 @@ this table in place and never rewrite history. All ADRs are Accepted.
 | [0014](10-decisions/ADR-0014-app-storage.md) | Sync KV + sandboxed-file storage seams | Sync KV now; async backends deferred |
 | [0010](10-decisions/ADR-0010-scheduler-threading.md) | COM RPC-thread → host-loop marshaling (decision 352) | UIA provider methods read the snapshot tree + enqueue via installed callbacks; host loop drains on INPUT; uninstalled drivers fail `E_NOTIMPL` |
 | [0002](10-decisions/ADR-0002-accessibility-in-contract.md) | Validation + range payloads; Tree/TreeItem/MenuItem roles (decision 352) | `invalid`/`required`/`error_message` + `value_num`/`min_value`/`max_value`; Invoke on Button/MenuItem, RangeValue on Slider/ProgressBar; MenuItem migrated off ListItem |
+| [0004](10-decisions/ADR-0004-framework-owned-layout.md) | Minimal Grid + flex shares + clamps (decision 353) | Row-major auto-flow grid (implicit Auto rows; span-overflow refuses; Fr falls back to Auto unconstrained); `fill` ≡ weight-1 in one pool, explicit sizes win; vertical shrink clamps boxes in place; Div ignores flex |
 
 Superseded decisions: none currently. If a decision is replaced, replace its row
 here (1 line) — the old ADR file stays frozen in git, not in this table.
