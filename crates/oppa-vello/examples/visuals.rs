@@ -91,6 +91,7 @@ fn coverage_plan() -> FramePlan {
                 h: 10.0,
                 dx: 1.0,
                 dy: 2.0,
+                blur_radius: 0.0,
                 color: Color(0x00_00_00),
             },
             DrawOp::Pop,

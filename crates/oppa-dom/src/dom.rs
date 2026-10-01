@@ -123,6 +123,18 @@ pub enum HtmlKind {
         /// CSS-px view size (`viewBox="0 0 w h"`).
         view: (f32, f32),
     },
+    /// Inline `<svg>` with retained children (Phase 36 PR4, decision
+    /// 358 — the `Tag::Canvas` leaf; void, sized by geometry like
+    /// `<img>`). `inner` is the pre-rendered shape markup (rects,
+    /// paths, texts in authoring px, 1:1 like `Vector`); laid canvas
+    /// text does NOT double-render as spans (the node carries no text
+    /// payload — `text_runs` slices empty, so spans stay empty).
+    Canvas {
+        /// Escaped-at-render inner SVG markup (built at derive).
+        inner: String,
+        /// CSS-px view size (`viewBox="0 0 w h"`).
+        view: (f32, f32),
+    },
     /// Marked hole (`div[data-external]`, Custom id carried).
     External(u64),
 }
@@ -191,6 +203,13 @@ pub struct DomElement {
     /// `transition:none` for exactly that commit, so recycled slots
     /// never phantom-animate on Web either.
     pub no_transition: bool,
+    /// Stepped keyframe values (Phase 36 PR4, decision 357): the live
+    /// keyframe track's evaluated `background-color`/`opacity`,
+    /// re-declared inline every frame while the track runs (the Q4
+    /// stepped path — plain tweens keep the CSS mapping and leave
+    /// this empty). Empty when no keyframe track is live (unkeyframed
+    /// markup byte-identical).
+    pub inline_kf: String,
 }
 
 /// Per-sync accounting (the static-frame instrument).
@@ -520,6 +539,15 @@ pub struct DomBackend {
     /// measured with (decision-81 parity). Re-registering a family
     /// replaces its bytes (last wins, stated).
     fonts: Vec<(String, Vec<u8>)>,
+    /// Keyframe tracker for the stepped path (Phase 36 PR4, decision
+    /// 357): fed per diff by the paint hook (same diffs, same order
+    /// as the host evaluator — deterministic twins), sampled at
+    /// `kf_now` during derive. Plain tweens never consult it (they
+    /// keep the CSS mapping).
+    kf_eval: oppa::TransitionEvaluator,
+    /// Frame time of the last tracked commit (the hook's clock —
+    /// track and sample share it, never skew).
+    kf_now: f64,
 }
 
 impl DomBackend {
@@ -545,6 +573,8 @@ impl DomBackend {
             snap: HashMap::new(),
             snap_roots: Vec::new(),
             fonts: Vec::new(),
+            kf_eval: oppa::TransitionEvaluator::new(),
+            kf_now: 0.0,
         }
     }
 
@@ -677,16 +707,23 @@ impl DomBackend {
             // Round 4.4: image sources must resolve (unregistered or
             // id-less images refuse loudly here — the old blanket
             // refusal naming the exact node instead of failing the
-            // whole sync silently later).
+            // whole sync silently later). Phase 36 PR4: pre-decoded
+            // cache pixels resolve too (static path — a key OR pixels
+            // satisfies the gate; derive prefers pixels).
             if node.tag == Tag::Image
                 && node
                     .image
-                    .and_then(|image_id| self.images.key_of(image_id))
+                    .and_then(|image_id| {
+                        self.images
+                            .pixels_of(image_id)
+                            .map(|_| ())
+                            .or_else(|| self.images.key_of(image_id).map(|_| ()))
+                    })
                     .is_none()
             {
                 return Err(BackendError::UnsupportedOp(format!(
-                    "Image on {id:?} (image {:?}): no cache key — register the source \
-                     with ImageCache::load first (hand-built Image elements carry \
+                    "Image on {id:?} (image {:?}): no cache key or pixels — register the source \
+                     with ImageCache::load (URLs) or insert_pixels (statics) first (hand-built Image elements carry \
                      nothing to resolve)",
                     node.image
                 )));
@@ -772,7 +809,10 @@ impl DomBackend {
                 let holder = placeholder_attr(&el.placeholder);
                 format!(
                     "<input type=\"text\" data-pid=\"{pid}\"{class} style=\"{}\" value=\"{}\"{holder}{}>{}",
-                    esc(&format!("{}{}{}", el.inline_geom, el.inline_font, no_trans)),
+                    esc(&format!(
+                        "{}{}{}{}",
+                        el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                    )),
                     esc(&el.text),
                     attrs,
                     self.render_decorations(el),
@@ -782,7 +822,10 @@ impl DomBackend {
                 let holder = placeholder_attr(&el.placeholder);
                 format!(
                     "<textarea data-pid=\"{pid}\"{class} style=\"{}\"{holder}{attrs}>{}</textarea>{}",
-                    esc(&format!("{}{}{}", el.inline_geom, el.inline_font, no_trans)),
+                    esc(&format!(
+                        "{}{}{}{}",
+                        el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                    )),
                     esc(&el.text),
                     self.render_decorations(el),
                 )
@@ -791,7 +834,7 @@ impl DomBackend {
                 let spacer = self.render_spacer(el);
                 format!(
                     "<div data-pid=\"{pid}\"{class} style=\"{}overflow:auto;\"{}>{spacer}</div>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans)),
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf)),
                     attrs
                 )
             }
@@ -805,7 +848,7 @@ impl DomBackend {
                 // special cases).
                 format!(
                     "<img data-pid=\"{pid}\"{class} style=\"{}\" src=\"{}\" alt=\"{}\"{attrs}>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans)),
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf)),
                     esc(src),
                     esc(alt),
                 )
@@ -828,7 +871,7 @@ impl DomBackend {
                     .unwrap_or_default();
                 format!(
                     "<svg data-pid=\"{pid}\"{class} style=\"{}\" viewBox=\"0 0 {} {}\"{attrs}><path d=\"{}\" fill=\"{fill}\" stroke=\"{stroke}\"{stroke_w} stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans)),
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf)),
                     css_num(view.0),
                     css_num(view.1),
                     esc(data),
@@ -838,26 +881,41 @@ impl DomBackend {
                 let inner = self.render_children(el);
                 format!(
                     "<div data-pid=\"{pid}\"{class} style=\"{}\" data-external=\"custom:{cid}\"{attrs}>{inner}</div>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans))
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf))
                 )
             }
             HtmlKind::Text => {
                 // Own content first, then framework children (the
                 // Text-wrapper shape: hint-only parents contribute no
-                // text of their own, payload children do).
+                // text of their own, payload children do). Live
+                // keyframe values ride inline (the stepped path).
                 let mut inner = self.render_runs(el);
                 inner.push_str(&self.render_children(el));
                 format!(
-                    "<span data-pid=\"{pid}\"{class} style=\"{}{}\"{attrs}>{inner}</span>",
+                    "<span data-pid=\"{pid}\"{class} style=\"{}{}{}\"{attrs}>{inner}</span>",
                     esc(&el.inline_geom),
-                    esc(&el.inline_font)
+                    esc(&el.inline_font),
+                    esc(&el.inline_kf)
+                )
+            }
+            HtmlKind::Canvas { inner, view } => {
+                // Retained canvas (decision 358): pre-rendered inner
+                // SVG at the committed box (void — no children).
+                format!(
+                    "<svg data-pid=\"{pid}\"{class} style=\"{}\" viewBox=\"0 0 {} {}\"{attrs}>{inner}</svg>",
+                    esc(&format!(
+                        "{}{}{}{}",
+                        el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                    )),
+                    css_num(view.0),
+                    css_num(view.1),
                 )
             }
             HtmlKind::Block => {
                 let inner = self.render_children(el);
                 format!(
                     "<div data-pid=\"{pid}\"{class} style=\"{}\"{attrs}>{inner}</div>",
-                    esc(&format!("{}{}", el.inline_geom, no_trans))
+                    esc(&format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf))
                 )
             }
         }
@@ -1117,27 +1175,36 @@ impl DomBackend {
         let no_trans = transition_inline(el);
         let (style, mut attrs, value) = match &el.kind {
             HtmlKind::Field => (
-                format!("{}{}{}", el.inline_geom, el.inline_font, no_trans),
+                format!(
+                    "{}{}{}{}",
+                    el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                ),
                 el.attrs.clone(),
                 Some(el.text.clone()),
             ),
             HtmlKind::Area => (
-                format!("{}{}{}", el.inline_geom, el.inline_font, no_trans),
+                format!(
+                    "{}{}{}{}",
+                    el.inline_geom, el.inline_font, no_trans, el.inline_kf
+                ),
                 el.attrs.clone(),
                 Some(el.text.clone()),
             ),
             HtmlKind::Scroll => (
-                format!("{}{}overflow:auto;", el.inline_geom, no_trans),
+                format!(
+                    "{}{}{}overflow:auto;",
+                    el.inline_geom, no_trans, el.inline_kf
+                ),
                 el.attrs.clone(),
                 None,
             ),
             HtmlKind::Text => (
-                format!("{}{}", el.inline_geom, el.inline_font),
+                format!("{}{}{}", el.inline_geom, el.inline_font, el.inline_kf),
                 el.attrs.clone(),
                 None,
             ),
             _ => (
-                format!("{}{}", el.inline_geom, no_trans),
+                format!("{}{}{}", el.inline_geom, no_trans, el.inline_kf),
                 el.attrs.clone(),
                 None,
             ),
@@ -1332,11 +1399,15 @@ impl DomBackend {
                 // Round 4.4: real `<img>` (src resolved — `sync`
                 // refuses unregistered ids loudly before derive, so
                 // the lookup below cannot miss; alt honors the
-                // semantics label, else empty).
+                // semantics label, else empty). Phase 36 PR4
+                // (decision 359): pre-decoded cache pixels win over
+                // the key string (data-URI PNG — the static path);
+                // bare keys keep rendering as URLs (round-4.4 rule,
+                // unchanged).
                 Tag::Image => {
                     let src = node
                         .image
-                        .and_then(|image_id| self.images.key_of(image_id))
+                        .and_then(|image_id| image_src(&self.images, image_id))
                         .expect("sync refused unregistered images");
                     let alt = node
                         .semantics
@@ -1393,6 +1464,27 @@ impl DomBackend {
                             .map(|s| dom_hex(s.color))
                             .unwrap_or_else(|| "none".to_string()),
                         stroke_width: spec.stroke.map(|s| s.width),
+                        view: (vw, vh),
+                    }
+                }
+                // Retained canvas (Phase 36 PR4, decision 358): the spec
+                // lowers to inline SVG children (rects/paths/texts in
+                // authoring px, 1:1 like `Vector`). Laid canvas text
+                // does NOT double-render as spans (the node carries no
+                // text payload — `text_runs` slices empty). Missing
+                // specs refuse loudly (never a silent hole).
+                Tag::Canvas => {
+                    let spec = node.canvas.clone().unwrap_or_else(|| {
+                        panic!("dom sync: Canvas node {id:?} without a canvas payload — refused, never a silent hole")
+                    });
+                    let dpr = self.dpr.max(f32::EPSILON);
+                    let (vw, vh) = node
+                        .layout
+                        .as_ref()
+                        .map(|b| (b.w / dpr, b.h / dpr))
+                        .unwrap_or((0.0, 0.0));
+                    HtmlKind::Canvas {
+                        inner: canvas_inner_svg(&spec),
                         view: (vw, vh),
                     }
                 }
@@ -1462,16 +1554,30 @@ impl DomBackend {
                 let (text, runs, font) = text_runs(rec, id, self.dpr);
                 (text, runs, font, String::new())
             }
+            HtmlKind::Canvas { .. } => {
+                // Canvas `<text>` inherits the element font (the
+                // `text_runs` pattern — family + size from the first
+                // laid line; the node carries no text payload).
+                (
+                    String::new(),
+                    Vec::new(),
+                    canvas_font(rec, id, self.dpr),
+                    String::new(),
+                )
+            }
             _ => (String::new(), Vec::new(), String::new(), String::new()),
         };
         let children = match &kind {
-            // Inputs, areas, images, and vectors are void-shaped (value/text
-            // content/src/`d` carry the payload); external holes keep
-            // their framework children (v1 hole is a marked box, not
-            // a true void element — stated).
-            HtmlKind::Field | HtmlKind::Area | HtmlKind::Image { .. } | HtmlKind::Vector { .. } => {
-                Vec::new()
-            }
+            // Inputs, areas, images, vectors, and canvases are
+            // void-shaped (value/text content/src/`d`/spec carry the
+            // payload); external holes keep their framework children
+            // (v1 hole is a marked box, not a true void element —
+            // stated).
+            HtmlKind::Field
+            | HtmlKind::Area
+            | HtmlKind::Image { .. }
+            | HtmlKind::Vector { .. }
+            | HtmlKind::Canvas { .. } => Vec::new(),
             _ => node
                 .children
                 .iter()
@@ -1489,6 +1595,20 @@ impl DomBackend {
         let (caret_rect, caret_ink) = match self.caret_decoration(id, origin) {
             Some((r, hex)) => (Some(r), hex),
             None => (None, String::new()),
+        };
+        // Stepped keyframe values (Phase 36 PR4): the live track's
+        // evaluated paint, re-declared inline while it runs (empty
+        // otherwise — unkeyframed markup byte-identical).
+        let inline_kf = match self.kf_eval.resolve_keyframe(id, self.kf_now) {
+            Some((bg, op)) => {
+                let mut s = String::new();
+                if let Some(c) = bg {
+                    s.push_str(&format!("background-color:{};", dom_hex(c)));
+                }
+                s.push_str(&format!("opacity:{};", css_num(op)));
+                s
+            }
+            None => String::new(),
         };
         DomElement {
             node: id,
@@ -1509,6 +1629,7 @@ impl DomBackend {
             // the touched set of the sync that consumed it (see above),
             // so the flag clears on the next re-derive by comparison.
             no_transition: false,
+            inline_kf,
         }
     }
 
@@ -1540,6 +1661,27 @@ impl DomBackend {
     /// The current page-chrome theme (diagnostics/tests).
     pub fn theme_mode(&self) -> ThemeMode {
         self.theme
+    }
+
+    /// Feeds committed diffs to the keyframe tracker (Phase 36 PR4,
+    /// decision 357): the paint hook calls this every frame with the
+    /// frame's diffs (possibly none) — settling runs unconditionally
+    /// so diff-less animation frames still retire tracks (otherwise
+    /// stepped values would stick past the settle), then each diff
+    /// tracks in order with the frame clock. Same diffs, same order,
+    /// same clock as the host evaluator — deterministic twins.
+    pub fn track_animation(
+        &mut self,
+        diffs: &[oppa::TreeDiff],
+        rec: &oppa::Reconciler,
+        styles: &oppa::interner::Interner<oppa::Style>,
+        now: f64,
+    ) {
+        self.kf_eval.settle(now);
+        for diff in diffs {
+            self.kf_eval.track_commit(diff, rec, styles, now);
+        }
+        self.kf_now = now;
     }
 
     /// Caret bar decoration for the field `id` itself (Round 15.1):
@@ -1653,6 +1795,31 @@ fn positioned_origin(rec: &Reconciler, id: NodeId) -> (f32, f32) {
     (0.0, 0.0)
 }
 
+/// Measured font style for a canvas element (Phase 36 PR4): family +
+/// size from the first laid line's first run (the `text_runs`
+/// pattern) — canvas `<text>` inherits it. Empty when nothing laid
+/// (no text ops, or unmeasured — never an invented family).
+fn canvas_font(rec: &Reconciler, id: NodeId, dpr: f32) -> String {
+    let Some(n) = rec.get(id) else {
+        return String::new();
+    };
+    let lines = n.layout.as_ref().map(|b| b.lines.as_slice()).unwrap_or(&[]);
+    let Some(line) = lines.first() else {
+        return String::new();
+    };
+    let Some(run) = line.runs.first() else {
+        return String::new();
+    };
+    if line.em_size <= 0.0 {
+        return String::new();
+    }
+    format!(
+        "font-family:{};font-size:{}px;",
+        css_family(&run.family),
+        css_num(line.em_size / dpr.max(f32::EPSILON))
+    )
+}
+
 /// Measured font style for a verdict-(b) input (family + size from
 /// the value-carrying descendant's committed lines): the input renders
 /// the framework-measured text, so caret geometry and IME anchoring
@@ -1741,6 +1908,75 @@ fn placeholder_attr(hint: &str) -> String {
     }
 }
 
+/// Canvas spec → inner SVG markup (Phase 36 PR4, decision 358):
+/// rects/paths lower directly (authoring px, 1:1 like `Vector`);
+/// text ops lower to `<text>` with their size/fill at the op origin
+/// (family inherits the element's inline font — see `derive`,
+/// which seeds it from the first laid line, the `text_runs`
+/// pattern). Pure over the spec (headless-testable).
+fn canvas_inner_svg(spec: &oppa::CanvasSpec) -> String {
+    use oppa::CanvasOp;
+    let mut out = String::new();
+    for op in &spec.ops {
+        match op {
+            CanvasOp::Rect { x, y, w, h, color } => {
+                out.push_str(&format!(
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>",
+                    css_num(x.get()),
+                    css_num(y.get()),
+                    css_num(w.get()),
+                    css_num(h.get()),
+                    dom_hex(*color),
+                ));
+            }
+            CanvasOp::RRect {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                color,
+            } => {
+                out.push_str(&format!(
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" fill=\"{}\"/>",
+                    css_num(x.get()),
+                    css_num(y.get()),
+                    css_num(w.get()),
+                    css_num(h.get()),
+                    css_num(radius.get()),
+                    dom_hex(*color),
+                ));
+            }
+            CanvasOp::Path { data, fill, stroke } => {
+                out.push_str(&format!(
+                    "<path d=\"{}\" fill=\"{}\" stroke=\"{}\"{} stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+                    esc(data),
+                    fill.map(dom_hex).unwrap_or_else(|| "none".to_string()),
+                    stroke.map(|s| dom_hex(s.color)).unwrap_or_else(|| "none".to_string()),
+                    stroke.map(|s| format!(" stroke-width=\"{}\"", css_num(s.width))).unwrap_or_default(),
+                ));
+            }
+            CanvasOp::Text {
+                text,
+                size_px,
+                ink,
+                x,
+                y,
+                ..
+            } => {
+                out.push_str(&format!(
+                    "<text x=\"{}\" y=\"{}\" font-size=\"{}\" fill=\"{}\">{}</text>",
+                    css_num(x.get()),
+                    css_num(y.get()),
+                    css_num(*size_px as f32),
+                    dom_hex(*ink),
+                    esc(text),
+                ));
+            }
+        }
+    }
+    out
+}
 /// Span content + per-run segmentation + measured font style for a text
 /// node: the OWN payload runs through the committed lines' byte ranges
 /// (the layout's segmentation, never re-measured here). Wrapper Text
@@ -1903,6 +2139,19 @@ fn css_num(v: f32) -> String {
     }
 }
 
+/// Image `src` resolution (round 4.4 + Phase 36 PR4, decision 359):
+/// pre-decoded cache pixels win as a PNG data URI (static path);
+/// otherwise the cache key renders as the URL (round-4.4 rule);
+/// `None` when the cache knows neither (refuse loudly downstream).
+/// Pure over the cache (headless-testable — no retained reads).
+fn image_src(images: &oppa::ImageCache, id: oppa::ImageId) -> Option<String> {
+    images
+        .pixels_of(id)
+        .and_then(|(w, h, rgba)| oppa_image::encode_png_rgba(w, h, &rgba).ok())
+        .map(|png| format!("data:image/png;base64,{}", base64_encode(&png)))
+        .or_else(|| images.key_of(id))
+}
+
 /// Minimal base64 encoder (Phase 36 PR3): standard alphabet, `=`
 /// padding — just enough for `@font-face` data URIs, kept inline so
 /// the backend adds no dependency for one call site.
@@ -2026,6 +2275,7 @@ impl RendererBackend for DomBackend {
                             caret_rect: None,
                             caret_ink: String::new(),
                             no_transition: false,
+                            inline_kf: String::new(),
                         },
                     );
                     match parent {
@@ -2211,6 +2461,7 @@ mod tests {
             caret_ink: String::new(),
             placeholder: String::new(),
             no_transition: false,
+            inline_kf: String::new(),
         };
         let dom = DomBackend::new(1.0);
         let html = dom.render_runs(&el);
@@ -2281,5 +2532,58 @@ mod tests {
         empty.glyphs.clear();
         let lines = vec![laid_line(vec![empty])];
         assert!(super::merge_text_runs(&lines, "a").is_empty());
+    }
+
+    #[test]
+    fn image_src_prefers_pixels_then_falls_back_to_key() {
+        use oppa::ImageCache;
+        let cache = ImageCache::new();
+        // Bare key (round-4.4 rule, unchanged).
+        let url = cache.load("img/a.png");
+        assert_eq!(super::image_src(&cache, url).as_deref(), Some("img/a.png"));
+        // Deposited pixels win as a PNG data URI (decision 359).
+        let rgba = vec![255u8; 2 * 2 * 4];
+        let id = cache.insert_pixels("dot", 2, 2, rgba);
+        let src = super::image_src(&cache, id).expect("data uri");
+        assert!(
+            src.starts_with("data:image/png;base64,"),
+            "data uri scheme, got {}",
+            &src[..32]
+        );
+        // Unknown ids resolve to nothing (refuse loudly downstream).
+        assert_eq!(super::image_src(&cache, oppa::ImageId(999)), None);
+    }
+
+    #[test]
+    fn canvas_spec_lowers_to_svg_shapes() {
+        use oppa::{CanvasOp, CanvasSpec, Px};
+        let spec = CanvasSpec {
+            ops: vec![
+                CanvasOp::Rect {
+                    x: Px::of(1.0),
+                    y: Px::of(2.0),
+                    w: Px::of(10.0),
+                    h: Px::of(5.0),
+                    color: oppa::Color(0xFF_00_00),
+                },
+                CanvasOp::Text {
+                    text: "hi".into(),
+                    size_px: 14,
+                    weight: oppa::FontWeight::NORMAL,
+                    ink: oppa::Color(0x00_00_00),
+                    x: Px::of(0.0),
+                    y: Px::of(12.0),
+                },
+            ],
+        };
+        let svg = super::canvas_inner_svg(&spec);
+        assert!(
+            svg.contains("<rect") && svg.contains("fill=\"#ff0000\""),
+            "rect lowers with fill: {svg}"
+        );
+        assert!(
+            svg.contains("<text") && svg.contains(">hi<") && svg.contains("font-size=\"14\""),
+            "text lowers with size: {svg}"
+        );
     }
 }

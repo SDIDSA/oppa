@@ -276,6 +276,12 @@ pub struct ImageCache {
 struct ImageCacheInner {
     map: HashMap<String, crate::vnode::ImageId>,
     reverse: HashMap<crate::vnode::ImageId, String>,
+    /// Pre-decoded static pixels (Phase 36 PR4, decision 359):
+    /// straight-alpha RGBA8 `(width, height, bytes)` per id, deposited
+    /// once via [`ImageCache::insert_pixels`] — every backend serves
+    /// from this one deposit (video stays out — animated frames never
+    /// land here).
+    pixels: HashMap<crate::vnode::ImageId, (u32, u32, Vec<u8>)>,
     next: u64,
 }
 
@@ -305,6 +311,51 @@ impl ImageCache {
     /// loudly downstream, never render as empty sources).
     pub fn key_of(&self, id: crate::vnode::ImageId) -> Option<String> {
         self.inner.borrow().reverse.get(&id).cloned()
+    }
+
+    /// Deposits pre-decoded static pixels under `key` (Phase 36 PR4,
+    /// decision 359 — the `oppa-image` RGBA8 shape): returns the
+    /// content-addressed id every backend serves from (CPU/Vello
+    /// `insert_image` twins pull via [`ImageCache::pixels_of`], the
+    /// DOM backend renders a data URI). Length must equal
+    /// `width × height × 4` (refuses loudly — a short buffer is a
+    /// decode bug, never a cropped image); zero sizes refuse loudly.
+    /// Re-depositing a key replaces its pixels (last wins, stated).
+    pub fn insert_pixels(
+        &self,
+        key: &str,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> crate::vnode::ImageId {
+        if width == 0 || height == 0 {
+            panic!("image cache: insert_pixels({key}) with zero size — refused, never silent");
+        }
+        if rgba.len() != width as usize * height as usize * 4 {
+            panic!(
+                "image cache: insert_pixels({key}): {} bytes != {width}x{height}x4 — refused, never silent",
+                rgba.len()
+            );
+        }
+        let mut inner = self.inner.borrow_mut();
+        if let Some(id) = inner.map.get(key).copied() {
+            inner.pixels.insert(id, (width, height, rgba));
+            return id;
+        }
+        inner.next += 1;
+        let id = crate::vnode::ImageId(inner.next);
+        inner.map.insert(key.to_string(), id);
+        inner.reverse.insert(id, key.to_string());
+        inner.pixels.insert(id, (width, height, rgba));
+        id
+    }
+
+    /// Pre-decoded pixels for an id (`(width, height, RGBA8)`), if
+    /// deposited (backends pull from here — see
+    /// [`ImageCache::insert_pixels`]). Cloned (pixels are mechanism
+    /// state — backends own their copy after deposit).
+    pub fn pixels_of(&self, id: crate::vnode::ImageId) -> Option<(u32, u32, Vec<u8>)> {
+        self.inner.borrow().pixels.get(&id).cloned()
     }
 }
 
@@ -5572,5 +5623,36 @@ mod tests {
         });
         host.run_until_idle();
         assert_eq!(both.get().x, 100.0, "clamps to content_w - w");
+    }
+
+    /// Phase 36 PR4 (decision 359): pre-decoded pixels deposit once
+    /// and pull back byte-exact; short buffers, zero sizes, and
+    /// unknown ids refuse loudly.
+    #[test]
+    fn image_cache_pixels_deposit_once_and_pull_exact() {
+        let cache = crate::ImageCache::new();
+        let rgba = vec![255u8; 2 * 2 * 4];
+        let id = cache.insert_pixels("dot", 2, 2, rgba.clone());
+        assert_eq!(cache.pixels_of(id), Some((2, 2, rgba)));
+        // Same key re-deposit replaces (last wins, same id).
+        let id2 = cache.insert_pixels("dot", 1, 1, vec![0u8; 4]);
+        assert_eq!(id, id2);
+        assert_eq!(cache.pixels_of(id), Some((1, 1, vec![0u8; 4])));
+        // Bare load() keys carry no pixels (URL path, unchanged).
+        let url = cache.load("img/a.png");
+        assert_eq!(cache.pixels_of(url), None);
+        assert_eq!(cache.key_of(url).as_deref(), Some("img/a.png"));
+    }
+
+    #[test]
+    #[should_panic(expected = "bytes !=")]
+    fn image_cache_short_buffer_refuses_loudly() {
+        crate::ImageCache::new().insert_pixels("short", 2, 2, vec![0u8; 15]);
+    }
+
+    #[test]
+    #[should_panic(expected = "zero size")]
+    fn image_cache_zero_size_refuses_loudly() {
+        crate::ImageCache::new().insert_pixels("zero", 0, 2, vec![]);
     }
 }

@@ -77,6 +77,11 @@ pub struct RetainedNode {
     /// data plus its fill/stroke. Diffed — a payload change repaints
     /// (never re-lays-out). `None` elsewhere.
     pub path: Option<crate::vnode::PathSpec>,
+    /// Canvas payload for `Tag::Canvas` nodes (Phase 36 PR4, decision
+    /// 358): retained vector ops in local space. Diffed — a payload
+    /// change repaints (never re-lays-out: geometry comes from the
+    /// style box). `None` elsewhere.
+    pub canvas: Option<crate::vnode::CanvasSpec>,
     pub semantics: Option<Semantics>,
     pub handlers: Vec<(EventKind, HandlerId)>,
     pub pass_dirty: PassMask,
@@ -115,6 +120,9 @@ pub enum DiffOp {
         /// Vector payload changed (decision 291 — always rides
         /// `PAINT`; path data never affects layout).
         path_changed: bool,
+        /// Canvas payload changed (Phase 36 PR4, decision 358 —
+        /// always rides `PAINT`; spec ops never affect layout).
+        canvas_changed: bool,
         semantics_changed: bool,
         handlers_changed: bool,
     },
@@ -396,6 +404,7 @@ impl Reconciler {
                     rich_text: None,
                     image: None,
                     path: None,
+                    canvas: None,
                     semantics: None,
                     handlers: Vec::new(),
                 });
@@ -434,6 +443,7 @@ impl Reconciler {
                     rich_text: Some(rich.spans.clone()),
                     image: None,
                     path: None,
+                    canvas: None,
                     semantics: None,
                     handlers: Vec::new(),
                 });
@@ -473,6 +483,7 @@ impl Reconciler {
                     rich_text: None,
                     image: e.image,
                     path: e.path.clone(),
+                    canvas: e.canvas.clone(),
                     semantics: e.semantics.clone(),
                     handlers: handler_ids,
                 });
@@ -509,6 +520,7 @@ impl Reconciler {
             rich_text: p.rich_text,
             image: p.image,
             path: p.path,
+            canvas: p.canvas,
             semantics: p.semantics,
             handlers: p.handlers,
             pass_dirty: PassMask::EMPTY,
@@ -571,6 +583,7 @@ impl Reconciler {
                         text_changed: true,
                         image_changed: false,
                         path_changed: false,
+                        canvas_changed: false,
                         semantics_changed: false,
                         handlers_changed: false,
                     });
@@ -595,6 +608,7 @@ impl Reconciler {
                         text_changed: true,
                         image_changed: false,
                         path_changed: false,
+                        canvas_changed: false,
                         semantics_changed: false,
                         handlers_changed: false,
                     });
@@ -627,6 +641,15 @@ impl Reconciler {
                     self.arena.get_mut(id.gen()).path = b.path.clone();
                     mask |= PassMask::PAINT;
                     path_changed = true;
+                }
+                // Canvas payloads diff like paths (Phase 36 PR4,
+                // decision 358): a spec change repaints, never
+                // re-lays-out (geometry comes from the style box).
+                let mut canvas_changed = false;
+                if self.arena.get(id.gen()).canvas != b.canvas {
+                    self.arena.get_mut(id.gen()).canvas = b.canvas.clone();
+                    mask |= PassMask::PAINT;
+                    canvas_changed = true;
                 }
 
                 let old_style = styles.intern(a.style.clone());
@@ -689,6 +712,7 @@ impl Reconciler {
                         text_changed,
                         image_changed,
                         path_changed,
+                        canvas_changed,
                         semantics_changed,
                         handlers_changed,
                     });
@@ -819,6 +843,7 @@ struct NewNode<'a> {
     rich_text: Option<Vec<crate::vnode::TextSpan>>,
     image: Option<crate::vnode::ImageId>,
     path: Option<crate::vnode::PathSpec>,
+    canvas: Option<crate::vnode::CanvasSpec>,
     semantics: Option<Semantics>,
     handlers: Vec<(EventKind, HandlerId)>,
 }

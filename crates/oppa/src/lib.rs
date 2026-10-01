@@ -79,8 +79,8 @@ pub use store::{
 };
 pub use style::{
     AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack, IntoPx,
-    JustifyContent, LinearGradient, MsExt, Px, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens,
-    Transition,
+    JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, Px, Shadow,
+    Style, StyleBuilder, ThemeMode, ThemeTokens, Transition,
 };
 pub use system_theme::{ScriptedThemeSource, SystemThemeSource};
 pub use text::{
@@ -90,9 +90,10 @@ pub use text::{
 };
 pub use transition::{ease_at, AnimProp, TransitionEvaluator};
 pub use vnode::{
-    stamp_handler_owner, Children, Column, Custom, Div, Element, ElementBuilder, Grid, ImageId,
-    Img, Path, PathSpec, Portal, RichText, Row, ScrollArea, SharedString, Stack, StrokeDesc, Tag,
-    Text, TextArea, TextBuilder, TextClass, TextField, TextSpan, VNode,
+    stamp_handler_owner, Canvas, CanvasOp, CanvasSpec, Children, Column, Custom, Div, Element,
+    ElementBuilder, Grid, ImageId, Img, Path, PathSpec, Portal, RichText, Row, ScrollArea,
+    SharedString, Stack, StrokeDesc, Tag, Text, TextArea, TextBuilder, TextClass, TextField,
+    TextSpan, VNode,
 };
 pub use window::{ScriptedWindowControl, WindowCall, WindowControl, WindowIcon};
 pub use worker::{HotGeneration, TaskId, TaskScope, TaskStage, WorkerQueue, WorkerResult};

@@ -24,19 +24,22 @@
 //!   change). Resolves the M4 open question as a stated Style-struct
 //!   field (decision 98); BUILD-ORDER §3's M4 Div border stays
 //!   unrendered history.
-//! - Shadow blur is a v1 quantized stepped soft shadow (Round 1.3,
-//!   decision 254 — supersedes the old M8-evaluator deferral): the
-//!   builder expands `blur > 0` into offset solid rects with a linear
-//!   alpha falloff, so the CPU backend agrees with every other backend
-//!   by construction; [`Caps::blur_backdrop`] stays false (no native
-//!   blur anywhere — a true Gaussian stays a follow-up).
+//! - Shadow blur is native per backend (Phase 36 PR4, decision 356 —
+//!   supersedes the Round-1.3 quantized stepped expansion for
+//!   `blur > 0`: Vello gaussian blurred-rounded-rect, CPU box-blur,
+//!   CSS `box-shadow`). [`Caps::blur_backdrop`] stays false (no
+//!   backdrop blur anywhere — that stays a follow-up).
+//!   `blur_radius == 0` keeps the offset solid on every backend,
+//!   pixel-exact.
 //! - `RImg` paints registered pixels, refuses the rest (G8, decisions
-//!   222-223; Vello arm closed the OQ-G8-1 half): the CPU backend paints
-//!   images deposited with `insert_image` (decoded via `oppa-image`),
-//!   and so does the Vello backend (straight-alpha peniko upload —
-//!   the two agree pixel-exact on the oracle); unregistered ids refuse
-//!   loudly rather than paint placeholders. DOM refusal stays until
-//!   its arm lands.
+//!   222-223; Phase 36 PR4, decision 359 — the static path): all three
+//!   backends serve one [`ImageCache`](crate::component::ImageCache)
+//!   deposit — CPU/Vello through `insert_cached` (straight-alpha peniko
+//!   upload on Vello; the two agree pixel-exact on the oracle), DOM as
+//!   a PNG data-URI `<img>`. Bare URL keys keep rendering as URLs on
+//!   DOM (round-4.4 rule). Unregistered ids refuse loudly rather than
+//!   paint placeholders; video stays out (animated frames never land
+//!   in the cache).
 //! - `Path` paints resolution-independent vectors (decision 291):
 //!   SVG path data in the node's local space (translated by the
 //!   committed box origin), solid fill and/or stroke, baked opacity.
@@ -231,7 +234,13 @@ pub enum DrawOp {
         color: Color,
         opacity: f32,
     },
-    /// Offset solid shadow (no blur — `Caps::blur_backdrop` degradation).
+    /// Offset shadow with a native blur radius (Phase 36 PR4, decision
+    /// 356 — supersedes the Round-1.3 quantized stepped expansion for
+    /// `blur > 0`): `blur_radius` in device px (0 = the shipped offset
+    /// solid). Backends paint natively — Vello gaussian
+    /// blurred-rounded-rect, CPU box-blur, CSS `box-shadow` — agreeing
+    /// tol-banded (exact cross-engine blur parity is not claimed, only
+    /// geometry + the zero-blur solid, which stays pixel-exact).
     Shadow {
         node: NodeId,
         x: f32,
@@ -240,6 +249,7 @@ pub enum DrawOp {
         h: f32,
         dx: f32,
         dy: f32,
+        blur_radius: f32,
         color: Color,
     },
     /// Pre-shaped text: one op per laid line — box origin + glyph cells

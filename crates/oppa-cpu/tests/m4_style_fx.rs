@@ -1,5 +1,7 @@
-//! Round 1.3 acceptance (decision 254): visual styling primitives expand
-//! in the shared FramePlan builder — blurred shadows (stepped solids),
+//! Round 1.3 acceptance (decision 254) as superseded by Phase 36 PR4
+//! (decision 356): visual styling primitives expand in the shared
+//! FramePlan builder — blurred shadows emit one native-blur
+//! [`DrawOp::Shadow`] (Vello gaussian, CPU box-blur, CSS box-shadow),
 //! per-edge border bands, and linear-gradient strips — with loud
 //! conflicts, all without touching any backend (no new `DrawOp`).
 //!
@@ -33,49 +35,39 @@ fn render_blur(_ctx: &Ctx, _: &()) -> VNode {
 }
 
 #[test]
-fn blurred_shadow_expands_to_stepped_solids() {
+fn blurred_shadow_emits_one_native_blur_op() {
+    // Phase 36 PR4 (decision 356, supersedes the stepped expansion):
+    // blur 2 (dpr 1) emits one `Shadow` op carrying the radius —
+    // backends blur natively (Vello gaussian, CPU box-blur, CSS).
     let ops = plan_of(render_blur);
-    // blur 2 (dpr 1) -> 2 steps: offset box full, then +1px at half.
-    assert_eq!(ops.len(), 2, "two steps, no other fills: {ops:?}");
+    assert_eq!(ops.len(), 1, "one op, no expansion rects: {ops:?}");
     assert!(
         matches!(
             ops[0],
-            DrawOp::Rect {
-                x: 2.0,
-                y: 3.0,
+            DrawOp::Shadow {
+                x: 0.0,
+                y: 0.0,
                 w: 40.0,
                 h: 20.0,
-                opacity: 1.0,
+                dx: 2.0,
+                dy: 3.0,
+                blur_radius: 2.0,
                 ..
             }
         ),
-        "step 0 is the offset solid: {:?}",
+        "native blur op carries geometry + radius: {:?}",
         ops[0]
     );
     assert!(
         matches!(
-            ops[1],
-            DrawOp::Rect {
-                x: 1.0,
-                y: 2.0,
-                w: 42.0,
-                h: 22.0,
-                opacity: 0.5,
-                ..
-            }
-        ),
-        "step 1 grows 1px at half opacity: {:?}",
-        ops[1]
-    );
-    assert!(
-        ops.iter().all(|o| matches!(
-            o,
-            DrawOp::Rect {
+            ops[0],
+            DrawOp::Shadow {
                 color: Color(0x00_00_00),
                 ..
             }
-        )),
-        "both steps carry the shadow color: {ops:?}"
+        ),
+        "op carries the shadow color: {:?}",
+        ops[0]
     );
 }
 

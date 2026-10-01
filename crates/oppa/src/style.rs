@@ -167,6 +167,83 @@ impl Transition {
     }
 }
 
+/// One keyframe waypoint (Phase 36 PR4, decision 357 — the
+/// `v2-keyframes` authoring shape, Style-attached like `Transition`):
+/// absolute `bg`/`opacity` values (each `None` carries the leg's
+/// entry value forward) reached over `dur_ms` with `ease`. Waypoints
+/// chain from the track's start value; the committed style target
+/// closes the final leg (reusing the last stop's duration/easing —
+/// deterministic, never invented timing). Zero-duration stops refuse
+/// loudly at track creation (instant jumps are undecorated deltas,
+/// never silent snaps).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyframeStop {
+    pub bg: Option<Color>,
+    pub opacity: Option<Px>,
+    pub dur_ms: u32,
+    pub ease: Ease,
+}
+
+impl KeyframeStop {
+    pub fn new(dur_ms: u32, ease: Ease) -> Self {
+        Self {
+            bg: None,
+            opacity: None,
+            dur_ms,
+            ease,
+        }
+    }
+
+    pub fn bg(mut self, c: impl Into<Option<Color>>) -> Self {
+        self.bg = c.into();
+        self
+    }
+
+    pub fn opacity(mut self, o: Option<f32>) -> Self {
+        self.opacity = o.map(Px::of);
+        self
+    }
+}
+
+/// Keyframe playback mode (Phase 36 PR4, decision 357): `Once` settles
+/// exact at the final target (the M8 oracle rule); `Loop` restarts
+/// until cancelled (a new delta restarts, a stamp snaps); `PingPong`
+/// mirrors until cancelled.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum KeyframeMode {
+    #[default]
+    Once,
+    Loop,
+    PingPong,
+}
+
+/// Multi-stop keyframe track (Phase 36 PR4, decision 357): ≥1 stops
+/// (≥2 segments with the closing target leg) over the `bg`+`opacity`
+/// animatable set (the decision-120 lock stays — no new animatables).
+/// Triggered exactly like `.transition(...)` (a bg/opacity style
+/// delta, unstamped); when both are declared, keyframes win (stated
+/// precedence — a track and a tween never fight silently). Empty
+/// stop lists refuse loudly at track creation.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Keyframes {
+    pub stops: Vec<KeyframeStop>,
+    pub mode: KeyframeMode,
+}
+
+impl Keyframes {
+    pub fn new(stops: Vec<KeyframeStop>) -> Self {
+        Self {
+            stops,
+            mode: KeyframeMode::Once,
+        }
+    }
+
+    pub fn mode(mut self, mode: KeyframeMode) -> Self {
+        self.mode = mode;
+        self
+    }
+}
+
 /// `120.ms()` — the duration literal shape the §4.1 example uses.
 pub trait MsExt {
     fn ms(self) -> u32;
@@ -430,6 +507,9 @@ pub struct Style {
     /// theme's `text_primary` when absent — see `oppa::render`).
     pub ink: Option<Color>,
     pub transition: Option<Transition>,
+    /// Multi-stop keyframe track (Phase 36 PR4, decision 357 —
+    /// paint-only like `transition`, never layout-affecting).
+    pub keyframes: Option<Keyframes>,
     /// Pointer cursor while hovering this node (Round 8.3; paint-only,
     /// never layout-affecting — see [`CursorIcon`]).
     pub cursor: Option<CursorIcon>,
@@ -866,6 +946,13 @@ impl StyleBuilder {
 
     pub fn transition(mut self, t: Transition) -> Self {
         self.inner.transition = Some(t);
+        self
+    }
+
+    /// Multi-stop keyframe track (Phase 36 PR4, decision 357 — wins
+    /// over `.transition(...)` when both are declared).
+    pub fn keyframes(mut self, k: Keyframes) -> Self {
+        self.inner.keyframes = Some(k);
         self
     }
 

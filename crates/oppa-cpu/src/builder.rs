@@ -412,10 +412,12 @@ fn emit_node_ops(
         return;
     }
     if tag == Tag::Image {
-        // No decoded pixels in v1 (async decode unscoped) — the op records
-        // the intent with the retained id; the backend refuses it loudly.
-        // (`None` — a hand-built Image node without `Img` — keeps the
-        // legacy dummy id, refused downstream just as loudly.)
+        // Static images (Phase 36 PR4, decision 359): the op records
+        // the intent with the retained id; backends serve one
+        // `ImageCache` deposit (`insert_cached` on CPU/Vello, data URI
+        // on DOM) and refuse undeposited ids loudly. (`None` — a
+        // hand-built Image node without `Img` — keeps the legacy
+        // dummy id, refused downstream just as loudly.)
         plan.ops.push(DrawOp::RImg {
             node: id,
             x: b.x,
@@ -434,6 +436,14 @@ fn emit_node_ops(
     if tag == Tag::Path {
         emit_path_op(plan, rec, id, b, style_ref, opacity);
         return;
+    }
+    // Retained canvas (Phase 36 PR4, decision 358): style paint
+    // fields never apply (paint rides the spec — the path rule), the
+    // spec lowers to shape ops at the committed box origin, and the
+    // laid text lines paint through the shared text arm below (the
+    // node carries no text payload, so nothing double-paints).
+    if tag == Tag::Canvas {
+        emit_canvas_ops(plan, rec, id, b, style_ref, opacity);
     }
     if let Some(shadow) = &style_ref.shadow {
         emit_shadow(plan, id, b, shadow, dpr);
@@ -617,12 +627,15 @@ fn emit_node_ops(
             emit_edge_bands(plan, id, b, [top, right, bottom, left], color, opacity);
         }
     }
-    if tag == Tag::Text {
+    if tag == Tag::Text || tag == Tag::Canvas {
         // Round 8.2 (decision 298): the themed selection rectangle —
         // one `Rect` per overlapping laid line, emitted BEFORE the
         // line's `Text` op (background order) through the shared
         // `selection_rects` rule, so CPU and Vello agree by
         // construction and no backend carries selection logic.
+        // Canvas nodes never own an editing session, so the
+        // selection gate below stays shut for them (their laid text
+        // lines still paint through the shared loop).
         if let Some(sel) = selection {
             if sel.range.0 != sel.range.1 && oppa::input::is_within(rec, id, sel.field) {
                 for r in b.selection_rects(sel.range) {
@@ -811,43 +824,142 @@ fn emit_path_op(
     });
 }
 
-/// Shadow emission (Round 1.3, decision 254): blur 0 keeps the shipped
-/// offset-solid [`DrawOp::Shadow`]; blur > 0 expands into `ceil(blur)`
-/// 1-device-px stepped [`DrawOp::Rect`]s — step `i` grows the offset box
-/// by `i` px on every side with opacity `1 - i/n` (linear falloff).
-/// Shared builder code, solid rects only: every backend paints the same
-/// pixels by construction (the strict-geometry oracle proves the
-/// compositing half). Blur validity is checked by the caller.
+/// Canvas shape emission (Phase 36 PR4, decision 358): style paint
+/// fields never apply to a canvas (paint rides the spec — the path
+/// rule, same loud refusals); the spec lowers to shape ops at the
+/// committed box origin. Text ops paint nothing here — their laid
+/// lines flow through the shared text arm below (per-op ink already
+/// rides the runs, so builders split paint without new `DrawOp`s).
+/// Payload gaps refuse loudly (the path arm's rule — [`Canvas::build`]
+/// already enforces these for component-built nodes).
+fn emit_canvas_ops(
+    plan: &mut FramePlan,
+    rec: &Reconciler,
+    id: NodeId,
+    b: &LayoutBox,
+    style: &Style,
+    opacity: f32,
+) {
+    if style.bg.is_some() {
+        panic!("plan: bg on a Canvas node {id:?} — canvas paint rides the spec, never style bg");
+    }
+    if style.border.is_some() || style.border_edges.is_some() {
+        panic!(
+            "plan: border on a Canvas node {id:?} — canvas paint rides the spec, never style rings"
+        );
+    }
+    if style.bg_gradient.is_some() {
+        panic!("plan: bg_gradient on a Canvas node {id:?} — canvas paint rides the spec, never style gradients");
+    }
+    if style.shadow.is_some() {
+        panic!("plan: shadow on a Canvas node {id:?} — canvas paint rides the spec, never style shadows");
+    }
+    if style.circle || style.has_any_radius() {
+        panic!("plan: radius/circle on a Canvas node {id:?} — canvas carries its own geometry, never style shape flags");
+    }
+    if style.ink.is_some() {
+        panic!(
+            "plan: ink on a Canvas node {id:?} — canvas text carries per-op ink, never style ink"
+        );
+    }
+    let Some(spec) = rec.get(id).and_then(|n| n.canvas.clone()) else {
+        panic!("plan: Tag::Canvas node {id:?} without a canvas payload — Canvas nodes carry CanvasSpec (hand-built Canvas elements must set it)");
+    };
+    for op in &spec.ops {
+        match op {
+            oppa::CanvasOp::Rect { x, y, w, h, color } => {
+                plan.ops.push(DrawOp::Rect {
+                    node: id,
+                    x: b.x + x.get(),
+                    y: b.y + y.get(),
+                    w: w.get(),
+                    h: h.get(),
+                    color: *color,
+                    opacity,
+                });
+            }
+            oppa::CanvasOp::RRect {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                color,
+            } => {
+                plan.ops.push(DrawOp::RRect {
+                    node: id,
+                    x: b.x + x.get(),
+                    y: b.y + y.get(),
+                    w: w.get(),
+                    h: h.get(),
+                    radius: radius.get(),
+                    radii: None,
+                    color: *color,
+                    opacity,
+                });
+            }
+            oppa::CanvasOp::Path { data, fill, stroke } => {
+                if data.trim().is_empty() {
+                    panic!("plan: Canvas node {id:?} has blank path data — refused, never a silent no-op");
+                }
+                if fill.is_none() && stroke.is_none() {
+                    panic!("plan: Canvas node {id:?} has neither fill nor stroke — refused, never a silent no-op");
+                }
+                if let Some(s) = stroke {
+                    if !s.width.is_finite() || s.width < 0.0 {
+                        panic!(
+                            "plan: Canvas node {id:?} stroke width ({}) is non-finite or negative — never paints silently",
+                            s.width
+                        );
+                    }
+                }
+                plan.ops.push(DrawOp::Path {
+                    node: id,
+                    x: b.x,
+                    y: b.y,
+                    width: b.w,
+                    height: b.h,
+                    data: data.clone(),
+                    fill: *fill,
+                    stroke: *stroke,
+                    opacity,
+                });
+            }
+            oppa::CanvasOp::Text { .. } => {
+                // Laid lines paint through the shared text arm below.
+            }
+        }
+    }
+}
+
+/// Shadow emission (Phase 36 PR4, decision 356 — supersedes the
+/// Round-1.3 stepped expansion for `blur > 0`): one [`DrawOp::Shadow`]
+/// carrying the device-px radius — Vello paints it gaussian,
+/// the CPU backend box-blurs it, CSS takes it as `box-shadow` blur.
+/// `blur == 0` keeps the shipped offset solid. Blur validity is
+/// checked by the caller (and re-checked here — belt-and-braces).
 fn emit_shadow(plan: &mut FramePlan, id: NodeId, b: &LayoutBox, shadow: &oppa::Shadow, dpr: f32) {
     let blur_dev = shadow.blur.get() * dpr;
-    let dx = shadow.x.get() * dpr;
-    let dy = shadow.y.get() * dpr;
-    if blur_dev <= 0.0 {
-        plan.ops.push(DrawOp::Shadow {
-            node: id,
-            x: b.x,
-            y: b.y,
-            w: b.w,
-            h: b.h,
-            dx,
-            dy,
-            color: shadow.color,
-        });
-        return;
+    if !blur_dev.is_finite() || blur_dev < 0.0 {
+        panic!(
+            "plan: shadow blur is non-finite or negative ({blur_dev}) — NaN/negative blur never paints silently"
+        );
     }
-    let n = blur_dev.ceil().max(1.0) as usize;
-    for i in 0..n {
-        let grow = i as f32;
-        plan.ops.push(DrawOp::Rect {
-            node: id,
-            x: b.x + dx - grow,
-            y: b.y + dy - grow,
-            w: b.w + 2.0 * grow,
-            h: b.h + 2.0 * grow,
-            color: shadow.color,
-            opacity: 1.0 - i as f32 / n as f32,
-        });
-    }
+    // Phase 36 PR4 (decision 356): native blur everywhere — one
+    // `Shadow` op carrying the radius (Vello gaussian, CPU box-blur,
+    // CSS box-shadow). `blur == 0` keeps the offset solid (the
+    // pre-PR4 shape, pixel-exact on every backend).
+    plan.ops.push(DrawOp::Shadow {
+        node: id,
+        x: b.x,
+        y: b.y,
+        w: b.w,
+        h: b.h,
+        dx: shadow.x.get() * dpr,
+        dy: shadow.y.get() * dpr,
+        blur_radius: blur_dev,
+        color: shadow.color,
+    });
 }
 
 /// Validates per-edge border widths (NaN/negative refuse loudly) and
@@ -1266,5 +1378,192 @@ mod tests {
             })
             .collect();
         assert_eq!(counts, vec![2, 2]);
+    }
+
+    #[derive(Clone)]
+    struct CanvasProps;
+    impl Props for CanvasProps {}
+
+    fn canvas_scene(ctx: &Ctx, _: &CanvasProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        Div("wrap").child(
+            oppa::Canvas::new("plot")
+                .style(oppa::Style::new().size(100, 50))
+                .rect(0.0, 0.0, 100.0, 50.0, oppa::Color(0xFF_00_00))
+                .path(
+                    "M 0 0 L 10 10",
+                    None,
+                    Some(oppa::StrokeDesc {
+                        color: oppa::Color(0x00_00_00),
+                        width: 2.0,
+                    }),
+                )
+                .build(),
+        )
+    }
+
+    /// Phase 36 PR4 (decision 358): canvas spec ops lower to shape
+    /// ops at the committed box origin (no new `DrawOp`s); style
+    /// paint on a canvas refuses loudly.
+    #[test]
+    fn canvas_spec_lowers_to_translated_shape_ops() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        host.mount("Plot", CanvasProps, canvas_scene);
+        host.run_until_idle();
+        let builder = FramePlanBuilder::new(1.0);
+        let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+        let rects: Vec<&DrawOp> = plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, DrawOp::Rect { .. }))
+            .collect();
+        assert_eq!(rects.len(), 1, "one canvas rect, got {}", rects.len());
+        assert!(
+            matches!(
+                rects[0],
+                DrawOp::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 100.0,
+                    h: 50.0,
+                    ..
+                }
+            ),
+            "box-origin translation: {:?}",
+            rects[0]
+        );
+        assert_eq!(
+            plan.ops
+                .iter()
+                .filter(|op| matches!(op, DrawOp::Path { .. }))
+                .count(),
+            1,
+            "canvas path lowers"
+        );
+        assert!(
+            plan.ops
+                .iter()
+                .filter(|op| matches!(op, DrawOp::Text { .. }))
+                .count()
+                == 0,
+            "no text ops without text (serviceless)"
+        );
+    }
+
+    /// Phase 36 PR4 (decision 359): `insert_cached` pulls one cache
+    /// deposit; undeposited ids refuse loudly at deposit time.
+    #[test]
+    fn insert_cached_pulls_one_deposit_and_refuses_when_absent() {
+        use crate::backend::CpuBackend;
+        let cache = oppa::ImageCache::new();
+        let rgba = vec![255u8; 2 * 2 * 4];
+        let id = cache.insert_pixels("dot", 2, 2, rgba);
+        let mut be = CpuBackend::new();
+        be.insert_cached(&cache, id);
+        be.remove_image(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "no pre-decoded pixels")]
+    fn insert_cached_refuses_undeposited_ids() {
+        use crate::backend::CpuBackend;
+        let cache = oppa::ImageCache::new();
+        let id = cache.load("img/ghost.png");
+        CpuBackend::new().insert_cached(&cache, id);
+    }
+
+    #[derive(Clone)]
+    struct BlurProps;
+    impl Props for BlurProps {}
+
+    fn blur_scene(ctx: &Ctx, _: &BlurProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        Div("wrap").child(
+            Div("box")
+                .style(
+                    oppa::Style::new()
+                        .size(20, 20)
+                        .x(10.0)
+                        .shadow(0, 0, oppa::Color(0x00_00_00))
+                        .shadow_blur(3),
+                )
+                .build(),
+        )
+    }
+
+    /// Phase 36 PR4 (decision 356): the blurred shadow paints soft —
+    /// solid core, partial fringe, transparent far field (never the
+    /// old stepped solids, never a hard edge).
+    #[test]
+    fn blurred_shadow_paints_soft_core_and_fringe() {
+        use crate::backend::CpuBackend;
+        use oppa::RendererBackend;
+        let host = ComponentHost::new();
+        host.set_viewport(60.0, 40.0);
+        host.mount("Blur", BlurProps, blur_scene);
+        host.run_until_idle();
+        let builder = FramePlanBuilder::new(1.0);
+        let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+        assert_eq!(
+            plan.ops
+                .iter()
+                .filter(|op| matches!(op, DrawOp::Shadow { .. }))
+                .count(),
+            1,
+            "one native blur op"
+        );
+        let mut be = CpuBackend::new();
+        let s = be
+            .create_surface(oppa::SurfaceDesc {
+                width_px: 60,
+                height_px: 40,
+                background: oppa::Color(0xFF_FF_FF),
+            })
+            .expect("surface");
+        be.paint(s, &plan).expect("paint");
+        let px = |x: u32, y: u32| be.pixel_rgba(s, x, y).expect("pixel");
+        let (r, g, b, _) = px(20, 10);
+        assert!(
+            r < 64 && g < 64 && b < 64,
+            "core near-black, got ({r}, {g}, {b})"
+        );
+        assert_eq!(px(0, 0), (255, 255, 255, 255), "far field stays white");
+        let (er, _, _, _) = px(33, 10);
+        assert!(
+            er > 0 && er < 255,
+            "fringe partial (soft edge, not a step), got {er}"
+        );
+        assert_eq!(px(50, 10).0, 255, "past the spread stays white");
+    }
+
+    fn bad_canvas_scene(ctx: &Ctx, _: &CanvasProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        // Hand-built canvas with a child (the builder refuses
+        // children — canvas leaves are childless by construction).
+        VNode::Element(Box::new(oppa::Element {
+            tag: oppa::Tag::Canvas,
+            debug: "bad-canvas".to_string(),
+            key: None,
+            style: oppa::Style::new().size(100, 50).build(),
+            text_hint: None,
+            image: None,
+            path: None,
+            canvas: Some(oppa::CanvasSpec { ops: Vec::new() }),
+            semantics: None,
+            handlers: Vec::new(),
+            children: vec![VNode::Text("x".into())],
+        }))
+    }
+
+    /// Phase 36 PR4: canvas children refuse loudly at layout (the
+    /// leaf paints its spec — children would double-paint).
+    #[test]
+    #[should_panic(expected = "childless by construction")]
+    fn canvas_children_refuse_loudly() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        host.mount("BadCanvas", CanvasProps, bad_canvas_scene);
+        host.run_until_idle();
     }
 }

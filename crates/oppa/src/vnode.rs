@@ -27,7 +27,7 @@ use std::sync::Arc;
 use crate::handlers::{HandlerFn, HandlerId};
 use crate::semantics::Semantics;
 use crate::shell::EventKind;
-use crate::style::{Color, IntoPx, Style};
+use crate::style::{Color, IntoPx, Px, Style};
 use crate::text::FontWeight;
 
 /// Shared strings: the `.clone()` tax paid deliberately, interned away
@@ -72,6 +72,19 @@ pub enum Tag {
     /// FramePlan builder emits them last (top z-layer). Unmounting a
     /// portal clears focus/captures inside it (host input hygiene).
     Portal,
+    /// Retained immediate-mode surface (Phase 36 PR4, decision 358):
+    /// author-supplied vector content painted from a [`CanvasSpec`]
+    /// payload. Lays out block-lite like `Image` (explicit size or
+    /// zero); paints the spec's ops translated by the committed box
+    /// origin — `Rect`/`RRect`/`Path` directly, `Text` through the
+    /// text service (shaped at layout, appended to the box lines with
+    /// the op's ink, so builders split paint without new `DrawOp`s).
+    /// Childless by construction (children refuse loudly — a canvas
+    /// paints its spec); payload changes repaint without re-layout
+    /// (geometry comes from the style box); a restart boundary for
+    /// dirty walks (payload dirt never crosses into children —
+    /// there are none — and layout never re-enters on paint).
+    Canvas,
     Custom(u64),
 }
 
@@ -161,6 +174,11 @@ pub struct Element {
     /// a payload change repaints (never re-lays-out: geometry comes
     /// from the style box). `None` for non-path elements.
     pub path: Option<PathSpec>,
+    /// Canvas payload carried by [`Canvas`] conversions (Phase 36 PR4,
+    /// decision 358): retained vector ops in local space. Diffed like
+    /// `path` — a payload change repaints, never re-lays-out.
+    /// `None` for non-canvas elements.
+    pub canvas: Option<CanvasSpec>,
     pub semantics: Option<Semantics>,
     pub handlers: Vec<HandlerAttachment>,
     pub children: Children,
@@ -236,6 +254,7 @@ impl ElementBuilder {
                 text_hint: None,
                 image: None,
                 path: None,
+                canvas: None,
                 semantics: None,
                 handlers: Vec::new(),
                 children: Vec::new(),
@@ -798,6 +817,7 @@ impl From<Text> for VNode {
             text_hint: Some(t.style),
             image: None,
             path: None,
+            canvas: None,
             semantics: None,
             handlers: Vec::new(),
             children: vec![VNode::Text(t.text)],
@@ -815,6 +835,7 @@ impl From<TextField> for VNode {
             text_hint: Some(t.style),
             image: None,
             path: None,
+            canvas: None,
             semantics: Some(crate::semantics::Semantics::text_field().label(&t.label)),
             handlers: Vec::new(),
             children: vec![VNode::Text(t.text)],
@@ -832,6 +853,7 @@ impl From<TextArea> for VNode {
             text_hint: Some(t.style),
             image: None,
             path: None,
+            canvas: None,
             semantics: Some(crate::semantics::Semantics::text_area().label(&t.label)),
             handlers: Vec::new(),
             children: vec![VNode::Text(t.text)],
@@ -865,6 +887,7 @@ impl From<Img> for VNode {
             text_hint: None,
             image: Some(i.src),
             path: None,
+            canvas: None,
             semantics: None,
             handlers: Vec::new(),
             children: Vec::new(),
@@ -1037,6 +1060,187 @@ impl Path {
                 fill: self.fill,
                 stroke: self.stroke,
             }),
+            canvas: None,
+            semantics: None,
+            handlers: Vec::new(),
+            children: Vec::new(),
+        }))
+    }
+}
+
+/// One retained canvas op (Phase 36 PR4, decision 358): local-space
+/// vector content (origin at the committed box top-left, authoring px
+/// — the `PathSpec` rule). Geometry rides bit-exact [`Px`](crate::style::Px)
+/// (payloads stay `Eq + Hash`-friendly like styles); paint is solid
+/// fills/strokes plus per-op text ink. No new [`DrawOp`](crate::render::DrawOp):
+/// the plan builder lowers these to `Rect`/`RRect`/`Path`/`Text`.
+#[derive(Clone, PartialEq, Debug)]
+pub enum CanvasOp {
+    Rect {
+        x: Px,
+        y: Px,
+        w: Px,
+        h: Px,
+        color: Color,
+    },
+    RRect {
+        x: Px,
+        y: Px,
+        w: Px,
+        h: Px,
+        radius: Px,
+        color: Color,
+    },
+    Path {
+        data: SharedString,
+        fill: Option<Color>,
+        stroke: Option<StrokeDesc>,
+    },
+    /// Text at a local origin (shaped at layout through the text
+    /// service with this size/weight — one shared size per op, the
+    /// RichText rule — and painted with this ink).
+    Text {
+        text: SharedString,
+        size_px: u16,
+        weight: FontWeight,
+        ink: Color,
+        x: Px,
+        y: Px,
+    },
+}
+
+/// Retained canvas payload (Phase 36 PR4, decision 358): the spec a
+/// `Tag::Canvas` node paints. Diffed as a unit — a payload change
+/// repaints, never re-lays-out (geometry comes from the style box).
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct CanvasSpec {
+    pub ops: Vec<CanvasOp>,
+}
+
+/// `Canvas::new("plot")` — the retained-surface authoring surface
+/// (Phase 36 PR4, decision 358): chainable like [`Path`], terminal
+/// [`.build()`](Canvas::build) producing the `VNode`. The leaf is
+/// childless with an explicit [`Tag::Canvas`] tag; geometry rides
+/// `.size(...)` (explicit style w/h — without it the box is zero,
+/// never content-derived, stated). Empty op lists refuse loudly at
+/// build (an invisible canvas is an authoring bug); non-finite or
+/// negative geometry refuses loudly too.
+#[derive(Clone, Debug, Default)]
+pub struct Canvas {
+    debug: String,
+    ops: Vec<CanvasOp>,
+    style: Style,
+}
+
+impl Canvas {
+    pub fn new(debug: &str) -> Self {
+        Self {
+            debug: debug.to_string(),
+            ops: Vec::new(),
+            style: Style::default(),
+        }
+    }
+
+    pub fn style(mut self, style: impl Into<Style>) -> Self {
+        self.style = style.into();
+        self
+    }
+
+    pub fn rect(mut self, x: f32, y: f32, w: f32, h: f32, color: Color) -> Self {
+        self.ops.push(CanvasOp::Rect {
+            x: Px::of(x),
+            y: Px::of(y),
+            w: Px::of(w),
+            h: Px::of(h),
+            color,
+        });
+        self
+    }
+
+    pub fn rrect(mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: Color) -> Self {
+        self.ops.push(CanvasOp::RRect {
+            x: Px::of(x),
+            y: Px::of(y),
+            w: Px::of(w),
+            h: Px::of(h),
+            radius: Px::of(radius),
+            color,
+        });
+        self
+    }
+
+    pub fn path(mut self, data: &str, fill: Option<Color>, stroke: Option<StrokeDesc>) -> Self {
+        self.ops.push(CanvasOp::Path {
+            data: SharedString::from(data),
+            fill,
+            stroke,
+        });
+        self
+    }
+
+    pub fn text(
+        mut self,
+        text: &str,
+        size_px: u16,
+        weight: FontWeight,
+        ink: Color,
+        x: f32,
+        y: f32,
+    ) -> Self {
+        self.ops.push(CanvasOp::Text {
+            text: SharedString::from(text),
+            size_px,
+            weight,
+            ink,
+            x: Px::of(x),
+            y: Px::of(y),
+        });
+        self
+    }
+
+    pub fn build(self) -> VNode {
+        if self.ops.is_empty() {
+            panic!(
+                "oppa::Canvas {:?}: no ops — set at least one (an invisible canvas never builds silently)",
+                self.debug
+            );
+        }
+        for op in &self.ops {
+            let bad = match op {
+                CanvasOp::Rect { x, y, w, h, .. } | CanvasOp::RRect { x, y, w, h, .. } => {
+                    [("x", x), ("y", y), ("w", w), ("h", h)]
+                        .iter()
+                        .any(|(_, p)| !p.get().is_finite() || p.get() < 0.0)
+                }
+                CanvasOp::Path {
+                    data, fill, stroke, ..
+                } => data.trim().is_empty() || (fill.is_none() && stroke.is_none()),
+                CanvasOp::Text {
+                    text,
+                    size_px,
+                    x,
+                    y,
+                    ..
+                } => {
+                    text.is_empty() || *size_px == 0 || !x.get().is_finite() || !y.get().is_finite()
+                }
+            };
+            if bad {
+                panic!(
+                    "oppa::Canvas {:?}: invalid op {op:?} — non-finite/negative geometry, blank paths, paintless paths, and empty/zero-size text never build silently",
+                    self.debug
+                );
+            }
+        }
+        VNode::Element(Box::new(Element {
+            tag: Tag::Canvas,
+            debug: self.debug,
+            key: None,
+            style: self.style,
+            text_hint: None,
+            image: None,
+            path: None,
+            canvas: Some(CanvasSpec { ops: self.ops }),
             semantics: None,
             handlers: Vec::new(),
             children: Vec::new(),
@@ -1164,6 +1368,52 @@ mod tests {
         let _ = Path::new("neg")
             .data("M 0 0 L 1 1")
             .stroke(Color(1), -1.0)
+            .build();
+    }
+
+    /// Phase 36 PR4 (decision 358): `Canvas` builds a tagged leaf
+    /// carrying its spec (ops + explicit geometry), childless.
+    #[test]
+    fn canvas_build_carries_spec_and_geometry() {
+        let v: VNode = Canvas::new("plot")
+            .style(Style::new().size(100, 50))
+            .rect(0.0, 0.0, 100.0, 50.0, Color(0xFF_00_00))
+            .text("hi", 14, FontWeight::BOLD, Color(0x00_00_00), 4.0, 6.0)
+            .build();
+        match v {
+            VNode::Element(e) => {
+                assert_eq!(e.tag, Tag::Canvas);
+                assert_eq!(e.debug, "plot");
+                let spec = e.canvas.expect("canvas payload");
+                assert_eq!(spec.ops.len(), 2);
+                assert!(matches!(spec.ops[0], CanvasOp::Rect { .. }));
+                match &spec.ops[1] {
+                    CanvasOp::Text {
+                        text, size_px, ink, ..
+                    } => {
+                        assert_eq!(text.as_ref(), "hi");
+                        assert_eq!(*size_px, 14);
+                        assert_eq!(*ink, Color(0x00_00_00));
+                    }
+                    other => panic!("expected text op, got {other:?}"),
+                }
+                assert!(e.children.is_empty(), "canvas leaves are childless");
+            }
+            _ => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "no ops")]
+    fn canvas_without_ops_panics_loudly() {
+        let _ = Canvas::new("empty").build();
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid op")]
+    fn canvas_with_negative_geometry_panics_loudly() {
+        let _ = Canvas::new("neg")
+            .rect(0.0, 0.0, -5.0, 10.0, Color(1))
             .build();
     }
 }

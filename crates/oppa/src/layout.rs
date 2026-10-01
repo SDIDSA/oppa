@@ -1431,6 +1431,12 @@ impl<'a> LayoutCtx<'a> {
                 inherited_px,
                 inherited_weight,
             ),
+            // Retained canvas (Phase 36 PR4, decision 358): opaque
+            // leaf — explicit size or zero, children refused, text
+            // ops shaped into the box lines.
+            Tag::Canvas => {
+                self.layout_canvas(id, &children, ox, oy, explicit_w, explicit_h, given_w)
+            }
             Tag::Text => unreachable!("text nodes handled above"),
         }
     }
@@ -3240,6 +3246,122 @@ impl<'a> LayoutCtx<'a> {
         let w = explicit_w.or(given_w).unwrap_or(extent_w + pad.x());
         let h = explicit_h.unwrap_or(extent_h + pad.y());
         self.commit_box(id, ox, oy, w, h, extent_w, extent_h, Vec::new());
+        Size { w, h }
+    }
+
+    /// Retained canvas leaf (Phase 36 PR4, decision 358): explicit
+    /// size or zero (never content-derived — text ops position
+    /// explicitly and never grow the box; overflow stays overflow).
+    /// Children refuse loudly (childless by construction — a canvas
+    /// paints its spec). Each `Text` op shapes single-line through
+    /// the text service with its own size/weight and appends its
+    /// lines at the op origin with the op ink (the shared
+    /// [`layout_text`] emitter, so visual ordering matches text
+    /// leaves; builders split paint without new `DrawOp`s).
+    /// Unmeasured text (no service) lays zero lines for that op (the
+    /// serviceless rule — never a failure). Shape failures panic
+    /// loudly (backend/config bug, the `measure` rule).
+    #[allow(clippy::too_many_arguments)]
+    fn layout_canvas(
+        &mut self,
+        id: NodeId,
+        children: &[NodeId],
+        ox: f32,
+        oy: f32,
+        explicit_w: Option<f32>,
+        explicit_h: Option<f32>,
+        given_w: Option<f32>,
+    ) -> Size {
+        if !children.is_empty() {
+            panic!(
+                "layout: Tag::Canvas node {id:?} with children — canvas leaves are childless by construction (paint the spec instead)"
+            );
+        }
+        let spec = self.rec.get(id).and_then(|n| n.canvas.clone());
+        let Some(spec) = spec else {
+            panic!(
+                "layout: Tag::Canvas node {id:?} without a canvas payload — refused, never a silent hole"
+            );
+        };
+        let _ = given_w; // explicit-or-zero by contract (never content-derived)
+        let w = explicit_w.unwrap_or(0.0);
+        let h = explicit_h.unwrap_or(0.0);
+        let mut lines: Vec<LaidLine> = Vec::new();
+        let requested = self.engine.config.family.clone();
+        for op in &spec.ops {
+            let crate::vnode::CanvasOp::Text {
+                text,
+                size_px,
+                weight,
+                ink,
+                x,
+                y,
+            } = op
+            else {
+                continue;
+            };
+            let Some(service) = self.service else {
+                continue; // serviceless: this op lays no lines
+            };
+            let size = *size_px as f32;
+            if size <= 0.0 {
+                continue; // build-time refusal covers this; belt-and-braces
+            }
+            let style = TextStyle {
+                family: self.engine.config.family.clone(),
+                font_size_px: size,
+                device_pixel_ratio: self.dpr,
+                weight: *weight,
+                style: crate::text::FontStyle::Normal,
+                stretch: crate::text::FontStretch::NORMAL,
+                letter_spacing_px: 0.0,
+                locale: "en-US".to_string(),
+            };
+            let shaped = match service.shape(text, &style) {
+                Ok(r) => r,
+                Err(TextError::EmptyText) => continue,
+                Err(e) => panic!(
+                    "layout: canvas text measurement failed: {e} — a shaping failure is a backend/config bug, never silent"
+                ),
+            };
+            if shaped.clusters.is_empty() {
+                continue;
+            }
+            let metrics = service.measure_line(&shaped);
+            // One unconstrained line (no wrap — canvas text positions
+            // explicitly; wrap is the text-leaf rule), then offset to
+            // the op origin with the op ink.
+            let mut op_lines = layout_text(
+                &shaped,
+                text,
+                f32::INFINITY,
+                None,
+                metrics.ascent,
+                metrics.descent,
+                metrics.line_gap,
+            );
+            let ox_px = x.get() * self.dpr;
+            let oy_px = y.get() * self.dpr;
+            for line in &mut op_lines {
+                line.y += oy_px;
+                line.em_size = size * self.dpr;
+                for run in &mut line.runs {
+                    if run.family.is_empty() {
+                        run.family = self.engine.family_of(run.font_id, &requested);
+                    }
+                    run.ink = Some(*ink);
+                    for g in &mut run.glyphs {
+                        g.x += ox_px;
+                    }
+                }
+                for c in &mut line.clusters {
+                    c.x += ox_px;
+                }
+            }
+            self.stats.lines_laid += op_lines.len();
+            lines.extend(op_lines);
+        }
+        self.commit_box(id, ox, oy, w, h, w, h, lines);
         Size { w, h }
     }
 

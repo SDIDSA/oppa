@@ -33,16 +33,21 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   Vello) and DOM spans; web `@font-face` serves the measured DejaVu
   bytes (closes decision-81 drift); DejaVu-pinned corpus extended
   (join transparency, bold-span breaks/carets/inks, empty-span).
+- Phase 36 PR4 (decisions 356–359, gate green 2026-10-01): Render &
+  animation v2 — multi-stop `Keyframes` (stops + segment ease +
+  once/loop/ping-pong; keyframes win; target closes final leg; stamp
+  snaps; DOM stepped inline path); native shadow blur (`blur_radius`
+  on `DrawOp::Shadow`; Vello gaussian, CPU box-blur, CSS box-shadow;
+  tol-16 < 10% hardware-calibrated; supersedes stepped expansion);
+  static images via one cache deposit (CPU/Vello `insert_cached`, DOM
+  PNG data-URI; URL keys unchanged); retained `Canvas` (`Tag::Canvas`
+  + spec; lowers to Rect/RRect/Path/Text; childless leaf).
 
 ## Now (in progress)
 
-- Phase 36 PR4 (Core Engine v2): Render & animation v2 — multi-stop
-  `Keyframes` in `TransitionEvaluator` per `v2-keyframes.md`
-  (stops + segment ease + once/loop/ping-pong); `blur_radius` on
-  `Shadow`/`DrawOp::Shadow` (decision row required); `RImg`/DOM-`Image`
-  via `oppa-image` RGBA8 through `ImageCache` (static pre-decoded);
-  retained `Canvas` primitive emitting `DrawOp::{Rect, RRect, Path,
-  Text}` (new `Tag` variant).
+- Phase 37 (Ergonomics, Generic Manifests, App Services, `cargo-oppa`):
+  zero-boilerplate child call-sites + generic manifests; fetch/log/
+  persistence; `cargo-oppa new` + reload recipe (G8, G9, G16, G17).
 
 ## Next (accepted, not started)
 

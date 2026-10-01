@@ -1462,6 +1462,7 @@ dependencies = [
  "oppa",
  "oppa-controls",
  "oppa-cpu",
+ "oppa-image",
  "oppa-macros",
  "oppa-text-dwrite",
  "oppa-vello",

@@ -119,6 +119,7 @@ fn coverage_plan() -> FramePlan {
                 h: 10.0,
                 dx: 1.0,
                 dy: 2.0,
+                blur_radius: 0.0,
                 color: Color(0x00_00_00),
             },
             DrawOp::Pop,
@@ -983,6 +984,7 @@ mod gpu {
                     h: 10.0,
                     dx: 1.0,
                     dy: 2.0,
+                    blur_radius: 0.0,
                     color: Color(0x00_00_00),
                 },
                 DrawOp::Pop,
@@ -1366,20 +1368,34 @@ mod gpu {
     }
 
     #[test]
-    fn style_fx_blurred_shadow_agrees_pixel_exact() {
+    fn style_fx_blurred_shadow_agrees_tol_banded() {
         // Hardware-oracle row: software-emulated adapters (WARP) prove no
         // real-GPU pixels and crash under parallel load - skip loudly.
         if let Err(e) = VelloBackend::probe_hardware_adapter() {
-            eprintln!("SKIP style_fx_blurred_shadow_agrees_pixel_exact: {e}");
+            eprintln!("SKIP style_fx_blurred_shadow_agrees_tol_banded: {e}");
             return;
         }
+        // Phase 36 PR4 (decision 356, supersedes the stepped solids):
+        // one native-blur `Shadow` op (gaussian on Vello, box-blur on
+        // CPU) — agreement is tol-banded (exact cross-engine blur
+        // parity is not claimed, only geometry + the zero-blur
+        // solid). Bound calibrated on hardware (2026-10-01: 438/7200
+        // = 6.1% over tol-16 on a 30x10 rect at blur 2 — box and
+        // gaussian profiles differ through the soft band by design);
+        // the gate holds < 10% so genuine regressions (wrong rect,
+        // missing blur, inverted alpha) still fail loudly.
         let host = ComponentHost::new();
         host.set_viewport(VW, VH);
         let _handle = host.mount("fx", (), render_fx_blur);
         host.run_until_idle();
         let builder = FramePlanBuilder::new(1.0);
         let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
-        assert_eq!(plan.ops.len(), 2, "two blur steps: {plan:?}");
+        let shadows: Vec<_> = plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, oppa::DrawOp::Shadow { .. }))
+            .collect();
+        assert_eq!(shadows.len(), 1, "one native blur op: {plan:?}");
 
         let mut oracle = oppa_vello::GpuOracle::new(surface_desc()).expect("oracle");
         oracle.commit_all(&host.diffs_from(0)).expect("commit");
@@ -1399,10 +1415,12 @@ mod gpu {
             .vello
             .render_pixels(oracle.vello_surface)
             .expect("gpu readback");
-        let exact = oppa_vello::oracle::diff_count_exact(&cpu_img, &vello_img);
-        let tol2 = oppa_vello::oracle::diff_count_tol(&cpu_img, &vello_img, 2);
+        let tol16 = oppa_vello::oracle::diff_count_tol(&cpu_img, &vello_img, 16);
         let total = (VW as usize) * (VH as usize);
-        println!("1.3 blurred shadow: exact_diff={exact} tol2_diff={tol2} of {total}");
-        assert_eq!(exact, 0, "stepped blur solids must agree pixel-exact");
+        println!("36.4 blurred shadow: tol16_diff={tol16} of {total}");
+        assert!(
+            tol16 * 10 < total,
+            "blurred shadow agrees tol-banded (< 10% pixels over tol-16), got {tol16} of {total}"
+        );
     }
 }

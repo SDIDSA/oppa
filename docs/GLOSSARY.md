@@ -8,7 +8,7 @@ concept, this file wins.
 - **Component** — a plain function `fn(&Ctx, &P) -> VNode`. Not a class; exists only in the ephemeral layer.
 - **VNode** — the ephemeral tree a component returns (`Element | Text | Fragment | Hole`). Discarded after reconciliation.
 - **RetainedNode / retained tree** — the stable-identity tree layout and renderers consume. Keyed by `NodeId` (generational arena id).
-- **Tag** — the closed set of node kinds (`Div, Stack, Row, Column, Text, Image, ScrollArea, Grid` + `Custom(u64)` escape hatch).
+- **Tag** — the closed set of node kinds (`Div, Stack, Row, Column, Text, Image, ScrollArea, Grid, Canvas` + `Custom(u64)` escape hatch).
 - **Style / StyleId** — typed style structs, interned into `StyleId`. Never "CSS class" or "stylesheet".
 - **TreeDiff** — structural update (added/removed/moved ids + per-node payload deltas) sent to renderer backends.
 - **FramePlan** — per-frame ordered display list + damage + layer plans, built from dirty subtrees only.
@@ -28,4 +28,6 @@ concept, this file wins.
 - **Flex share** — weighted `flex_grow` remainder split over the intrinsic base (decision 353); `fill_width`/`fill_height` ride the same pool with weight 1; opt-in `flex_shrink` absorbs overflow.
 - **2D scroll (`ScrollXY` / `ScrollOffset2D`)** — the plain-data 2D position value and the one view over the instance's `scroll` + `scroll_x` signals (decision 354); mixing 1D and 2D handles shares state, never forks it.
 - **RichText (`TextSpan`)** — a multi-span text leaf sharing one size (decision 355): each span shapes with its own weight and paints with its own ink; concatenated bytes are the caret/selection space.
+- **Keyframes** — a multi-stop track over `bg`+`opacity` with per-segment easing and once/loop/ping-pong playback (decision 357); the committed target closes the final leg.
+- **Canvas (`CanvasOp`)** — a retained childless leaf painting a spec of rect/rounded-rect/path/text ops in local space (decision 358); lowers to existing `DrawOp`s, never a new one.
 - **Slot** — a stable virtualization position in `ScrollArea`; keys are slots, not items.

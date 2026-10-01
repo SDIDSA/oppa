@@ -26,9 +26,11 @@ contract test suite — not prose — defines sameness.
 
 ## Rendering
 
-- Backends receive `TreeDiff` + per-frame `FramePlan` (dirty subtrees only) with `DrawOp::{Rect,RImg,RRect,Text,Path,PushClip,PushLayer,Pop}` plus damage.
+- Backends receive `TreeDiff` + per-frame `FramePlan` (dirty subtrees only) with `DrawOp::{Rect,RImg,RRect,Text,Path,PushClip,PushLayer,Pop}` plus damage. `Canvas` lowers to those ops (never a new one).
 - `Text(ShapedRun)` arrives pre-shaped with `baseline`, `em_size`, per-run `fonts`. `Color` stays alpha-less.
-- Oracle exactness: CPU incremental == full render, pixel 0; CPU-vs-Vello sharp 0, curves tol-16 ≤ 60; static GPU frames 0; scroll produces 0 structural ops with ≤ 1 frame trail.
+- Shadows blur natively per backend (Vello gaussian, CPU box-blur, CSS `box-shadow`); blur 0 stays the offset solid, pixel-exact everywhere.
+- Static images serve one cache deposit on all three backends (CPU/Vello pixels, DOM data-URI PNG); bare URL keys unchanged on DOM.
+- Oracle exactness: CPU incremental == full render, pixel 0; CPU-vs-Vello sharp 0, curves tol-16 ≤ 60; blurred shadows tol-16 < 10% pixels (hardware-calibrated); static GPU frames 0; scroll produces 0 structural ops with ≤ 1 frame trail.
 
 ## Input
 
@@ -49,8 +51,9 @@ contract test suite — not prose — defines sameness.
 
 ## Transitions
 
-- v1 animates style-delta A→B interpolation only (`.transition(duration + easing)`; CSS subset on DOM, rest jumps).
-- Binding-edge (`ctx.binding`) re-runs stamp the commit `suppress_transitions` for exactly one commit (per-commit, not per-cause).
+- Style-delta animation over `bg`+`opacity`: single A→B tweens (`.transition(duration + easing)`; CSS subset on DOM, rest jumps) and multi-stop keyframe tracks (`.keyframes(stops + mode)`; per-segment easing; once/loop/ping-pong; keyframes win over tweens; the committed target closes the final leg).
+- Keyframe tracks run on every backend (GPU resolvers; DOM stepped inline re-declarations per frame) and settle exact at the target (once); loop/ping-pong run until a new delta restarts or a stamp snaps.
+- Binding-edge (`ctx.binding`) re-runs stamp the commit `suppress_transitions` for exactly one commit (per-commit, not per-cause) — live tracks cancel and snap, never restart.
 
 ## Reload freeze gate
 
