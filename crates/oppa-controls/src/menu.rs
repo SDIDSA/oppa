@@ -107,10 +107,11 @@ impl MenuItemProps {
 /// One menu row: highlighted rows read bold contrast ink on the
 /// primary fill (the `CONTRAST_INK`-on-saturated-accents rule);
 /// disabled rows read dimmed (the catalog dim rule); separators
-/// read a 1px border rule. Roles ride the closest catalog analog
-/// (`list_item` + selected/disabled — no menu roles exist in v1,
-/// the grid precedent: never ripple every emitter for one
-/// control).
+/// read a 1px border rule. Rows carry the `MenuItem` role (decision
+/// 352 — migrated off the v1 `list_item` analog so Invoke-class AT
+/// actions attach to the real affordance: UIA Invoke, DOM
+/// `menuitem`, AT-SPI `menu item` + `click`). Highlight still rides
+/// `selected` (the shared selection rule, unchanged).
 pub fn MenuItem(ctx: &Ctx, props: &MenuItemProps) -> VNode {
     use oppa::Semantics;
     let t = ctx.theme().tokens();
@@ -141,7 +142,7 @@ pub fn MenuItem(ctx: &Ctx, props: &MenuItemProps) -> VNode {
     Div(&props.debug)
         .style(style)
         .semantics(
-            Semantics::list_item()
+            Semantics::menu_item()
                 .selected(props.highlighted)
                 .label(&props.label)
                 .disabled(!props.enabled),

@@ -406,13 +406,17 @@ impl SemanticsDiff {
         up.sort_by_key(|e| (e.node.gen().index(), e.node.gen().generation()));
         for e in &up {
             out.push_str(&format!(
-                "upsert node={:?} role={:?} checked={:?} selected={:?} disabled={} label={:?} bounds=({:.1},{:.1},{:.1},{:.1})\n",
+                "upsert node={:?} role={:?} checked={:?} selected={:?} disabled={} invalid={} required={} label={:?} err={:?} num={:?} bounds=({:.1},{:.1},{:.1},{:.1})\n",
                 e.node,
                 e.semantics.role,
                 e.semantics.checked,
                 e.semantics.selected,
                 e.semantics.disabled,
+                e.semantics.invalid,
+                e.semantics.required,
                 e.semantics.label.as_deref(),
+                e.semantics.error_message.as_deref(),
+                e.semantics.value_num.map(|n| n.get()),
                 e.x,
                 e.y,
                 e.w,

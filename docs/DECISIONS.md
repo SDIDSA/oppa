@@ -20,6 +20,8 @@ this table in place and never rewrite history. All ADRs are Accepted.
 | [0012](10-decisions/ADR-0012-text-editing-authority.md) | Text-editing authority | GPU backend owns on GPU, DOM `<input>` owns on Web; shared op-suite is the contract |
 | [0013](10-decisions/ADR-0013-state-residence.md) | Core-side state residence | Surviving state lives core-side; generation-tagged tasks; memo-write panics |
 | [0014](10-decisions/ADR-0014-app-storage.md) | Sync KV + sandboxed-file storage seams | Sync KV now; async backends deferred |
+| [0010](10-decisions/ADR-0010-scheduler-threading.md) | COM RPC-thread → host-loop marshaling (decision 352) | UIA provider methods read the snapshot tree + enqueue via installed callbacks; host loop drains on INPUT; uninstalled drivers fail `E_NOTIMPL` |
+| [0002](10-decisions/ADR-0002-accessibility-in-contract.md) | Validation + range payloads; Tree/TreeItem/MenuItem roles (decision 352) | `invalid`/`required`/`error_message` + `value_num`/`min_value`/`max_value`; Invoke on Button/MenuItem, RangeValue on Slider/ProgressBar; MenuItem migrated off ListItem |
 
 Superseded decisions: none currently. If a decision is replaced, replace its row
 here (1 line) — the old ADR file stays frozen in git, not in this table.

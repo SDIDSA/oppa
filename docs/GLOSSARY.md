@@ -21,4 +21,7 @@ concept, this file wins.
 - **PassMask** — per-node dirty flags (`STRUCTURE | STYLE | LAYOUT | PAINT | TEXT | SEMANTICS`).
 - **DrawOp** — display-list operations (`Rect`, `RImg`, `RRect`, `Text`, `Path`, `PushClip`, `PushLayer`, `Pop`).
 - **SemanticsDiff** — accessibility tree diff shipped in commits.
+- **Validation marks (`invalid` / `required` / `error_message`)** — form-validation announcement payload (decision 352); validators stay app-side, the payload only announces.
+- **Range bounds (`value_num` / `min_value` / `max_value`)** — the numeric half of the Slider/ProgressBar announcement (decision 352); `value_text` stays the human half, and `None` means no value interface.
+- **AT action** — an assistive-technology invocation driving back into the framework (UIA Invoke/RangeValue, AT-SPI Action/Value, DOM native); always through host-loop callbacks, never direct framework access (decision 352).
 - **Slot** — a stable virtualization position in `ScrollArea`; keys are slots, not items.

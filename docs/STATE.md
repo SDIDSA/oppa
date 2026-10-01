@@ -10,10 +10,20 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 - v1 remainder + close-out: Linux/Android/Web text slices, phone round (Snapdragon 870 oracle + frame cost + visible present), present depth, Linux input, stale-APK rule.
 - Productization Phases 8–35: controls catalog (15 controlled components), Task Studio reference app + E2E, `hello-desktop` + `hello-web` templates, Toast, cookbook, API-doc refresh, packaging recipes, `WasmHost` harness, testkit key/text helpers, first repo CI. Productization goals G1–G6 closed.
 - Validation: full-workspace Linux gate, Windows live pass (COM dialogs, TSF chain, `WM_CLOSE`), Edge 14/14 + Firefox boot smoke, Vulkan teardown-race fix, Xn damage-loop harness mode.
+- Phase 36 PR1 (decision 352, gate green 2026-10-01): Semantics + A11Y action
+  parity — validation marks, numeric range bounds, `Role::{Tree, TreeItem,
+  MenuItem}`; DOM `aria-invalid/required/errormessage/valuenow/min/max`,
+  AT-SPI Action + Value in the wire tree, UIA Invoke + RangeValue with
+  COM-thread → host-loop marshaling; MenuItem control migrated off ListItem.
 
 ## Now (in progress)
 
-- Nothing active. Phase 35 closed 2026-10-01; no round currently open.
+- Phase 36 PR2 (Core Engine v2): Layout v2 — 2D `Tag::Grid`
+  (`GridTrack::{Px, Fr, Auto}`, `grid_cols`/`grid_rows`,
+  `col_span`/`row_span`), `flex_grow`/`flex_shrink`, `min`/`max`
+  clamping on `Style`, 2D `ScrollArea` (`ScrollOffset { x, y }`,
+  horizontal thumb, `content_w` overflow, `Shift+Wheel` routing);
+  existing callers migrate in the same PRs.
 
 ## Next (accepted, not started)
 
@@ -32,6 +42,9 @@ Accepted-carry: `component_manifest!` generics (refused loudly until designed), 
 | macOS/iOS shells | No Apple hardware; excluded by design |
 | Weak-tier silicon validation (Mali-G52/Adreno-610 class) | Needs hardware wall |
 | Safari pass, Firefox full automation | Needs machine/browser session |
+| Multi-window `DesktopLoop` (secondary `SurfaceId` windows) | Deferred by plan; per-surface granularity is out — re-decision required to revive |
+| Variable-height virtualized rows (prefix-sum index) | Deferred by plan — re-decision required to revive |
+| `cargo oppa reload-check` as a G9 substitute | Unlisted extra scope, not approved — G9 is the doc recipe |
 
 ## Known issues (not code bugs unless noted)
 
