@@ -1220,6 +1220,23 @@ fn field_edge(ctx: &Ctx, invalid: bool) -> Color {
 /// on DOM the backend renders `value=""` with a native `placeholder`
 /// attribute from that span (decision 293) — typing feeds only typed
 /// text through the session fallback, on every backend).
+///
+/// Web value loop (Phase 39a, decisions 377–379 — the U8 authoring
+/// shape): pass an author-owned `Signal<SharedString>` as `value`
+/// and read it back by rendering it (no retained `NodeId` ever
+/// leaks into app code — the signal IS the field's name). The
+/// browser owns insertion, caret, selection, IME, and undo
+/// (verdict (b)); each `input` event forwards pid + full value as
+/// `InputEvent::Text`, which commits through the session (firing
+/// `on_change` exactly like a native insert — validators and
+/// bridges observe every commit) and re-renders around the focused
+/// field without touching it (keyed patches skip it; composition
+/// preedit never forwards — `isComposing` guards the bridge, so
+/// framework normalization can never reset a live IME). Programmatic
+/// `value.set` flows out through the `value` property; it never
+/// re-fires `on_change` (no loop). Rejected commits (a bridge that
+/// ignores a parse) simply never write the signal — the next
+/// keystroke self-heals (level-triggered values).
 pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     let t = ctx.theme().tokens();
     let session = ctx.edit_session(props.value.clone());
@@ -11778,5 +11795,112 @@ mod tests {
         stack.set(lost);
         host4.run_until_idle();
         assert_eq!(find_retained_by_debug(&host4, "nav-empty").len(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 39a (decisions 377–379): DOM → framework value loop
+    // ------------------------------------------------------------------
+
+    #[derive(Clone)]
+    struct LoopCase {
+        props: TextInputProps,
+        count: Signal<u32>,
+    }
+    impl Props for LoopCase {}
+
+    fn loop_render(ctx: &Ctx, p: &LoopCase) -> VNode {
+        Column::new().gap(8).children([
+            ctx.child("oppa::LoopField", 1, &p.props, TextInput),
+            VNode::from(Text {
+                text: SharedString::from(format!("ticks {}", p.count.get())),
+                style: Text::body_secondary,
+            }),
+        ])
+    }
+
+    /// U8 value loop (decision 377): DOM `input` events arrive as
+    /// `InputEvent::Text` and set the controlled signal exactly per
+    /// keystroke (counted, not inferred), reporting through
+    /// `on_change` like native commits; an unrelated tick
+    /// re-renders around the field with value, caret, and node
+    /// identity intact and no echo; programmatic sets never report
+    /// (no loop — `on_change` is the commit path, not the set path).
+    #[test]
+    fn value_loop_feeds_report_and_ticks_preserve() {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        let value = host.runtime().signal(SharedString::from(""));
+        let count = host.runtime().signal(0u32);
+        let (notify, seen) = blowing::<SharedString>();
+        let props = TextInputProps {
+            on_change: Some(notify),
+            ..TextInputProps::new("Name", value.clone())
+        };
+        host.mount(
+            "Loop",
+            LoopCase {
+                props,
+                count: count.clone(),
+            },
+            loop_render,
+        );
+        host.run_until_idle();
+        // Focus first (typing implies browser focus; the feed
+        // itself never moves framework focus).
+        let field = node_by_debug(&host, "text-input");
+        press_node(&host, field);
+        assert_eq!(host.focused_node(), Some(field));
+        // Keystroke 1: the DOM value feeds exactly + reports.
+        host.inject_input(InputEvent::text(field, "h"));
+        host.run_until_idle();
+        assert_eq!(value.get().to_string(), "h");
+        assert_eq!(
+            seen.borrow()
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+            vec!["h".to_string()],
+            "platform commits report like native inserts"
+        );
+        assert_eq!(
+            host.focused_field_session().expect("session").caret(),
+            1,
+            "feed caret collapses to the end"
+        );
+        // Keystroke 2: full values stay exact (level-triggered —
+        // each event carries the whole current value).
+        host.inject_input(InputEvent::text(field, "hi"));
+        host.run_until_idle();
+        assert_eq!(value.get().to_string(), "hi");
+        assert_eq!(
+            seen.borrow()
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+            vec!["h".to_string(), "hi".to_string()],
+            "counted per step, never inferred"
+        );
+        // Unrelated tick: re-renders around the field — value,
+        // caret, and node identity intact, no echo.
+        count.set(1);
+        host.run_until_idle();
+        assert_eq!(value.get().to_string(), "hi");
+        assert_eq!(
+            host.focused_field_session().expect("session").caret(),
+            2,
+            "ticks never move the caret"
+        );
+        assert_eq!(
+            node_by_debug(&host, "text-input"),
+            field,
+            "no remount across ticks"
+        );
+        assert_eq!(seen.borrow().len(), 2, "ticks never echo");
+        // Programmatic sets flow to the value without reporting
+        // (no loop back into `on_change`).
+        value.set(SharedString::from("HELLO"));
+        host.run_until_idle();
+        assert_eq!(value.get().to_string(), "HELLO");
+        assert_eq!(seen.borrow().len(), 2, "sets never report");
     }
 }

@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-01 (through Decision 376).
+Status: current. Last verified: 2026-10-01 (through Decision 379).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -94,25 +94,36 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   recipes) + styling reference landed in crate rustdocs (zero new
   `.md`); packaging promotion (G19: Windows release-exe +
   tarball mechanics verified with outputs; rc/cargo-deb absent
-  stays manual/open); PWA story (G20: template `manifest.json` +
+  stays manual/open);   PWA story (G20: template `manifest.json` +
   `sw.js` + registration flow through `cargo oppa new`, release
   `.wasm` weighed at ~2.87 MB served).
+- Phase 39a (decisions 377–379, gate green 2026-10-01): DOM →
+  framework value loop (U8) — payload-carrying `InputEvent::Text`
+  (Q1) + signal-passed binding (Q3) with platform commits
+  reporting through `on_change` (no undo push, caret to end);
+  focused-field swap preservation via keyed patches (Q2, zero DOM
+  ops on unrelated ticks, value intact); latin-acceptance floor
+  with `isComposing` preedit guard + bubbled-key ownership (Q4,
+  Q5); loop proven counted per keystroke (framework) + mutation
+  counts (DOM) with the M7 browser editing suite unchanged.
 
 ## Now (in progress)
 
-- Phase 38 (Control Catalog, Cookbook, Styling, Packaging & PWA):
-  38a–38d shipped — the catalog, cookbook/styling, data-dir,
-  installers, and PWA legs are done. Remaining: Phase 39 (web
-  value-loop U8 + reference apps + final audit).
+- Phase 39 (Web Value-Loop, Reference Apps & Final Close-Out):
+  39a shipped (U8 value loop — channel, preservation, Q1–Q5);
+  remaining: 39b reference apps (`KitchenSinkApp` + `Task
+  Studio` exercising every Phase 36–38 capability) + final audit
+  of the 6 living docs + `docs/06-platforms/`.
 
 ## Next (accepted, not started)
 
-Ordered productization P1s (closed this round): cookbook
+Ordered productization P1s (closed through Phase 38d): cookbook
 additions (G10), styling reference (G11), packaging promotion
 (G19), PWA story (G20), persistence data-dir helper (G23).
 
-Planned v2 specs (unimplemented; full text in git history):
-DOM→framework value-loop text entry.
+Planned v2 specs (unimplemented; full text in git history): none
+open — the DOM→framework value loop closed in Phase 39a (future
+v2 items re-decide here).
 
 Accepted-carry: c3 CDP/Edge re-baseline whenever the harness is next
 exercised, Firefox full-leg automation (optional tooling), weak-GPU

@@ -1592,12 +1592,13 @@ impl ComponentHost {
         };
         // Exactly one session feeds; zero or multi miss quietly
         // (documented above — the arm's doctrine, not an assert).
-        // A platform text feed moves the caret to the end (the
-        // session collapses there), so it resets the blink phase
-        // like every session op (Round 15.1, decision 312).
+        // The platform commit reports through `on_change` like a
+        // native insert (Phase 39a, decision 377 — round-5.4 parity),
+        // collapses the caret to the end (the feed carries none),
+        // and resets the blink phase like every session op (Round
+        // 15.1, decision 312).
         if let [sess] = self.edit_sessions_for(inst).as_slice() {
-            sess.content_signal().set(SharedString::from(value));
-            sess.note_caret_activity();
+            sess.apply_platform_value(value);
         }
     }
 

@@ -261,6 +261,15 @@ root.addEventListener("pointermove", (ev) => {
 });
 root.addEventListener("input", (ev) => {
   const t = ev.target;
+  // Q4 composition scope (Phase 39a, decision 379): preedit input
+  // events (`isComposing`) never forward — the framework must not
+  // observe (and normalize back) a half-composed value mid-IME, or
+  // the value write would reset the browser's composition. The
+  // commit lands as a plain non-composing input right after and
+  // flows then (self-healing by construction).
+  if (ev.isComposing) {
+    return;
+  }
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA") && t.dataset.pid) {
     paint(app.text(t.dataset.pid, t.value));
   }
