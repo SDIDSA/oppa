@@ -11,7 +11,7 @@ $env:CARGO_INCREMENTAL="0"   # Windows only
 cargo fmt --all -- --check
 cargo clippy --all-targets    # one pre-existing `FpsApp` lint is on record
 cargo check --target wasm32-unknown-unknown -p oppa -p oppa-controls -p oppa-dom -p oppa-web
-cargo test --workspace -j1    # -j1; serial if GPU flakes
+cargo test --workspace --no-fail-fast   # CI runs parallel; use -j1 locally if GPU flakes
 ```
 
 First repo CI (`.github/workflows/ci.yml`) runs fmt + clippy + wasm check +

@@ -36,4 +36,4 @@ jobs:
       - name: workspace tests
         # --no-fail-fast: one run reports every failing binary, not just
         # the first (environment-gated rows are spread across crates).
-        run: cargo test --workspace -j1 --no-fail-fast
+        run: cargo test --workspace --no-fail-fast
