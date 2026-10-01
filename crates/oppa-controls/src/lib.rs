@@ -41,9 +41,8 @@
 //! Controls: Button, Checkbox, Toggle, Slider, TextInput, Modal,
 //! Radio, RadioGroup, Tabs, Select, ProgressBar, Badge.
 //!
-//! Per-control pages: `docs/09-api/controls/{button,checkbox,toggle,
-//! slider}.md` (TextInput and Modal are documented here — no new
-//! pages this round).
+//! Per-control behavior is documented in this crate; catalog status
+//! lives in `docs/STATE.md` (Done).
 
 // Control components are `CamelCase` functions by framework convention
 // (`#[component] fn Name` — M2 authoring surface), hence the crate-level

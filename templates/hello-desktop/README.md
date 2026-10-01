@@ -14,8 +14,8 @@ cargo run
 ```
 
 Escape with nothing focused exits. `OPPA_RENDERER=cpu` forces the
-software path. Next steps: [getting started](../../docs/05-implementation/getting-started.md)
-(§0 desktop, §1–3 web), [cookbook](../../docs/09-api/cookbook.md),
+software path. Next steps: [contributing](../../docs/CONTRIBUTING.md)
+(gates + entry points), [architecture](../../docs/ARCHITECTURE.md),
 `oppa-testkit` headless tests.
 
 ## Verify it (from the Oppa checkout)

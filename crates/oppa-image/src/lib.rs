@@ -7,7 +7,7 @@
 //! every other format refuses loudly by magic bytes (JPEG names its
 //! follow-up, it is not silently covered).
 //!
-//! Design (see decisions 222–223 in `docs/04-planning/state.md`):
+//! Design (see decisions 222–223; rationale in git history):
 //!
 //! - **Straight alpha out.** Decoders hand back unpremultiplied
 //!   `RGBA8`; each backend premultiplies at insert with its own

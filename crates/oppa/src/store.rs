@@ -6,7 +6,7 @@
 //! seam. This module is the seam: two sync-first traits, two
 //! in-memory references, and one std-backed FS for native targets.
 //!
-//! Design (see decisions 216–217 in `docs/04-planning/state.md`):
+//! Design (see decisions 216–217; rationale in git history):
 //!
 //! - **Sync-first (216).** Unlike clipboard reads (async on web —
 //!   hence request/poll, decision 209), storage has a sync option on
@@ -44,7 +44,7 @@ use crate::reactive::{untrack, Runtime};
 use crate::worker::TaskScope;
 
 /// Storage failure (loud by construction — see
-/// `docs/05-implementation/error-handling.md`).
+/// `docs/CONTRIBUTING.md`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum StoreError {
     /// No backend for this target yet (e.g. FS on web).

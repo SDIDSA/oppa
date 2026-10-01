@@ -19,5 +19,5 @@ fn main() {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("spike_ime_shell: Windows-only spike rig (docs/11-experiments/)");
+    eprintln!("spike_ime_shell: Windows-only spike rig (spike/)");
 }

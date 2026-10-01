@@ -7,8 +7,7 @@
 //! pinned by the existing host-side suite.
 //!
 //! App crates wrap this in ~25 lines of `#[wasm_bindgen]` glue
-//! over their own root (see `docs/09-api/web-app.md` and
-//! `templates/hello-web`): the harness is plain Rust on purpose
+//! over their own root (see `templates/hello-web`): the harness is plain Rust on purpose
 //! (exported constructors cannot be generic over props).
 
 use std::rc::Rc;

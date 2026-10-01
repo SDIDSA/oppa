@@ -7,7 +7,7 @@
 //! the blessed app-level async pattern: one state shape plus one
 //! driver, shared by native and web.
 //!
-//! Design (see decisions 220–221 in `docs/04-planning/state.md`):
+//! Design (see decisions 220–221; rationale in git history):
 //!
 //! - **One state shape.** [`FetchState<T>`] (`Idle/Loading/Ready/
 //!   Failed`) lives in a keyed signal ([`Ctx::fetch_state`]) —

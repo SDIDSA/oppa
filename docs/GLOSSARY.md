@@ -1,0 +1,24 @@
+# Glossary (current)
+
+Status: current. Last verified: 2026-10-01.
+Canonical terms — if any other document uses a different name for the same
+concept, this file wins.
+
+- **Signal / Memo / Effect / BatchGuard / untrack** — the five reactive primitives. Nothing else is a primitive.
+- **Component** — a plain function `fn(&Ctx, &P) -> VNode`. Not a class; exists only in the ephemeral layer.
+- **VNode** — the ephemeral tree a component returns (`Element | Text | Fragment | Hole`). Discarded after reconciliation.
+- **RetainedNode / retained tree** — the stable-identity tree layout and renderers consume. Keyed by `NodeId` (generational arena id).
+- **Tag** — the closed set of node kinds (`Div, Stack, Row, Column, Text, Image, ScrollArea` + `Custom(u64)` escape hatch).
+- **Style / StyleId** — typed style structs, interned into `StyleId`. Never "CSS class" or "stylesheet".
+- **TreeDiff** — structural update (added/removed/moved ids + per-node payload deltas) sent to renderer backends.
+- **FramePlan** — per-frame ordered display list + damage + layer plans, built from dirty subtrees only.
+- **Caps** — backend capability negotiation (layers, blur/backdrop, MSAA).
+- **Presenter / renderer backend** — implements `RendererBackend`; diff-driven; holds backend-mechanism state but no application state.
+- **PlatformShell** — per-platform surface/window/IME/DPI/lifecycle.
+- **TextService** — per-platform shaping/measurement/fallback.
+- **Editing session** — framework-owned caret/selection/composition/undo state for the focused field, core-side.
+- **Binding edge (`ctx.binding`)** — a memo variant whose value change is an identity event; stamps one commit with `suppress_transitions`.
+- **PassMask** — per-node dirty flags (`STRUCTURE | STYLE | LAYOUT | PAINT | TEXT | SEMANTICS`).
+- **DrawOp** — display-list operations (`Rect`, `RImg`, `RRect`, `Text`, `Path`, `PushClip`, `PushLayer`, `Pop`).
+- **SemanticsDiff** — accessibility tree diff shipped in commits.
+- **Slot** — a stable virtualization position in `ScrollArea`; keys are slots, not items.

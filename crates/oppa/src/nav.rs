@@ -1,11 +1,11 @@
 //! Stack-first navigation (G6 — decisions 218–219).
 //!
 //! No router/back-stack/deep-links existed anywhere in core
-//! (HANDOFF-V2 §4 G6). This module is the v1 model: a
+//! (shipped as G6 gap, now Done — see `docs/STATE.md`). This module
 //! framework-owned stack of route keys with named outcomes on every
 //! op, plus deep-link parse/encode as stack syntax.
 //!
-//! Design (see decisions 218–219 in `docs/04-planning/state.md`):
+//! Design (see decisions 218–219; rationale in git history):
 //!
 //! - **Stack-first (218).** Identity is the stack position, not the
 //!   URI: [`NavStack`] holds [`Route`]s (name + ordered params);

@@ -1,6 +1,6 @@
 //! Headless app-test seam (G15 — decision 234).
 //!
-//! `07-testing/` covers the framework; app developers got no pump +
+//! `docs/ARCHITECTURE.md` (test harness) covers the framework side;
 //! assert story — every round's tests reinvented the same rig
 //! (`ComponentHost` + inject + `run_until_idle` + retained reads).
 //! This crate productizes exactly that rig, composing public API
@@ -16,7 +16,7 @@
 //! // assert_eq!(app.host().capture_count(), 0);
 //! ```
 //!
-//! Design (see decision 234 in `docs/04-planning/state.md`):
+//! Design (decision 234; rationale in git history):
 //!
 //! - **Loud lookups.** `node(debug)` / `center(debug)` panic naming
 //!   the missing label (a renamed debug label is a wiring bug, and

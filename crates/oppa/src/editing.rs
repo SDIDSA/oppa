@@ -5,7 +5,7 @@
 //! per-instance handle over author-owned content plus core-side
 //! caret/selection/composition/undo state.
 //!
-//! Design (see decisions 205–208 in `docs/04-planning/state.md`):
+//! Design (see decisions 205–208; rationale in git history):
 //!
 //! - **Residence (205).** Content is an author-owned
 //!   [`Signal`](crate::reactive::Signal)`<SharedString>` (the controlled

@@ -1,36 +1,22 @@
-# Documentation index
+# Documentation index (current)
 
-Status: current. This tree is the navigable map of the project.
+Status: current. Six living files describe `HEAD`. History is in git, not here.
 
-Read in this order:
+| File | Tracks |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | How the code works now (layers, code paths, seams, backends/shells) |
+| [SPEC.md](SPEC.md) | Behavioral contracts (observable guarantees, oracle gates) |
+| [STATE.md](STATE.md) | Done / Now / Next / Blocked / Known issues (the only planning file) |
+| [DECISIONS.md](DECISIONS.md) | Active decisions, 1 line each (rationale in linked ADRs) |
+| [GLOSSARY.md](GLOSSARY.md) | Canonical terms (wins on naming disputes) |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Gates, entry points, working rules |
 
-1. `00-vision/` — what and why (stable).
-2. `01-design/` — the conceptual model (implementation-independent).
-3. `02-architecture/` — subsystem structure and boundaries.
-4. `03-spec/` — behavioral contracts (observable behavior, not trivia).
-5. `04-planning/` — what is next and what is unfinished.
-6. `05-implementation/` — how contributors work in this codebase.
-7. `06-platforms/` — per-platform integration, limitations, status.
-8. `07-testing/` — how correctness is established.
-9. `08-performance/` — requirements and measurements (no invented numbers).
-10. `09-api/` — the public application-developer interface.
-11. `10-decisions/` — Architecture Decision Records (traceability).
-12. `11-experiments/` — exploratory work (never authoritative).
-13. `12-archive/` — frozen pre-consolidation records, preserved verbatim.
+Kept alongside (current-state, not history):
 
-The pre-consolidation records (`12-archive/DESIGN.md`, `12-archive/BUILD-ORDER.md`,
-`12-archive/IME-SESSION.md`) are preserved verbatim under `12-archive/`; the
-living logs (`state.md`, `rounds.md`) live in `04-planning/`;
-experiment evidence stays under `spike/`. The documents below
-extract, deduplicate, and organize their content. Where a summary
-here and an archived record disagree, the archived record is
-authoritative-raw — file an issue instead of silently picking a
-side.
+- [`06-platforms/`](06-platforms/) — per-platform status, limits, recipes.
+- [`10-decisions/`](10-decisions/) — ADRs 0001–0014 (decision rationale).
+- [`12-archive/`](12-archive/) — frozen pre-consolidation records, read-only.
 
-Status labels used across this tree: **Current** (implemented and
-authoritative), **Planned** (accepted, not yet implemented), **Proposed**
-(not accepted), **Experimental** (under investigation),
-**Deprecated / Superseded** (no longer current).
-
-Start at [`00-vision/vision.md`](00-vision/vision.md). For a one-page
-working map, see [`../PROJECT.md`](../PROJECT.md).
+Rules: rounds overwrite the six files in place and delete superseded text in
+the same edit. No new doc files without deleting/merging an old one. Start at
+[`../PROJECT.md`](../PROJECT.md).

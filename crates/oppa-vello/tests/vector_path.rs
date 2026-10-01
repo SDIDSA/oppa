@@ -157,6 +157,12 @@ fn zero_width_stroke_stages_nothing() {
 /// exterior, never fringe bits — stated.)
 #[test]
 fn vector_path_renders_on_cpu_and_vello() {
+    // Hardware-oracle row: software-emulated adapters (WARP) prove no
+    // real-GPU pixels and crash under parallel load - skip loudly.
+    if let Err(e) = VelloBackend::probe_hardware_adapter() {
+        eprintln!("SKIP vector_path_renders_on_cpu_and_vello: {e}");
+        return;
+    }
     const RED: (u8, u8, u8, u8) = (255, 0, 0, 255);
     const WHITE: (u8, u8, u8, u8) = (255, 255, 255, 255);
     let mut oracle = GpuOracle::new(surface_60()).expect("oracle builds");

@@ -8,7 +8,7 @@
 //! reads — if a presenter secretly needs core internals, that is an M4
 //! finding, not a silent import (BUILD-ORDER §3).
 //!
-//! Interpretation decisions (M4; carried to `04-planning/state.md`):
+//! Interpretation decisions (M4; rationale in git history):
 //!
 //! - `Color` is opaque sRGB `0xRRGGBB`. There is no alpha channel in v1;
 //!   translucency arrives via the separate `opacity` fields (and the

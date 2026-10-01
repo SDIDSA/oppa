@@ -26,9 +26,9 @@ output is yours, never committed. `OPPA_RENDERER` does not apply on
 web (the browser owns pixels); the module viewport is fixed at
 800x600 to match the harness.
 
-Next steps: [getting started](../../docs/05-implementation/getting-started.md)
-(§1–3 web), [web-app API](../../docs/09-api/web-app.md),
-[cookbook](../../docs/09-api/cookbook.md).
+Next steps: [contributing](../../docs/CONTRIBUTING.md) (gates + entry
+points), [architecture](../../docs/ARCHITECTURE.md) (web backend + shells),
+[glossary](../../docs/GLOSSARY.md).
 
 ## Verify it (from the Oppa checkout)
 
