@@ -534,7 +534,7 @@ impl WebApp {
     /// — taps, keys, text — while tests read geometry, semantics,
     /// and tab order through here instead of inventing coordinates).
     pub fn host(&self) -> &ComponentHost {
-        &self.shell.host()
+        self.shell.host()
     }
 }
 
@@ -716,7 +716,7 @@ mod tests {
     fn webapp_text_measures_nonzero_width() {
         let mut app = WebApp::new();
         let _ = app.html();
-        let ids = oppa::find_retained_by_debug(&app.host(), "text");
+        let ids = oppa::find_retained_by_debug(app.host(), "text");
         assert!(!ids.is_empty(), "scene renders text leaves");
         let mut nonzero = 0;
         for id in &ids {
@@ -799,7 +799,7 @@ mod tests {
         let first = app.html();
         assert!(first.contains("Probe me pressed 0"), "custom scene renders");
         assert!(!first.contains("route:home"), "demo scene not mounted");
-        let id = oppa::find_retained_by_debug(&app.host(), "probe")
+        let id = oppa::find_retained_by_debug(app.host(), "probe")
             .into_iter()
             .next()
             .expect("probe node");
@@ -818,7 +818,6 @@ mod tests {
     /// over mount_root + click, not a rig fork).
     #[test]
     fn wasm_host_mounts_custom_root_without_demo() {
-        use oppa::SharedString;
         #[derive(Clone)]
         struct BareProps;
         impl oppa::Props for BareProps {}

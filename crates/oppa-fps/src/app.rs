@@ -40,7 +40,7 @@ struct FpsProps {
 }
 
 #[component]
-fn FpsApp(ctx: &Ctx, props: &FpsProps) -> VNode {
+fn fps_app(ctx: &Ctx, props: &FpsProps) -> VNode {
     let _ = ctx;
     Div("screen")
         .style(Style::new().size(props.w, props.h).bg(Color(0xFF_FF_FF)))
@@ -141,7 +141,7 @@ impl FpsCore {
         let handle = host.mount(
             "FpsApp",
             centered_props(&app_svc, &style, &start, size.0 as f32, size.1 as f32),
-            FpsApp,
+            fps_app,
         );
         host.run_until_idle();
         Self {

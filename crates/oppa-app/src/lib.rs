@@ -190,6 +190,9 @@ pub fn gpu_forced_by_env() -> bool {
     renderer_override() == Some(RendererKind::Gpu)
 }
 
+/// Poll hook callback for [`DesktopLoop`] pump iterations (Round 26.2, decision 342).
+pub type DesktopPollHook = Box<dyn FnMut(&mut DesktopLoop)>;
+
 pub struct DesktopLoop {
     host: ComponentHost,
     cpu: CpuBackend,
@@ -268,7 +271,7 @@ pub struct DesktopLoop {
     /// (e.g. Task Studio's `exit_requested`), writes files through
     /// the dialog seams, then asks for close. Keep it quick and
     /// idempotent -- it runs every iteration, including modal ones.
-    poll_hook: Option<Box<dyn FnMut(&mut DesktopLoop)>>,
+    poll_hook: Option<DesktopPollHook>,
     /// Scene clear color (theme contract round): both paint surfaces
     /// clear to the host theme's `background`. Tracked so a theme
     /// toggle refits the surfaces instead of presenting a stale page
@@ -721,7 +724,7 @@ impl DesktopLoop {
     /// iteration; `None` removes it. The hook observes runner-visible
     /// signals and drives runner-owned seams (dialogs, close) that
     /// component code cannot reach.
-    pub fn set_poll_hook(&mut self, hook: Option<Box<dyn FnMut(&mut DesktopLoop)>>) {
+    pub fn set_poll_hook(&mut self, hook: Option<DesktopPollHook>) {
         self.poll_hook = hook;
     }
 

@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-01 (through Decision 380).
+Status: current. Last verified: 2026-10-01 (through Decision 381).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -119,11 +119,16 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   `Splitter`, empty-title validation, a RichText status, and a
   Canvas done-meter (all E2E debugs preserved, E2E green);
   living-docs + platform audit closes Now/Next in place.
+- Phase 40a (decision 381, gate green 2026-10-01): Lint-zero —
+  eliminated pre-existing clippy warnings on record (fps_app naming in
+  oppa-fps and oppa-fps-demo, DesktopPollHook type alias in oppa-app,
+  needless borrows and unused import in oppa-web); clippy gate runs at
+  zero warnings across all targets; CONTRIBUTING.md gate note updated.
 
 ## Now (in progress)
 
-- No active phase — Phases 36–39 shipped (decisions 352–380,
-  all gates green 2026-10-01). New work re-decides here.
+- Phase 40b: Verification sweep (c3 CDP/Edge re-baseline, Firefox
+  full-leg automation, PWA load-once-offline hand pass, Safari passes).
 
 ## Next (accepted, not started)
 
@@ -152,5 +157,5 @@ sustained-cost standing rule.
 
 - Environmental flakes: `oppa-shell-win` live-Shift sampling; sandboxed clipboard returns NULL handle with `ERROR_SUCCESS` (loud skip); transient clipboard box contention in full-suite runs.
 - Stated edges: ZWJ-inside-regional-indicator double-click selects the joiner alone (pathological); right-held single-gesture drag-select stays out (tap-to-open).
-- Standing debt: one pre-existing `FpsApp` clippy lint on record; hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question); full `TaskStudio` keeps frame demand headlessly without input (probe-verified pre-existing — `DesktopLoop` pumps it, E2E green; efficiency follow-up, not a correctness bug).
+- Standing debt: hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question); full `TaskStudio` keeps frame demand headlessly without input (probe-verified pre-existing — `DesktopLoop` pumps it, E2E green; efficiency follow-up, not a correctness bug).
 - Deliberate non-goals (not debt): fixed decorative literals, `SELECTION_FILL`, OS title-bar theming; right-held menu drag-select; color-emoji rendering.

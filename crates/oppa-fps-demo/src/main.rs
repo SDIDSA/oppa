@@ -41,7 +41,7 @@ mod app {
     }
 
     #[component]
-    fn FpsApp(ctx: &Ctx, props: &FpsProps) -> VNode {
+    fn fps_app(ctx: &Ctx, props: &FpsProps) -> VNode {
         let _ = ctx;
         Div("screen")
             .style(Style::new().size(WIN_W, WIN_H).bg(Color(0xFF_FF_FF)))
@@ -182,7 +182,7 @@ mod app {
         let handle = host.mount(
             "FpsApp",
             centered_props(&dwrite, &text_style, "FPS: --", WIN_W, WIN_H),
-            FpsApp,
+            fps_app,
         );
         host.run_until_idle();
 

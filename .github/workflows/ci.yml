@@ -1,7 +1,7 @@
 # Oppa workspace gates (mirrors the protocol in
 # docs/CONTRIBUTING.md: fmt, clippy,
 # wasm-target check, full workspace test suite). Plain `clippy`
-# (no -D warnings): one pre-existing `FpsApp` lint is on record.
+# runs at zero warnings across all targets (Phase 40a decision 381).
 name: ci
 
 on: [push, pull_request]
