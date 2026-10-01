@@ -5668,10 +5668,10 @@ impl FilePickerProps {
 }
 
 /// Browse/save/folder trigger wrapping the dialog request/poll
-/// protocol (the ~30-lines-of-glue gap, closed): one Browse button
-/// + the controlled path line + an instance-owned status caption.
+/// protocol (the ~30-lines-of-glue gap, closed): one Browse button,
+/// the controlled path line, and an instance-owned status caption.
 /// Press requests then polls (blocking shells settle synchronously
-/// — modal behavior, documented; async shells poll `None` =
+/// — modal behavior, documented; async shells poll `None` as
 /// "still open…" and the next press re-polls — the
 /// level-triggered rule, so a dropped poll self-heals).
 /// `Some(Ok)` sets the path (open takes the first path and names
@@ -11124,12 +11124,17 @@ mod tests {
         ctx.child("oppa::Tree", 7, &p.props, Tree)
     }
 
-    fn mount_tree() -> (
+    /// Mounted tree + its controlled signals (one harness shape for
+    /// the Phase 38b tree tests — the tuple type rides an alias so
+    /// the signature stays under the complexity lint).
+    type TreeHarness = (
         ComponentHost,
         oppa::Collection<TreeNode>,
         Signal<Vec<SharedString>>,
         Signal<Option<SharedString>>,
-    ) {
+    );
+
+    fn mount_tree() -> TreeHarness {
         let host = ComponentHost::new();
         host.set_text_service(Box::new(FakeText));
         let rt = host.runtime();
@@ -11510,9 +11515,9 @@ mod tests {
         );
         // Disabled cells keep their press owner out of the tab order.
         assert!(
-            host.retained_handlers(node_by_debug(&host, "toolbar"))
-                .len()
-                > 0,
+            !host
+                .retained_handlers(node_by_debug(&host, "toolbar"))
+                .is_empty(),
             "the bar container owns press + arrows (one tab stop)"
         );
     }
@@ -11902,5 +11907,48 @@ mod tests {
         host.run_until_idle();
         assert_eq!(value.get().to_string(), "HELLO");
         assert_eq!(seen.borrow().len(), 2, "sets never report");
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 39b (decision 380): reference-app coverage
+    // ------------------------------------------------------------------
+
+    /// The sink's Views tab mounts every Phase 38b–38c control
+    /// (Tree, Toolbar, Menubar, RichText, Canvas, Image, NavHost)
+    /// plus the Form validation/DatePicker and Layout Grid/Splitter
+    /// legs on their own tabs.
+    #[test]
+    fn kitchen_sink_views_tab_mounts_phase38_controls() {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        host.mount("Sink", (), KitchenSinkApp);
+        host.run_until_idle();
+        // Five tabs now (Form/Layout/Overlays/Platform/Views).
+        let tabs = find_retained_by_debug(&host, "tab-item");
+        assert_eq!(tabs.len(), 5);
+        press_node(&host, tabs[4]);
+        for debug in [
+            "sink-tree",
+            "toolbar-cell-0",
+            "menubar-bar",
+            "sink-rich",
+            "sink-plot",
+            "img",
+            "sink-views-home",
+        ] {
+            assert_eq!(
+                find_retained_by_debug(&host, debug).len(),
+                1,
+                "{debug} mounts on the Views tab"
+            );
+        }
+        // Form leg: the invalid email + date box mount.
+        press_node(&host, tabs[0]);
+        assert_eq!(find_retained_by_debug(&host, "sink-email-field").len(), 1);
+        assert_eq!(find_retained_by_debug(&host, "date").len(), 1);
+        // Layout leg: the grid + splitter mount.
+        press_node(&host, tabs[1]);
+        assert_eq!(find_retained_by_debug(&host, "sink::Layout::Grid").len(), 1);
+        assert_eq!(find_retained_by_debug(&host, "sink-split").len(), 1);
     }
 }

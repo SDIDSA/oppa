@@ -24,15 +24,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use oppa::{
-    Collection, Column, Ctx, Div, Props, Row, RowId, SharedString, Signal, Style, Text, ThemeMode,
-    VNode,
+    CanvasOp, Collection, Column, Ctx, Div, FontWeight, Props, Px, Row, RowId, SharedString,
+    Signal, Style, Text, TextSpan, ThemeMode, VNode,
 };
 
 use super::{
-    Action, Button, ButtonProps, Change, ContextMenu, ContextMenuProps, DataGrid, DataGridProps,
-    ErrorBoundary, ErrorBoundaryProps, GridCellProps, GridColumn, MenuItemProps, Modal, ModalProps,
-    Select, SelectItem, SelectProps, TextArea, TextAreaProps, TextInput, TextInputProps, Toggle,
-    ToggleProps, Tooltip, TooltipProps, UncontrolledTextInput, UncontrolledTextInputProps,
+    Action, Button, ButtonProps, CanvasView, CanvasViewProps, Change, ContextMenu,
+    ContextMenuProps, DataGrid, DataGridProps, ErrorBoundary, ErrorBoundaryProps, GridCellProps,
+    GridColumn, MenuItemProps, MenuTitle, Menubar, MenubarProps, Modal, ModalProps, RichTextView,
+    RichTextViewProps, Select, SelectItem, SelectProps, Splitter, SplitterAxis, SplitterProps,
+    TextArea, TextAreaProps, TextInput, TextInputProps, Toggle, ToggleProps, Tooltip, TooltipProps,
+    UncontrolledTextInput, UncontrolledTextInputProps,
 };
 use oppa_macros::Props;
 
@@ -420,9 +422,21 @@ fn inspector(ctx: &Ctx, p: &InspectorProps) -> VNode {
     });
     let open_v = ctx.signal(false);
     let title_props = TextInputProps::new("Title", title_v);
+    // Phase 39b: empty titles announce invalid (G7 exercised
+    // functionally — the error never blocks, it only announces;
+    // saving an empty title stays the author's choice, stated).
+    let title_empty = task.title.is_empty();
     let title_props = TextInputProps {
         debug: SharedString::from("insp-title"),
         on_change: Some(title_commit),
+        invalid: title_empty,
+        required: true,
+        error_message: if title_empty {
+            Some(SharedString::from("Title is required"))
+        } else {
+            None
+        },
+        helper_text: None,
         ..title_props
     };
     let notes_props = TextAreaProps::new("Notes", notes_v);
@@ -639,28 +653,9 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
     save_props.on_confirm = Some(do_save);
     save_props.on_cancel = Some(do_discard);
 
-    // Inspector (keyed per task — fresh control state per
-    // selection — behind an error boundary).
-    let inspector_pane = match selected.get() {
-        Some(id) => {
-            let (tasks, task_id) = (tasks.clone(), id);
-            let child = move |c: &Ctx| {
-                c.child(
-                    "oppa::TaskInspector",
-                    task_id.0,
-                    &InspectorProps {
-                        task_id,
-                        tasks: tasks.clone(),
-                    },
-                    inspector,
-                )
-            };
-            ctx.child_auto(&ErrorBoundaryProps::new(child), ErrorBoundary)
-        }
-        None => Div("insp-empty").child(VNode::from(Text::new(SharedString::from(
-            "Select a task to inspect",
-        )))),
-    };
+    // Inspector content lives in `inspector_factory` below (a
+    // per-render factory for the Splitter's second pane — keyed per
+    // task behind an error boundary, same as before).
 
     let search_value = search.clone();
     let search_commit: Change<SharedString> = Rc::new(move |v| search_value.set(v));
@@ -694,7 +689,7 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
                 width: 120.0,
                 height: 32.0,
                 debug: SharedString::from("studio-theme"),
-                on_press: theme_toggle,
+                on_press: theme_toggle.clone(),
             },
             Button,
         ),
@@ -703,14 +698,14 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
             "Export JSON",
             "studio-export-json",
             "Download tasks as JSON",
-            export_json,
+            export_json.clone(),
         ),
         export_button(
             ctx,
             "Export CSV",
             "studio-export-csv",
             "Download tasks as CSV",
-            export_csv,
+            export_csv.clone(),
         ),
         ctx.child_auto(
             &ButtonProps {
@@ -719,25 +714,175 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
                 width: 120.0,
                 height: 32.0,
                 debug: SharedString::from("studio-add"),
-                on_press: add,
+                on_press: add.clone(),
             },
             Button,
         ),
     ]);
     let n = tasks.len();
-    let status = Div("studio-status").child(VNode::from(Text::new(SharedString::from(format!(
-        "{} tasks · {}",
-        n,
-        export_status.get()
-    )))));
+    let t = ctx.theme().tokens();
+    // Status line (Phase 39b, G22): a two-span RichText (bold
+    // count + dimmed export note) over a Canvas done-meter (track
+    // + done-fraction fill — the retained-surface leaf in a real
+    // app, repainting through the same signal reads as the grid).
+    let done_n = tasks.rows().iter().filter(|r| r.value.done).count();
+    let meter_frac = if n == 0 {
+        0.0
+    } else {
+        done_n as f32 / n as f32
+    };
+    let status = Div("studio-status").children([
+        ctx.child_auto(
+            &RichTextViewProps {
+                spans: vec![
+                    TextSpan::new(format!("{n} tasks")).weight(FontWeight::BOLD),
+                    TextSpan::new(format!(" · {}", export_status.get())),
+                ],
+                style: Text::body_secondary,
+                label: None,
+                debug: SharedString::from("studio-status-text"),
+            },
+            RichTextView,
+        ),
+        ctx.child_auto(
+            &CanvasViewProps {
+                ops: vec![
+                    CanvasOp::Rect {
+                        x: Px::of(0.0),
+                        y: Px::of(0.0),
+                        w: Px::of(120.0),
+                        h: Px::of(12.0),
+                        color: t.disabled,
+                    },
+                    CanvasOp::Rect {
+                        x: Px::of(0.0),
+                        y: Px::of(0.0),
+                        w: Px::of(120.0 * meter_frac.clamp(0.0, 1.0)),
+                        h: Px::of(12.0),
+                        color: t.primary,
+                    },
+                ],
+                width: 120.0,
+                height: 12.0,
+                label: Some(SharedString::from("Done ratio")),
+                debug: SharedString::from("studio-meter"),
+            },
+            CanvasView,
+        ),
+    ]);
+    // Menubar (Phase 39b, G21): File duplicates the export/add
+    // actions, View the sort orders + theme — native duplication
+    // (same closures, never a second behavior). Sits UNDER the
+    // body: the grid keeps its top-anchored geometry (first data
+    // row under the E2E's header cutoff, as before), status follows.
+    let open_title = ctx.signal(None::<usize>);
+    let file_items = |export_json: &Action, export_csv: &Action, add: &Action| {
+        vec![
+            MenuItemProps::new("Export JSON", {
+                let run = export_json.clone();
+                move || run()
+            }),
+            MenuItemProps::new("Export CSV", {
+                let run = export_csv.clone();
+                move || run()
+            }),
+            MenuItemProps::new("+ Add task", {
+                let run = add.clone();
+                move || run()
+            }),
+        ]
+    };
+    let view_items = |sort_mode: &Signal<u8>, theme_toggle: &Action| {
+        vec![
+            MenuItemProps::new("Sort: Title", {
+                let mode = sort_mode.clone();
+                move || mode.set(0)
+            }),
+            MenuItemProps::new("Sort: Priority", {
+                let mode = sort_mode.clone();
+                move || mode.set(1)
+            }),
+            MenuItemProps::new("Sort: Status", {
+                let mode = sort_mode.clone();
+                move || mode.set(2)
+            }),
+            MenuItemProps::new("Toggle theme", {
+                let run = theme_toggle.clone();
+                move || run()
+            }),
+        ]
+    };
+    let menubar = ctx.child_auto(
+        &MenubarProps::new(
+            vec![
+                MenuTitle::new("File", file_items(&export_json, &export_csv, &add)),
+                MenuTitle::new("View", view_items(&sort_mode, &theme_toggle)),
+            ],
+            open_title,
+        ),
+        Menubar,
+    );
+    // Splitter body (Phase 39b, G13): grid | inspector proportions
+    // are author-owned now (the gap's motivation — the fixed
+    // 560/380 ratio is gone, same debugs inside). Panes are
+    // factories rebuilding per render (move-only VNodes cannot be
+    // shared across renders); once-built props ride `Rc`.
+    let split = ctx.signal(0.6f32);
+    let grid_shared: Rc<DataGridProps<Task>> = Rc::new(grid_props);
+    let inspector_factory: Rc<dyn Fn(&Ctx) -> VNode> = {
+        let (tasks, selected) = (tasks.clone(), selected.clone());
+        Rc::new(move |inspector_ctx: &Ctx| match selected.get() {
+            Some(id) => {
+                let (tasks, task_id) = (tasks.clone(), id);
+                let child = move |c: &Ctx| {
+                    c.child(
+                        "oppa::TaskInspector",
+                        task_id.0,
+                        &InspectorProps {
+                            task_id,
+                            tasks: tasks.clone(),
+                        },
+                        inspector,
+                    )
+                };
+                inspector_ctx.child_auto(&ErrorBoundaryProps::new(child), ErrorBoundary)
+            }
+            None => Div("insp-empty").child(VNode::from(Text::new(SharedString::from(
+                "Select a task to inspect",
+            )))),
+        })
+    };
+    let body = ctx.child_auto(
+        &SplitterProps {
+            fraction: split,
+            axis: SplitterAxis::Vertical,
+            width: 960.0,
+            height: 440.0,
+            divider_px: 8.0,
+            min_first_px: 300.0,
+            min_second_px: 200.0,
+            enabled: true,
+            debug: SharedString::from("studio-split"),
+            first: {
+                let grid_shared = grid_shared.clone();
+                Rc::new(move |pane_ctx: &Ctx| pane_ctx.child_auto(&*grid_shared, DataGrid))
+            },
+            second: {
+                let inspector_factory = inspector_factory.clone();
+                Rc::new(move |pane_ctx: &Ctx| {
+                    Div("studio-inspector")
+                        .style(Style::new().w(380.0))
+                        .child(inspector_factory(pane_ctx))
+                })
+            },
+            on_change: None,
+        },
+        Splitter,
+    );
     Div("studio").children([
         toolbar,
-        Row("studio-body").gap(16).children([
-            ctx.child_auto(&grid_props, DataGrid),
-            Div("studio-inspector")
-                .style(Style::new().w(380.0))
-                .child(inspector_pane),
-        ]),
+        body,
+        menubar,
         status,
         ctx.child_auto(&save_props, Modal),
     ])
@@ -867,5 +1012,61 @@ mod tests {
         assert_eq!(priority_label(1), "Medium");
         assert_eq!(priority_label(2), "High");
         assert_eq!(priority_label(9), "Low");
+    }
+
+    /// Phase 39b (decision 380): the upgraded studio mounts the
+    /// Splitter body (grid + inspector behind one divider), the
+    /// Menubar (File/View titles opening a Menu popup), the
+    /// RichText status, and the Canvas done-meter — same E2E
+    /// debugs inside (`studio-add`, `studio-search`, `insp-title`,
+    /// `task-title`, `modal-confirm` all preserved). Settles
+    /// bounded (full-studio headless quiescence is NOT asserted:
+    /// the tree keeps frame demand without input even unmodified
+    /// (probe-verified pre-existing — DesktopLoop pumps it in
+    /// production/E2E, so this test drives bounded frames and
+    /// asserts structure, never `run_until_idle`).
+    #[test]
+    fn studio_mounts_splitter_menubar_and_meter() {
+        use oppa::{find_retained_by_debug, ComponentHost, InputEvent};
+        let host = ComponentHost::new();
+        host.mount(
+            "Studio",
+            StudioProps {
+                seed: sample_tasks(),
+                key: oppa::fetch_key("test:studio-39b"),
+                hooks: None,
+            },
+            TaskStudio,
+        );
+        for _ in 0..50 {
+            host.run_once();
+        }
+        for debug in [
+            "studio-split-divider",
+            "menubar-bar",
+            "studio-meter",
+            "studio-grid",
+            "studio-add",
+            "studio-search",
+        ] {
+            assert_eq!(
+                find_retained_by_debug(&host, debug).len(),
+                1,
+                "{debug} mounts"
+            );
+        }
+        // File title opens a Menu popup (standalone dropdown).
+        let title = find_retained_by_debug(&host, "menubar-title-0")[0];
+        let b = host.committed_box(title).expect("title hit box");
+        host.inject_input(InputEvent::pointer_down(b.x + b.w / 2.0, b.y + b.h / 2.0));
+        host.inject_input(InputEvent::pointer_up(b.x + b.w / 2.0, b.y + b.h / 2.0));
+        for _ in 0..50 {
+            host.run_once();
+        }
+        assert_eq!(
+            find_retained_by_debug(&host, "menu-popup").len(),
+            1,
+            "File opens its menu"
+        );
     }
 }

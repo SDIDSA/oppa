@@ -6,7 +6,7 @@ concept, this file wins.
 
 - **Signal / Memo / Effect / BatchGuard / untrack** — the five reactive primitives. Nothing else is a primitive.
 - **Component** — a plain function `fn(&Ctx, &P) -> VNode`. Not a class; exists only in the ephemeral layer.
-- **VNode** — the ephemeral tree a component returns (`Element | Text | Fragment | Hole`). Discarded after reconciliation.
+- **VNode** — the ephemeral tree a component returns (`Element | Text | RichText | Fragment | Hole`). Discarded after reconciliation.
 - **RetainedNode / retained tree** — the stable-identity tree layout and renderers consume. Keyed by `NodeId` (generational arena id).
 - **Tag** — the closed set of node kinds (`Div, Stack, Row, Column, Text, Image, ScrollArea, Grid, Canvas` + `Custom(u64)` escape hatch).
 - **Style / StyleId** — typed style structs, interned into `StyleId`. Never "CSS class" or "stylesheet".

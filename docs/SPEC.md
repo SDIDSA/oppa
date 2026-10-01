@@ -34,7 +34,7 @@ contract test suite — not prose — defines sameness.
 
 ## Input
 
-- One normalized `InputEvent` (`Pointer` / `Scroll` / `Key` / `Ime` / `Focus`) everywhere.
+- One normalized `InputEvent` (`Pointer` / `Scroll` / `Key` / `Ime` / `Focus` / `Text`) everywhere.
 - Pointer: hit-test deepest-wins, later-sibling on ties, no root fallback; capture on Down, Up only inside the capture subtree, Cancel clears.
 - Keyboard: `Key(code, mods, state, repeat)`; Tab wraps in deterministic press-node DFS pre-order; Enter/Space pulse press; Escape blurs; Slider arrows step by `step` and `Home`/`End` jump to `min`/`max` (Phase 38a); Tree rows walk with Up/Down (visible neighbors), Left (collapse, else parent), Right (expand, else first child); Splitter arrows nudge the fraction ±0.05; DatePicker arrows step days (Left/Right ±1, Up/Down ±7, `Home`/`End` month edges) — all pinning quietly at their ends (Phase 38b); Toolbar/Menubar Left/Right rove the highlight cursor (wrapping, skipping separators/disabled), Enter invokes it, Menubar Down opens (Phase 38c); other keys go to the focused handler else no-op.
 - Focus: at most one editing session; focus loss mid-composition commits; click follows focus.

@@ -16,16 +16,21 @@ use std::rc::Rc;
 
 use oppa::store::KvStore;
 use oppa::{
-    AlignItems, Color, Column, Ctx, Div, FetchState, FileDialog, FilePickerOptions, FlexWrap,
-    JustifyContent, Row, ScriptedDialog, SharedString, Signal, Style, Text, ThemeMode, ThemeTokens,
-    VNode,
+    AlignItems, CanvasOp, Color, Column, Ctx, Div, Ease, FetchState, FileDialog, FilePickerOptions,
+    FlexWrap, FontWeight, GridTrack, ImageCache, JustifyContent, KeyframeMode, KeyframeStop,
+    Keyframes, Px, Row, ScriptedDialog, SharedString, Signal, Style, Text, TextSpan, ThemeMode,
+    ThemeTokens, VNode,
 };
 
 use crate::{
-    Action, Badge, BadgeProps, BadgeVariant, Button, ButtonProps, Checkbox, CheckboxProps, Modal,
-    ModalProps, ProgressBar, ProgressBarProps, RadioGroup, RadioGroupProps, RadioOption, Select,
-    SelectItem, SelectProps, Slider, SliderProps, TabItem, Tabs, TabsProps, TextArea,
-    TextAreaProps, TextInput, TextInputProps, Toggle, ToggleProps,
+    Action, Badge, BadgeProps, BadgeVariant, BarItem, Button, ButtonProps, CanvasView,
+    CanvasViewProps, Checkbox, CheckboxProps, Date, DatePicker, DatePickerProps, FilePicker,
+    FilePickerMode, FilePickerProps, ImageView, ImageViewProps, MenuItemProps, MenuTitle, Menubar,
+    MenubarProps, Modal, ModalProps, NavHost, NavHostProps, ProgressBar, ProgressBarProps,
+    RadioGroup, RadioGroupProps, RadioOption, RichTextView, RichTextViewProps, RouteView, Select,
+    SelectItem, SelectProps, Slider, SliderProps, Splitter, SplitterAxis, SplitterProps, TabItem,
+    Tabs, TabsProps, TextArea, TextAreaProps, TextInput, TextInputProps, Toggle, ToggleProps,
+    Toolbar, ToolbarProps, Tree, TreeNode, TreeProps,
 };
 
 /// Unit props: `KitchenSinkApp` takes `&KitchenSinkProps` while the
@@ -42,6 +47,7 @@ pub enum SinkTab {
     Layout,
     Overlays,
     Platform,
+    Views,
 }
 
 impl SinkTab {
@@ -51,6 +57,7 @@ impl SinkTab {
             SinkTab::Layout => "Layout",
             SinkTab::Overlays => "Overlays",
             SinkTab::Platform => "Platform",
+            SinkTab::Views => "Views",
         }
     }
 }
@@ -109,6 +116,17 @@ fn chip(t: ThemeTokens, index: usize, label: &str) -> VNode {
         .child(VNode::from(Text::new(label).size(12)))
 }
 
+/// NavHost demo routes (Phase 38c, G22): two mini-screens over the
+/// sink-owned stack (pushes flow through `NavStack::push` —
+/// runners own system back, stated in `NavHost`).
+fn sink_home(_ctx: &Ctx) -> VNode {
+    Div("sink-views-home").child(VNode::from(Text::new("home route")))
+}
+
+fn sink_settings(_ctx: &Ctx) -> VNode {
+    Div("sink-views-settings").child(VNode::from(Text::new("settings route")))
+}
+
 /// Captioned card helper (explicit size + caption text).
 fn card(debug: String, style: Style, caption: &str) -> VNode {
     Div(&debug).style(style).child(VNode::from(Text {
@@ -129,6 +147,37 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
     let flavor = ctx.signal(Flavor::Vanilla);
     let flavor_open = ctx.signal(false);
     let size = ctx.signal(Size::Medium);
+    // Phase 38a validation demo (G7): an always-invalid email shows
+    // the error edge + message (validators stay app-side — the
+    // signal below is the stub validator's verdict, announced).
+    let email = ctx.signal(SharedString::from("not-an-email"));
+    // Phase 38b date demo (G14): controlled date + popup.
+    let when = ctx.signal(Date::new(2026, 10, 1));
+    let when_open = ctx.signal(false);
+    // ---- Views state (Tab 5, Phase 38b–38c) ----
+    // Tree hierarchy (G12) over an author-owned collection.
+    let tree_coll = oppa::Collection::new(&ctx.host().runtime(), oppa::fetch_key("sink:tree"));
+    if tree_coll.is_empty() {
+        tree_coll.ingest(vec![
+            TreeNode::root("src", "src"),
+            TreeNode::child("lib", "lib.rs", "src"),
+            TreeNode::child("main", "main.rs", "src"),
+            TreeNode::root("docs", "docs"),
+        ]);
+    }
+    let tree_expanded = ctx.signal(vec![SharedString::from("src")]);
+    let tree_selected = ctx.signal(None::<SharedString>);
+    // Splitter fraction (G13), menubar + file state (G21), nav
+    // stack (G22), and the demo image cache (G22 pixels).
+    let split_frac = ctx.signal(0.5f32);
+    let menu_open = ctx.signal(None::<usize>);
+    let picked = ctx.signal(None::<SharedString>);
+    let nav_stack = ctx.signal(oppa::NavStack::new(
+        oppa::Route::new("home").expect("route names parse"),
+    ));
+    let img_cache = ctx.signal(ImageCache::new());
+    // Bar feedback (G21): toolbar/menubar actions land here.
+    let bar_note = ctx.signal(SharedString::from("no command yet"));
     // ---- Overlay state (Tab 3) ----
     let dialog_open = ctx.signal(false);
     let confirmed = ctx.signal(false);
@@ -153,6 +202,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
             flavor_open.clone(),
             size.clone(),
         );
+        let (email, when, when_open) = (email.clone(), when.clone(), when_open.clone());
         Rc::new(move |ctx: &Ctx| {
             // Theme contract round: the showcase's Dark toggle owns
             // the host palette (previously a dead switch — it showed
@@ -265,97 +315,197 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     },
                     RadioGroup::<Size>,
                 ),
+                // Phase 38a validation demo (G7): the stub validator
+                // rejects this value — the error edge + message
+                // announce, the helper shows when valid (edit the
+                // signal to see both; valid trees stay identical).
+                ctx.child_auto(
+                    &TextInputProps {
+                        label: SharedString::from("Email"),
+                        value: email.clone(),
+                        placeholder: Some(SharedString::from("you@example.com")),
+                        enabled: true,
+                        width: 280.0,
+                        height: 32.0,
+                        style: Text::body_secondary,
+                        debug: SharedString::from("sink-email"),
+                        on_change: None,
+                        masked: false,
+                        invalid: true,
+                        required: true,
+                        error_message: Some(SharedString::from("Enter a valid email")),
+                        helper_text: Some(SharedString::from("We never share it")),
+                    },
+                    TextInput,
+                ),
+                // Phase 38b date demo (G14): popup month grid + the
+                // `YYYY-MM-DD` parse bridge in one box.
+                ctx.child_auto(
+                    &DatePickerProps {
+                        value: when.clone(),
+                        open: when_open.clone(),
+                        min: Some(Date::new(2026, 1, 1)),
+                        max: Some(Date::new(2026, 12, 31)),
+                        enabled: true,
+                        width: 240.0,
+                        label: SharedString::from("When"),
+                    },
+                    DatePicker,
+                ),
             ])
         })
     };
-    let layout = Rc::new(|ctx: &Ctx| {
-        // Theme contract round: page furniture resolves from the
-        // host theme (tracked — toggling re-renders this panel).
-        // Light tokens reproduce the pre-contract literals exactly
-        // (`surface` IS `0xFF_FF_FF`, `disabled` IS `0xEE_EE_EE`);
-        // the gradient card + swatch cells stay deliberate fixed
-        // literals (they demo literal styling, and carry no text).
-        let t = ctx.theme().tokens();
-        Column::new().gap(12).children([
-            // Wrapping chip row (decision 253): constrained width
-            // forces greedy line-breaking; intrinsic width would
-            // (statedly) refuse to wrap.
-            Row("sink::Layout::Chips")
-                .style(
+    let layout = {
+        let split_frac = split_frac.clone();
+        Rc::new(move |ctx: &Ctx| {
+            // Theme contract round: page furniture resolves from the
+            // host theme (tracked — toggling re-renders this panel).
+            // Light tokens reproduce the pre-contract literals exactly
+            // (`surface` IS `0xFF_FF_FF`, `disabled` IS `0xEE_EE_EE`);
+            // the gradient card + swatch cells stay deliberate fixed
+            // literals (they demo literal styling, and carry no text).
+            let t = ctx.theme().tokens();
+            Column::new().gap(12).children([
+                // Wrapping chip row (decision 253): constrained width
+                // forces greedy line-breaking; intrinsic width would
+                // (statedly) refuse to wrap.
+                Row("sink::Layout::Chips")
+                    .style(
+                        Style::new()
+                            .size(300, 96)
+                            .flex_wrap(FlexWrap::Wrap)
+                            .gap(8)
+                            .align_items(AlignItems::Center),
+                    )
+                    .children(
+                        ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"]
+                            .iter()
+                            .enumerate()
+                            .map(|(i, label)| chip(t, i, label)),
+                    ),
+                // Soft shadow card (decision 254: `.shadow` then
+                // `.shadow_blur` — blur without a shadow panics).
+                card(
+                    "sink::Layout::ShadowCard".to_string(),
                     Style::new()
-                        .size(300, 96)
-                        .flex_wrap(FlexWrap::Wrap)
-                        .gap(8)
-                        .align_items(AlignItems::Center),
-                )
-                .children(
-                    ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"]
-                        .iter()
-                        .enumerate()
-                        .map(|(i, label)| chip(t, i, label)),
+                        .size(280, 48)
+                        .bg(t.surface)
+                        .shadow(2, 4, Color(0x88_88_88))
+                        .shadow_blur(8)
+                        .pad_x(12)
+                        .pad_y(8)
+                        .build(),
+                    "soft shadow",
                 ),
-            // Soft shadow card (decision 254: `.shadow` then
-            // `.shadow_blur` — blur without a shadow panics).
-            card(
-                "sink::Layout::ShadowCard".to_string(),
-                Style::new()
-                    .size(280, 48)
-                    .bg(t.surface)
-                    .shadow(2, 4, Color(0x88_88_88))
-                    .shadow_blur(8)
-                    .pad_x(12)
-                    .pad_y(8)
-                    .build(),
-                "soft shadow",
-            ),
-            // Asymmetric borders (decision 254: no radius here —
-            // sharp bands vs round shapes refuse loudly).
-            card(
-                "sink::Layout::BorderCard".to_string(),
-                Style::new()
-                    .size(280, 48)
-                    .bg(t.surface)
-                    .border_edges(4, 1, 4, 1, Color(0x22_66_CC))
-                    .pad_x(12)
-                    .pad_y(8)
-                    .build(),
-                "asymmetric borders",
-            ),
-            // Vertical gradient card (decision 254: replaces `bg`,
-            // no radius — stated, never silent).
-            card(
-                "sink::Layout::GradientCard".to_string(),
-                Style::new()
-                    .size(280, 48)
-                    .bg_gradient(Color(0x22_66_CC), Color(0x99_CC_FF))
-                    .pad_x(12)
-                    .pad_y(8)
-                    .build(),
-                "linear gradient",
-            ),
-            // Nested rows/columns with padding and margins
-            // (decision 249).
-            Column::new()
-                .style(Style::new().pad_x(8).pad_y(8).gap(8))
-                .children([Row("sink::Layout::NestedRow")
-                    .style(Style::new().gap(8).margin(4, 2))
+                // Asymmetric borders (decision 254: no radius here —
+                // sharp bands vs round shapes refuse loudly).
+                card(
+                    "sink::Layout::BorderCard".to_string(),
+                    Style::new()
+                        .size(280, 48)
+                        .bg(t.surface)
+                        .border_edges(4, 1, 4, 1, Color(0x22_66_CC))
+                        .pad_x(12)
+                        .pad_y(8)
+                        .build(),
+                    "asymmetric borders",
+                ),
+                // Vertical gradient card (decision 254: replaces `bg`,
+                // no radius — stated, never silent).
+                card(
+                    "sink::Layout::GradientCard".to_string(),
+                    Style::new()
+                        .size(280, 48)
+                        .bg_gradient(Color(0x22_66_CC), Color(0x99_CC_FF))
+                        .pad_x(12)
+                        .pad_y(8)
+                        .build(),
+                    "linear gradient",
+                ),
+                // Nested rows/columns with padding and margins
+                // (decision 249).
+                Column::new()
+                    .style(Style::new().pad_x(8).pad_y(8).gap(8))
+                    .children([Row("sink::Layout::NestedRow")
+                        .style(Style::new().gap(8).margin(4, 2))
+                        .children([
+                            Div("sink::Layout::CellA")
+                                .style(Style::new().size(64, 32).bg(Color(0xDD_DD_DD)))
+                                .build(),
+                            Div("sink::Layout::CellB")
+                                .style(Style::new().size(64, 32).bg(Color(0xCC_CC_CC)))
+                                .build(),
+                        ])]),
+                // Minimal grid (Phase 36 PR2a, decision 353): two
+                // `Px` columns over auto rows, one cell spanning both
+                // columns (spans only — no explicit placement).
+                oppa::Grid("sink::Layout::Grid")
+                    .style(
+                        Style::new()
+                            .grid_cols(vec![
+                                GridTrack::Px(Px::of(136.0)),
+                                GridTrack::Px(Px::of(136.0)),
+                            ])
+                            .gap(8),
+                    )
                     .children([
-                        Div("sink::Layout::CellA")
-                            .style(Style::new().size(64, 32).bg(Color(0xDD_DD_DD)))
+                        Div("sink::Layout::G00")
+                            .style(Style::new().size(136, 32).bg(t.disabled))
                             .build(),
-                        Div("sink::Layout::CellB")
-                            .style(Style::new().size(64, 32).bg(Color(0xCC_CC_CC)))
+                        Div("sink::Layout::G01")
+                            .style(Style::new().size(136, 32).bg(t.disabled))
                             .build(),
-                    ])]),
-        ])
-    });
+                        Div("sink::Layout::GSpan")
+                            .style(
+                                Style::new()
+                                    .size(280, 32)
+                                    .bg(t.surface)
+                                    .border(1, t.border)
+                                    .col_span(2),
+                            )
+                            .build(),
+                    ]),
+                // Splitter (Phase 38b, G13): the fraction signal owns
+                // the proportions — drag the divider or arrow it.
+                ctx.child_auto(
+                    &SplitterProps {
+                        fraction: split_frac.clone(),
+                        axis: SplitterAxis::Vertical,
+                        width: 280.0,
+                        height: 120.0,
+                        divider_px: 8.0,
+                        min_first_px: 48.0,
+                        min_second_px: 48.0,
+                        enabled: true,
+                        debug: SharedString::from("sink-split"),
+                        first: Rc::new(|_: &Ctx| {
+                            VNode::from(Text::new(SharedString::from("first")))
+                        }),
+                        second: Rc::new(|_: &Ctx| {
+                            VNode::from(Text::new(SharedString::from("second")))
+                        }),
+                        on_change: None,
+                    },
+                    Splitter,
+                ),
+            ])
+        })
+    };
     let overlays = {
         let (dialog_open, confirmed, download) =
             (dialog_open.clone(), confirmed.clone(), download.clone());
+        // Pulse replay gate (Phase 39b): the base wash alternates on
+        // press — a real style delta on the keyed card starts a real
+        // track (production pumps it; no test presses it, so frozen
+        // headless clocks never see a live track).
+        let pulse_alt = ctx.signal(false);
         Rc::new(move |ctx: &Ctx| {
             let open_button = dialog_open.clone();
             let dialog_state = dialog_open.clone();
             let dialog_confirmed = confirmed.clone();
+            // Keyframe card below resolves from the host theme
+            // (tracked — toggling re-renders it in place).
+            let t = ctx.theme().tokens();
             Column::new().gap(12).children([
                 ctx.child_auto(
                     &ButtonProps {
@@ -411,6 +561,50 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     text: SharedString::from(format!("confirmed: {}", confirmed.get())),
                     style: Text::body_secondary,
                 }),
+                // Keyframe pulse (Phase 36 PR4, decision 357): a
+                // two-stop `Once` run over per-segment ease. The card
+                // carries a stable `.key()` (slot-keyed reuse, lock
+                // #13): tab switches Add/Remove it instead of
+                // order-pairing it against other tabs' content, so no
+                // cross-tab style delta ever spawns a foreign track —
+                // without the key, the inherited `prev` bg starts a
+                // real track every switch, and frozen-clock harnesses
+                // (`MockClock` web hosts) can never settle it. Genuine
+                // tracks start only through Replay (a real delta on the
+                // card itself); no suite presses it.
+                ctx.child_auto(
+                    &ButtonProps {
+                        debug: SharedString::from("sink::Overlays::Replay"),
+                        ..ButtonProps::new("Replay pulse", {
+                            let pulse_alt = pulse_alt.clone();
+                            move || pulse_alt.set(!pulse_alt.get())
+                        })
+                    },
+                    Button,
+                ),
+                Div("sink::Overlays::Pulse")
+                    .key(0xB16B_00B5)
+                    .style(
+                        Style::new()
+                            .size(280, 32)
+                            .radius(16)
+                            .bg(if pulse_alt.get() {
+                                t.surface
+                            } else {
+                                t.disabled
+                            })
+                            .keyframes(Keyframes {
+                                stops: vec![
+                                    KeyframeStop::new(250, Ease::InOut).bg(t.primary),
+                                    KeyframeStop::new(250, Ease::InOut).bg(t.disabled),
+                                ],
+                                mode: KeyframeMode::Once,
+                            }),
+                    )
+                    .child(VNode::from(Text {
+                        text: SharedString::from("replay-gated keyframes"),
+                        style: Text::body_secondary,
+                    })),
             ])
         })
     };
@@ -421,6 +615,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
             count.clone(),
             kv.clone(),
         );
+        let picked = picked.clone();
         Rc::new(move |ctx: &Ctx| {
             // File picker trigger (decision 230): scripted dialog
             // stands in for the OS backend headlessly; each press
@@ -531,6 +726,205 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     text: SharedString::from(fetch_status),
                     style: Text::body_secondary,
                 }),
+                // FilePicker control (Phase 38c, G21): the same
+                // scripted backend behind one trigger — pick sets
+                // the controlled path, dismissal keeps it.
+                ctx.child_auto(
+                    &{
+                        let mut fp = FilePickerProps::new(picked.clone(), FilePickerMode::Open);
+                        fp.open_dialog = Some(dialog.get());
+                        fp.debug = SharedString::from("sink::Platform::Files");
+                        fp
+                    },
+                    FilePicker,
+                ),
+            ])
+        })
+    };
+    // ---- Views tab (Phase 38b–38c: Tree, bars, G22 leaves) ----
+    let views = {
+        let (tree_coll, tree_expanded, tree_selected, menu_open, nav_stack, img_cache, bar_note) = (
+            tree_coll.clone(),
+            tree_expanded.clone(),
+            tree_selected.clone(),
+            menu_open.clone(),
+            nav_stack.clone(),
+            img_cache.clone(),
+            bar_note.clone(),
+        );
+        Rc::new(move |ctx: &Ctx| {
+            // Demo image deposit (G22): 2×2 logo, one deposit —
+            // backends serve from here (the cache stays app-owned).
+            let logo = {
+                let cache = img_cache.get();
+                cache.insert_pixels(
+                    "sink-logo",
+                    2,
+                    2,
+                    vec![
+                        0xCC, 0x22, 0x22, 0xFF, 0x22, 0xCC, 0x22, 0xFF, 0x22, 0x22, 0xCC, 0xFF,
+                        0xFF, 0xFF, 0xFF, 0xFF,
+                    ],
+                );
+                cache.load("sink-logo")
+            };
+            let say = |note: &'static str| {
+                let bar_note = bar_note.clone();
+                let text = SharedString::from(note);
+                move || bar_note.set(text.clone())
+            };
+            Column::new().gap(12).children([
+                // Tree (G12): collection hierarchy, chevrons,
+                // arrows, Tree/TreeItem roles.
+                ctx.child_auto(
+                    &TreeProps {
+                        nodes: tree_coll.clone(),
+                        expanded: tree_expanded.clone(),
+                        selected: tree_selected.clone(),
+                        label: SharedString::from("Files"),
+                        width: 280.0,
+                        height: 140.0,
+                        row_height: 28.0,
+                        overscan: 2,
+                        enabled: true,
+                        debug: SharedString::from("sink-tree"),
+                    },
+                    Tree,
+                ),
+                // Toolbar (G21): one tab stop, arrows rove.
+                ctx.child_auto(
+                    &ToolbarProps::new(vec![
+                        BarItem::new("Cut", say("cut")),
+                        BarItem::new("Copy", say("copy")),
+                        BarItem::separator(),
+                        BarItem::new("Paste", say("paste")).disabled(),
+                    ]),
+                    Toolbar,
+                ),
+                // Menubar (G21): titles open standalone Menus.
+                ctx.child_auto(
+                    &MenubarProps::new(
+                        vec![
+                            MenuTitle::new(
+                                "File",
+                                vec![
+                                    MenuItemProps::new("New", say("new file")),
+                                    MenuItemProps::new("Open", say("open file")),
+                                ],
+                            ),
+                            MenuTitle::new("Edit", vec![MenuItemProps::new("Undo", say("undo"))]),
+                        ],
+                        menu_open.clone(),
+                    ),
+                    Menubar,
+                ),
+                VNode::from(Text {
+                    text: SharedString::from(format!("command: {}", bar_note.get())),
+                    style: Text::body_secondary,
+                }),
+                // RichText display (G22): two spans, one size.
+                ctx.child_auto(
+                    &RichTextViewProps {
+                        spans: vec![
+                            TextSpan::new("Hello, "),
+                            TextSpan::new("Oppa")
+                                .weight(FontWeight::BOLD)
+                                .ink(Color(0x22_66_CC)),
+                        ],
+                        style: Text::body_secondary,
+                        label: Some(SharedString::from("Greeting")),
+                        debug: SharedString::from("sink-rich"),
+                    },
+                    RichTextView,
+                ),
+                // Canvas surface (G22): rect + rounded rect ops.
+                ctx.child_auto(
+                    &CanvasViewProps {
+                        ops: vec![
+                            CanvasOp::Rect {
+                                x: Px::of(4.0),
+                                y: Px::of(4.0),
+                                w: Px::of(48.0),
+                                h: Px::of(24.0),
+                                color: Color(0x22_66_CC),
+                            },
+                            CanvasOp::RRect {
+                                x: Px::of(60.0),
+                                y: Px::of(4.0),
+                                w: Px::of(48.0),
+                                h: Px::of(24.0),
+                                radius: Px::of(6.0),
+                                color: Color(0x88_88_88),
+                            },
+                        ],
+                        width: 120.0,
+                        height: 32.0,
+                        label: None,
+                        debug: SharedString::from("sink-plot"),
+                    },
+                    CanvasView,
+                ),
+                // Static image (G22): the deposit above, alt-named.
+                ctx.child_auto(
+                    &ImageViewProps {
+                        image: logo,
+                        size: 32.0,
+                        radius: 4.0,
+                        alt: SharedString::from("Demo logo"),
+                    },
+                    ImageView,
+                ),
+                // Declarative router (G22): stack-driven views with
+                // push buttons (system back stays runner-owned).
+                Row("sink::Views::NavRow").gap(8).children([
+                    ctx.child_auto(
+                        &ButtonProps {
+                            debug: SharedString::from("sink::Views::GoHome"),
+                            ..ButtonProps::new("Home", {
+                                let nav_stack = nav_stack.clone();
+                                move || {
+                                    let mut stack = nav_stack.get();
+                                    stack
+                                        .push(oppa::Route::new("home").expect("route names parse"));
+                                    nav_stack.set(stack);
+                                }
+                            })
+                        },
+                        Button,
+                    ),
+                    ctx.child_auto(
+                        &ButtonProps {
+                            debug: SharedString::from("sink::Views::GoSettings"),
+                            ..ButtonProps::new("Settings", {
+                                let nav_stack = nav_stack.clone();
+                                move || {
+                                    let mut stack = nav_stack.get();
+                                    stack.push(
+                                        oppa::Route::new("settings").expect("route names parse"),
+                                    );
+                                    nav_stack.set(stack);
+                                }
+                            })
+                        },
+                        Button,
+                    ),
+                ]),
+                ctx.child_auto(
+                    &NavHostProps {
+                        stack: nav_stack.clone(),
+                        routes: vec![
+                            RouteView {
+                                name: SharedString::from("home"),
+                                content: Rc::new(sink_home),
+                            },
+                            RouteView {
+                                name: SharedString::from("settings"),
+                                content: Rc::new(sink_settings),
+                            },
+                        ],
+                    },
+                    NavHost,
+                ),
             ])
         })
     };
@@ -577,6 +971,11 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                             value: SinkTab::Platform,
                             label: SharedString::from(SinkTab::Platform.label()),
                             content: platform,
+                        },
+                        TabItem {
+                            value: SinkTab::Views,
+                            label: SharedString::from(SinkTab::Views.label()),
+                            content: views,
                         },
                     ],
                     active: tab,

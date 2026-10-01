@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-01 (through Decision 379).
+Status: current. Last verified: 2026-10-01 (through Decision 380).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -74,7 +74,7 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   Up/Down/Left/Right/Enter, `Tree`/`TreeItem` roles), `Splitter`
   (G13: `Vertical`/`Horizontal` 2-pane divider, `ColResize` /
   `RowResize`, fraction signal + minima clamping, drag + arrow
-  nudge),   `DatePicker` (G14: controlled `Date`, `Portal` month
+  nudge), `DatePicker` (G14: controlled `Date`, `Portal` month
   `Grid` popup + `TextInput` `YYYY-MM-DD` parse bridge, min/max
   bounds on every path, arrow/Home/End day steps).
 - Phase 38c (decisions 371–372, gate green 2026-10-01): New
@@ -94,7 +94,7 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   recipes) + styling reference landed in crate rustdocs (zero new
   `.md`); packaging promotion (G19: Windows release-exe +
   tarball mechanics verified with outputs; rc/cargo-deb absent
-  stays manual/open);   PWA story (G20: template `manifest.json` +
+  stays manual/open); PWA story (G20: template `manifest.json` +
   `sw.js` + registration flow through `cargo oppa new`, release
   `.wasm` weighed at ~2.87 MB served).
 - Phase 39a (decisions 377–379, gate green 2026-10-01): DOM →
@@ -106,24 +106,30 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   with `isComposing` preedit guard + bubbled-key ownership (Q4,
   Q5); loop proven counted per keystroke (framework) + mutation
   counts (DOM) with the M7 browser editing suite unchanged.
+- Phase 39b (decision 380, gate green 2026-10-01): Reference apps
+  + final audit —   `KitchenSinkApp` gains a Views tab (Tree,
+  Toolbar, Menubar, RichText, Canvas, Image, NavHost) with
+  validation + DatePicker on Form, Grid + Splitter on Layout, a
+  keyed replay-gated keyframes pulse on Overlays (stable `.key()`
+  identity — unkeyed order-pairing across tab switches would spawn
+  foreign tracks that frozen-clock harnesses cannot settle), and a
+  FilePicker on Platform;
+  `Task Studio` gains a File/View `Menubar` (under the body —
+  the grid keeps its top-anchored row geometry), a grid|inspector
+  `Splitter`, empty-title validation, a RichText status, and a
+  Canvas done-meter (all E2E debugs preserved, E2E green);
+  living-docs + platform audit closes Now/Next in place.
 
 ## Now (in progress)
 
-- Phase 39 (Web Value-Loop, Reference Apps & Final Close-Out):
-  39a shipped (U8 value loop — channel, preservation, Q1–Q5);
-  remaining: 39b reference apps (`KitchenSinkApp` + `Task
-  Studio` exercising every Phase 36–38 capability) + final audit
-  of the 6 living docs + `docs/06-platforms/`.
+- No active phase — Phases 36–39 shipped (decisions 352–380,
+  all gates green 2026-10-01). New work re-decides here.
 
 ## Next (accepted, not started)
 
-Ordered productization P1s (closed through Phase 38d): cookbook
-additions (G10), styling reference (G11), packaging promotion
-(G19), PWA story (G20), persistence data-dir helper (G23).
-
-Planned v2 specs (unimplemented; full text in git history): none
-open — the DOM→framework value loop closed in Phase 39a (future
-v2 items re-decide here).
+Ordered productization P1s: all closed — G7–G23 done through
+Phase 39b (catalog, cookbook/styling, data-dir, installers, PWA,
+value loop, reference apps).
 
 Accepted-carry: c3 CDP/Edge re-baseline whenever the harness is next
 exercised, Firefox full-leg automation (optional tooling), weak-GPU
@@ -146,5 +152,5 @@ sustained-cost standing rule.
 
 - Environmental flakes: `oppa-shell-win` live-Shift sampling; sandboxed clipboard returns NULL handle with `ERROR_SUCCESS` (loud skip); transient clipboard box contention in full-suite runs.
 - Stated edges: ZWJ-inside-regional-indicator double-click selects the joiner alone (pathological); right-held single-gesture drag-select stays out (tap-to-open).
-- Standing debt: one pre-existing `FpsApp` clippy lint on record; hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question).
+- Standing debt: one pre-existing `FpsApp` clippy lint on record; hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question); full `TaskStudio` keeps frame demand headlessly without input (probe-verified pre-existing — `DesktopLoop` pumps it, E2E green; efficiency follow-up, not a correctness bug).
 - Deliberate non-goals (not debt): fixed decorative literals, `SELECTION_FILL`, OS title-bar theming; right-held menu drag-select; color-emoji rendering.

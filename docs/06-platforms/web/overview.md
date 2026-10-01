@@ -1,16 +1,17 @@
 # Web
 
 Status: current (M7 — `oppa-dom` proves the contract third; see
-`../../04-planning/state.md` §5m). Spike evidence current.
+[`STATE.md`](../../STATE.md)). Spike evidence current.
 Sources: `12-archive/DESIGN.md` §§1–2, 9.2–9.3 (locked #2, #23, #27);
 `spike/REPORT.md`.
 
-- **Build an app here first:** [getting
-  started](../../05-implementation/getting-started.md) (copy-paste
-  tutorial, proven out-of-repo) and [web-app entry
-  point](../../09-api/web-app.md) (the host/binding/page pattern
-  with links to the living example). The architecture below is
-  what that app stands on — read it second, not first.
+- **Build an app here first:** [hello-web
+  template](../../../templates/hello-web/README.md) (copy-paste
+  starter + build recipe, proven out-of-repo) over
+  [`WasmHost`](../../../crates/oppa-web/src/lib.rs) (the
+  host/binding/page pattern with links to the living example).
+  The architecture below is what that app stands on — read it
+  second, not first.
 
 - **Framework behavior:** scene schema owned; browser owns pixels.
   DOM is a first-class renderer backend. Owning pixels on Web would

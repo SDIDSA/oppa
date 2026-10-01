@@ -10,11 +10,10 @@
 //! never copied (Constraint 9).
 //!
 //! App services at a glance: [`fetch`] (pluggable [`Fetcher`](fetch::Fetcher)
-//! + `cancel_fetch` → `Idle`), [`store`] (sync [`KvStore`](store::KvStore) +
-//! [`FsSandbox`](store::FsSandbox) + [`app_data_dir`] (G23) +
-//! write-through [`Persisted`](store::Persisted)), [`dialog`]
-//! (request/poll file dialogs), [`nav`] (`NavStack` + deep-link
-//! syntax + the BackPress chain).
+//! with `cancel_fetch` → `Idle`); [`store`] (sync [`KvStore`](store::KvStore),
+//! [`FsSandbox`](store::FsSandbox), [`app_data_dir`] (G23), and write-through
+//! [`Persisted`](store::Persisted)); [`dialog`] (request/poll file dialogs);
+//! [`nav`] (`NavStack` with deep-link syntax plus the BackPress chain).
 
 pub mod arena;
 pub mod clipboard;

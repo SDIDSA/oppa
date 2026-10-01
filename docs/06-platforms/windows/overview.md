@@ -1,7 +1,8 @@
 # Windows
 
-Status: current (shell + text backend done; UIA emitter planned M10).
-Sources: `04-planning/state.md` §§4–5; code: `crates/oppa-shell-win/`,
+Status: current (shell + text backend + UIA emitter done — M10
+closed, Phase 36 PR1 Invoke/RangeValue).
+Sources: [`STATE.md`](../../STATE.md) (Done); code: `crates/oppa-shell-win/`,
 `crates/oppa-text-dwrite/`.
 
 - **Framework behavior:** full pipeline ownership; Vello GPU backend
@@ -23,8 +24,9 @@ Sources: `04-planning/state.md` §§4–5; code: `crates/oppa-shell-win/`,
   outcomes); TIP reading style varies run to run (held vs.
   per-letter) — checks normalize, re-investigate if a per-letter run
   appears.
-- **Planned:** Vello backend, UIA emitter, hot-reload dylib swap
-  (0.1–1 s body edits).
+- **Planned:** none open — Vello backend, UIA Invoke/RangeValue,
+  and the hot-reload dylib swap all shipped (see
+  [`STATE.md`](../../STATE.md) Done).
 - **Packaging:** release exe is the blessed path; installer
   story open — see [packaging](../packaging.md) (G4,
   decision 215).

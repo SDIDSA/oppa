@@ -3,7 +3,7 @@
 Status: shell + restart path current (M10); swapchain present,
 arm64, text slice, touch + IME closed (v1 remainder, Gaps 1–3).
 Sources: `12-archive/DESIGN.md` §§5.2, 6.1; locked #16–#17;
-`12-archive/BUILD-ORDER.md` (M10); `04-planning/rounds.md`.
+`12-archive/BUILD-ORDER.md` (M10); [`STATE.md`](../../STATE.md).
 
 - **Framework behavior:** pipeline ownership via wgpu/GLES; Vello
   on GLES 3.1-class drivers with tiny-skia CPU fallback
@@ -28,7 +28,8 @@ Sources: `12-archive/DESIGN.md` §§5.2, 6.1; locked #16–#17;
   dump-identical to cold start under the same script.
 - **GLES row:** GL backend path conforms at the M6 oracle
   standard on desktop GL (exact 0); weak-hardware frame cost
-  stays Android-device-owned ([mobile perf](../../08-performance/mobile.md)).
+  stays Android-device-owned (see the weak-tier rows in
+  [`STATE.md`](../../STATE.md)).
   Emulator-measured (Medium_Phone_API_36.1, `-gpu
   swiftshader_indirect`, gap closure): API 36, x86_64 ABI,
   SwiftShader GLES **3.0** max (`ANDROID_EMU_gles_max_version_3_0`,
@@ -112,7 +113,8 @@ Sources: `12-archive/DESIGN.md` §§5.2, 6.1; locked #16–#17;
   (`max_storage_buffers_per_shader_stage` 8 > 4); feeds 3/3x2,
   IMM show/hide true, 228 faces / 407 JNI fonts. Window needed
   a Java UI-thread hop (`OppaUi.hideBars` + explicit
-  display-size params) — direct View calls are SIGABRT-fatal
-  off-thread, attached-thread lookup sees only the system
-  loader (DexClassLoader over `sourceDir` is the path).
-  Frame cost in `08-performance/mobile.md`.
+   display-size params) — direct View calls are SIGABRT-fatal
+   off-thread, attached-thread lookup sees only the system
+   loader (DexClassLoader over `sourceDir` is the path).
+   Frame cost follows the weak-tier rows in
+   [`STATE.md`](../../STATE.md).

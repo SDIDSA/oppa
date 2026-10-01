@@ -9,7 +9,7 @@ shape and `crates/` wins for behavior.
 ```powershell
 $env:CARGO_INCREMENTAL="0"   # Windows only
 cargo fmt --all -- --check
-cargo clippy --all-targets    # one pre-existing `FpsApp` lint is on record
+cargo clippy --all-targets    # pre-existing lints are on record (FpsApp naming, oppa-app type-complexity, oppa-web borrow/import) — zero new warnings per round
 cargo check --target wasm32-unknown-unknown -p oppa -p oppa-controls -p oppa-dom -p oppa-web
 cargo test --workspace --no-fail-fast   # CI runs parallel; use -j1 locally if GPU flakes
 ```
