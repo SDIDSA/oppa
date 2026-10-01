@@ -34,4 +34,6 @@ jobs:
       - name: wasm check
         run: cargo check --target wasm32-unknown-unknown -p oppa -p oppa-controls -p oppa-dom -p oppa-web
       - name: workspace tests
-        run: cargo test --workspace -j1
+        # --no-fail-fast: one run reports every failing binary, not just
+        # the first (environment-gated rows are spread across crates).
+        run: cargo test --workspace -j1 --no-fail-fast
