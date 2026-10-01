@@ -2398,15 +2398,31 @@ pub struct ScrollbarProps {
     /// (visible until the next pointer move). `VirtualList` /
     /// `DataGrid` attach with `Some(1200)`.
     pub idle_hide_ms: Option<u64>,
+    /// Scrollbar axis (Phase 36 PR2b, decision 354 — G15): `Vertical`
+    /// (default) rides the `y` offset over `content_h`; `Horizontal`
+    /// rides the `x` half over `content_w` (callers pass the 2D
+    /// handle's `x()` view — same signal family, never a second
+    /// source). Geometry, thumb, drag, and keys transpose exactly.
+    pub axis: ScrollbarAxis,
+}
+
+/// Scrollbar axis (Phase 36 PR2b, decision 354 — G15): which offset
+/// half and which content extent a [`Scrollbar`] overlay follows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ScrollbarAxis {
+    #[default]
+    Vertical,
+    Horizontal,
 }
 
 /// Overlay scrollbar: track + draggable thumb over a `ScrollArea`
-/// viewport (Round 17.2, decision 318). Shows if and only if the
-/// content overflows; the thumb follows
-/// [`scrollbar_thumb`](oppa::scrollbar_thumb) (`max(24,
+/// viewport (Round 17.2, decision 318; horizontal axis Phase 36 PR2b,
+/// decision 354). Shows if and only if the content overflows on the
+/// followed axis; the thumb follows the axis thumb math (`max(24,
 /// viewport²/content)`, linear in the clamped offset); the track
 /// page-scrolls on tap; thumb drags capture the pointer and map
-/// through the linear content ratio; arrows page when focused.
+/// through the linear content ratio; arrows page when focused
+/// (Down/Up vertical, Right/Left horizontal).
 /// Auto-hide fades the chrome out on disengage (hover-leave,
 /// release) and back in on hover, press, or scroll writes — the
 /// M8 transition evaluator animates both directions (first
@@ -2447,10 +2463,25 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
         return closed();
     };
     // Tracked reads (every one re-renders): offset, hover, press.
-    let y = props.offset.get();
-    let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-    let Some(g) = oppa::scrollbar_thumb(tb.h, tb.content_h, y) else {
-        return closed();
+    // Phase 36 PR2b: axis-transposed locals — `pos` is the followed
+    // offset half, `vp`/`content` the viewport/extent on that axis,
+    // (`tpos`, `tlen`) the thumb origin/extent. One set of names for
+    // both orientations (the layout thumb-twin precedent).
+    let pos = props.offset.get();
+    let (vp, content) = match props.axis {
+        ScrollbarAxis::Vertical => (tb.h, tb.content_h),
+        ScrollbarAxis::Horizontal => (tb.w, tb.content_w),
+    };
+    let max = oppa::scrollbar_max_offset(vp, content);
+    let (tpos, tlen) = match props.axis {
+        ScrollbarAxis::Vertical => match oppa::scrollbar_thumb(vp, content, pos) {
+            Some(g) => (g.y, g.h),
+            None => return closed(),
+        },
+        ScrollbarAxis::Horizontal => match oppa::scrollbar_thumb_x(vp, content, pos) {
+            Some(g) => (g.x, g.w),
+            None => return closed(),
+        },
     };
     let hover = ctx.hovered();
     let down = ctx.pressed();
@@ -2458,9 +2489,9 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
     // offset edges show the thumb so wheel/programmatic scrolls
     // paint live; disengage runs hide it again.
     let flash = ctx.signal(false);
-    let last_y = ctx.signal(0.0f32);
-    if y != last_y.get() {
-        last_y.set(y);
+    let last_pos = ctx.signal(0.0f32);
+    if pos != last_pos.get() {
+        last_pos.set(pos);
         if !flash.get() {
             flash.set(true);
         }
@@ -2501,14 +2532,38 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
     let down_now = down.get();
     if down_now && !was_down.get() {
         let origin = host.lowest_press_origin();
-        let gutter_x = tb.x + tb.w - SCROLLBAR_HIT_PX;
-        let on_thumb = origin.is_some_and(|(ox, oy)| {
-            ox >= gutter_x
-                && ox < gutter_x + SCROLLBAR_HIT_PX
-                && oy >= tb.y + g.y
-                && oy < tb.y + g.y + g.h
+        // Thumb hit-test transposed by axis (gutter strip on the
+        // trailing edge; thumb rect inside it).
+        let on_thumb = origin.is_some_and(|(ox, oy)| match props.axis {
+            ScrollbarAxis::Vertical => {
+                let gutter_x = tb.x + tb.w - SCROLLBAR_HIT_PX;
+                ox >= gutter_x
+                    && ox < gutter_x + SCROLLBAR_HIT_PX
+                    && oy >= tb.y + tpos
+                    && oy < tb.y + tpos + tlen
+            }
+            ScrollbarAxis::Horizontal => {
+                let gutter_y = tb.y + tb.h - SCROLLBAR_HIT_PX;
+                oy >= gutter_y
+                    && oy < gutter_y + SCROLLBAR_HIT_PX
+                    && ox >= tb.x + tpos
+                    && ox < tb.x + tpos + tlen
+            }
         });
-        base.set((y, origin.map(|(_, oy)| oy).unwrap_or(tb.y + g.y)));
+        // Drag snapshot on the press edge (grab-preserving ratio):
+        // base offset + press-origin coordinate on the scroll axis,
+        // falling back to the thumb origin for keyboard presses.
+        let fallback = match props.axis {
+            ScrollbarAxis::Vertical => tb.y + tpos,
+            ScrollbarAxis::Horizontal => tb.x + tpos,
+        };
+        let origin_coord = origin
+            .map(|(ox, oy)| match props.axis {
+                ScrollbarAxis::Vertical => oy,
+                ScrollbarAxis::Horizontal => ox,
+            })
+            .unwrap_or(fallback);
+        base.set((pos, origin_coord));
         if grabbed.get() != on_thumb {
             grabbed.set(on_thumb);
         }
@@ -2516,35 +2571,48 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
     if was_down.get() != down_now {
         was_down.set(down_now);
     }
-    // Slider role with a human percentage (the G2 announcement
-    // shape — value-pattern exposure stays OQ-G2-2).
+    // Slider role with a human percentage plus the numeric value
+    // (Phase 36 PR2b: the G18 RangeValue half rides along — UIA
+    // RangeValue, AT-SPI Value, DOM aria-valuenow/min/max; the OQ-G2-2
+    // gap stays closed here too).
     let pct = if max <= 0.0 {
         0
     } else {
-        (y.clamp(0.0, max) / max * 100.0).round() as u32
+        (pos.clamp(0.0, max) / max * 100.0).round() as u32
     };
     let fade = Transition::new(150, Ease::Out);
     let track_opacity = if visible { 0.3 } else { 0.0 };
     let thumb_opacity = if visible { 1.0 } else { 0.0 };
     let offset = props.offset.clone();
+    let axis = props.axis;
     // Hit gutter (follow-up): the press/hover node spans
-    // SCROLLBAR_HIT_PX leftwards over the content edge while the
-    // painted bar + thumb keep the 12px chrome — summoning no
-    // longer needs pixel-hunting. The gutter is transparent (no bg
-    // → paints nothing → plan rects byte-identical); presses inside
-    // it page/drag instead of reaching the covered content strip.
+    // SCROLLBAR_HIT_PX over the content's trailing edge (right for
+    // vertical, bottom for horizontal) while the painted bar + thumb
+    // keep the 12px chrome — summoning no longer needs
+    // pixel-hunting. The gutter is transparent (no bg → paints
+    // nothing → plan rects byte-identical); presses inside it
+    // page/drag instead of reaching the covered content strip.
+    let track_style = match axis {
+        ScrollbarAxis::Vertical => Style::new()
+            .x(tb.w - SCROLLBAR_HIT_PX)
+            .w(SCROLLBAR_HIT_PX)
+            .h(tb.h)
+            .build(),
+        ScrollbarAxis::Horizontal => Style::new()
+            .absolute_y(tb.h - SCROLLBAR_HIT_PX)
+            .w(tb.w)
+            .h(SCROLLBAR_HIT_PX)
+            .build(),
+    };
     let track = Div(format!("scrollbar-track-{inst}").as_str())
-        .style(
-            Style::new()
-                .x(tb.w - SCROLLBAR_HIT_PX)
-                .w(SCROLLBAR_HIT_PX)
-                .h(tb.h)
-                .build(),
-        )
+        .style(track_style)
         .semantics(
             Semantics::slider()
                 .label("scrollbar")
-                .value_text(format!("{pct} percent").as_str()),
+                .value_text(format!("{pct} percent").as_str())
+                .value_num(pos)
+                .min_value(0.0)
+                .max_value(max),
         )
         .on_press({
             let host = host.clone();
@@ -2562,21 +2630,40 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
                 else {
                     return;
                 };
-                let y = offset.get();
-                let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-                let Some(g) = oppa::scrollbar_thumb(tb.h, tb.content_h, y) else {
+                let pos = offset.get();
+                let (vp, content) = match axis {
+                    ScrollbarAxis::Vertical => (tb.h, tb.content_h),
+                    ScrollbarAxis::Horizontal => (tb.w, tb.content_w),
+                };
+                let max = oppa::scrollbar_max_offset(vp, content);
+                let (tpos, tlen) = match axis {
+                    ScrollbarAxis::Vertical => match oppa::scrollbar_thumb(vp, content, pos) {
+                        Some(g) => (g.y, g.h),
+                        None => return,
+                    },
+                    ScrollbarAxis::Horizontal => match oppa::scrollbar_thumb_x(vp, content, pos) {
+                        Some(g) => (g.x, g.w),
+                        None => return,
+                    },
+                };
+                let Some((px, py)) = host.last_press_position() else {
                     return;
                 };
-                let Some((_, py)) = host.last_press_position() else {
-                    return;
+                let (coord, start, len, extent) = match axis {
+                    ScrollbarAxis::Vertical => (py, tb.y + tpos, tlen, tb.h),
+                    ScrollbarAxis::Horizontal => (px, tb.x + tpos, tlen, tb.w),
                 };
-                let ty = tb.y + g.y;
-                if py >= ty && py < ty + g.h {
+                if coord >= start && coord < start + len {
                     return;
                 }
-                let ny = if py < ty { y - tb.h } else { y + tb.h }.clamp(0.0, max);
-                if ny != y {
-                    offset.set(ny);
+                let npos = if coord < start {
+                    pos - extent
+                } else {
+                    pos + extent
+                }
+                .clamp(0.0, max);
+                if npos != pos {
+                    offset.set(npos);
                 }
             }
         })
@@ -2590,7 +2677,7 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
                 if !grabbed.get() {
                     return;
                 }
-                let Some((_, cy)) = host.capture_position() else {
+                let Some((cx, cy)) = host.capture_position() else {
                     return;
                 };
                 let Some(tb) = oppa::find_retained_by_debug(&host, &target)
@@ -2600,86 +2687,143 @@ pub fn Scrollbar(ctx: &Ctx, props: &ScrollbarProps) -> VNode {
                 else {
                     return;
                 };
-                let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-                let Some(g) = oppa::scrollbar_thumb(tb.h, tb.content_h, offset.get()) else {
-                    return;
+                let (vp, content, coord) = match axis {
+                    ScrollbarAxis::Vertical => (tb.h, tb.content_h, cy),
+                    ScrollbarAxis::Horizontal => (tb.w, tb.content_w, cx),
                 };
-                let travel = tb.h - g.h;
+                let max = oppa::scrollbar_max_offset(vp, content);
+                let tlen = match axis {
+                    ScrollbarAxis::Vertical => {
+                        match oppa::scrollbar_thumb(vp, content, offset.get()) {
+                            Some(g) => g.h,
+                            None => return,
+                        }
+                    }
+                    ScrollbarAxis::Horizontal => {
+                        match oppa::scrollbar_thumb_x(vp, content, offset.get()) {
+                            Some(g) => g.w,
+                            None => return,
+                        }
+                    }
+                };
+                let travel = vp - tlen;
                 if travel <= 0.0 {
                     return;
                 }
-                let (base_off, base_y) = base.get();
-                let ny = (base_off + (cy - base_y) * max / travel).clamp(0.0, max);
-                if ny != offset.get() {
-                    offset.set(ny);
+                let (base_off, base_coord) = base.get();
+                let npos = (base_off + (coord - base_coord) * max / travel).clamp(0.0, max);
+                if npos != offset.get() {
+                    offset.set(npos);
                 }
             }
-        })
-        .on_key_down({
-            let host = host.clone();
-            let offset = offset.clone();
-            let target = props.target.clone();
-            move || {
-                // Arrow pages by viewport (fresh max, guarded
-                // write — end presses never spin).
-                let Some(tb) = oppa::find_retained_by_debug(&host, &target)
-                    .into_iter()
-                    .next()
-                    .and_then(|id| host.committed_box(id))
-                else {
-                    return;
-                };
-                let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-                let ny = (offset.get() + tb.h).clamp(0.0, max);
-                if ny != offset.get() {
-                    offset.set(ny);
-                }
+        });
+    // Arrow pages by viewport (fresh max, guarded write — end
+    // presses never spin): Down/Up on the vertical axis,
+    // Right/Left on the horizontal one.
+    let page_fwd: std::rc::Rc<dyn Fn()> = {
+        let host = host.clone();
+        let offset = offset.clone();
+        let target = props.target.clone();
+        std::rc::Rc::new(move || {
+            let Some(tb) = oppa::find_retained_by_debug(&host, &target)
+                .into_iter()
+                .next()
+                .and_then(|id| host.committed_box(id))
+            else {
+                return;
+            };
+            let (vp, content) = match axis {
+                ScrollbarAxis::Vertical => (tb.h, tb.content_h),
+                ScrollbarAxis::Horizontal => (tb.w, tb.content_w),
+            };
+            let max = oppa::scrollbar_max_offset(vp, content);
+            let npos = (offset.get() + vp).clamp(0.0, max);
+            if npos != offset.get() {
+                offset.set(npos);
             }
         })
-        .on_key_up({
-            let host = host.clone();
-            let offset = offset.clone();
-            let target = props.target.clone();
-            move || {
-                let Some(tb) = oppa::find_retained_by_debug(&host, &target)
-                    .into_iter()
-                    .next()
-                    .and_then(|id| host.committed_box(id))
-                else {
-                    return;
-                };
-                let max = oppa::scrollbar_max_offset(tb.h, tb.content_h);
-                let ny = (offset.get() - tb.h).clamp(0.0, max);
-                if ny != offset.get() {
-                    offset.set(ny);
-                }
+    };
+    let page_back: std::rc::Rc<dyn Fn()> = {
+        let host = host.clone();
+        let offset = offset.clone();
+        let target = props.target.clone();
+        std::rc::Rc::new(move || {
+            let Some(tb) = oppa::find_retained_by_debug(&host, &target)
+                .into_iter()
+                .next()
+                .and_then(|id| host.committed_box(id))
+            else {
+                return;
+            };
+            let (vp, content) = match axis {
+                ScrollbarAxis::Vertical => (tb.h, tb.content_h),
+                ScrollbarAxis::Horizontal => (tb.w, tb.content_w),
+            };
+            let max = oppa::scrollbar_max_offset(vp, content);
+            let npos = (offset.get() - vp).clamp(0.0, max);
+            if npos != offset.get() {
+                offset.set(npos);
             }
         })
-        .children([
-            Div(format!("scrollbar-trackbar-{inst}").as_str())
-                .style(
-                    Style::new()
-                        .x(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
-                        .w(SCROLLBAR_TRACK_PX)
-                        .h(tb.h)
-                        .bg(t.border)
-                        .opacity(Some(track_opacity))
-                        .transition(fade),
-                )
-                .build(),
-            Div(format!("scrollbar-thumb-{inst}").as_str())
-                .style(
-                    Style::new()
-                        .x(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
-                        .w(SCROLLBAR_TRACK_PX)
-                        .h(g.h)
-                        .absolute_y(g.y)
-                        .bg(t.text_secondary)
-                        .opacity(Some(thumb_opacity))
-                        .transition(fade),
-                )
-                .build(),
-        ]);
+    };
+    let track = match axis {
+        ScrollbarAxis::Vertical => {
+            let fwd = page_fwd.clone();
+            let back = page_back.clone();
+            track.on_key_down(move || fwd()).on_key_up(move || back())
+        }
+        ScrollbarAxis::Horizontal => {
+            let fwd = page_fwd.clone();
+            let back = page_back.clone();
+            track
+                .on_key_right(move || fwd())
+                .on_key_left(move || back())
+        }
+    };
+    let (bar_style, thumb_style) = match axis {
+        ScrollbarAxis::Vertical => (
+            Style::new()
+                .x(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
+                .w(SCROLLBAR_TRACK_PX)
+                .h(tb.h)
+                .bg(t.border)
+                .opacity(Some(track_opacity))
+                .transition(fade),
+            Style::new()
+                .x(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
+                .w(SCROLLBAR_TRACK_PX)
+                .h(tlen)
+                .absolute_y(tpos)
+                .bg(t.text_secondary)
+                .opacity(Some(thumb_opacity))
+                .transition(fade),
+        ),
+        ScrollbarAxis::Horizontal => (
+            Style::new()
+                .absolute_y(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
+                .h(SCROLLBAR_TRACK_PX)
+                .w(tb.w)
+                .bg(t.border)
+                .opacity(Some(track_opacity))
+                .transition(fade),
+            Style::new()
+                .absolute_y(SCROLLBAR_HIT_PX - SCROLLBAR_TRACK_PX)
+                .h(SCROLLBAR_TRACK_PX)
+                .w(tlen)
+                .x(tpos)
+                .bg(t.text_secondary)
+                .opacity(Some(thumb_opacity))
+                .transition(fade),
+        ),
+    };
+    let track = track.children([
+        Div(format!("scrollbar-trackbar-{inst}").as_str())
+            .style(bar_style)
+            .build(),
+        Div(format!("scrollbar-thumb-{inst}").as_str())
+            .style(thumb_style)
+            .build(),
+    ]);
     // Root origin for the portal base (unstyled marker — content
     // origin is the box origin; tracked like the target so resizes
     // reposition the overlay).
@@ -2781,6 +2925,7 @@ pub fn VirtualList<T: Clone + 'static>(ctx: &Ctx, props: &VirtualListProps<T>) -
             target: props.debug.clone(),
             offset: offset.clone(),
             idle_hide_ms: Some(1200),
+            axis: ScrollbarAxis::Vertical,
         },
         Scrollbar,
     );
@@ -3063,6 +3208,7 @@ pub fn DataGrid<T: Clone + 'static>(ctx: &Ctx, props: &DataGridProps<T>) -> VNod
             target: props.debug.clone(),
             offset: offset.clone(),
             idle_hide_ms: Some(1200),
+            axis: ScrollbarAxis::Vertical,
         },
         Scrollbar,
     );
@@ -6905,6 +7051,7 @@ mod tests {
                         // wall-clock fade is proven through the
                         // VirtualList/DataGrid attachments (21.2).
                         idle_hide_ms: None,
+                        axis: ScrollbarAxis::Vertical,
                     },
                     Scrollbar,
                 ),
@@ -7620,6 +7767,173 @@ mod tests {
             "Up pages back, got {}",
             offset.get()
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 36 PR2b (decision 354): horizontal scrollbar axis.
+    // ------------------------------------------------------------------
+
+    /// Horizontal rig: hand-rolled `ScrollArea` (200×200 at the
+    /// origin, content `content_w`×200) plus a horizontal `Scrollbar`
+    /// sharing the rig's x-half offset (the 2D `scroll_2d` handle's
+    /// `x()` view — same signal family, never a second source).
+    #[derive(Clone)]
+    struct HScrollRigProps {
+        content_w: f32,
+    }
+    impl Props for HScrollRigProps {}
+
+    fn hscroll_rig(ctx: &Ctx, p: &HScrollRigProps) -> VNode {
+        let offset = ctx.scroll_2d();
+        Div("hscroll-screen")
+            .style(Style::new().size(400, 300))
+            .children([
+                oppa::ScrollArea("hscroll-list")
+                    .style(Style::new().size(200, 200).content_size(p.content_w))
+                    .on_scroll(|| {})
+                    .child(
+                        Div("hscroll-content")
+                            .style(Style::new().size(p.content_w, 200).x(-offset.get().x))
+                            .build(),
+                    ),
+                ctx.child(
+                    "oppa::HScrollRigBar",
+                    1,
+                    &ScrollbarProps {
+                        target: SharedString::from("hscroll-list"),
+                        offset: offset.x(),
+                        idle_hide_ms: None,
+                        axis: ScrollbarAxis::Horizontal,
+                    },
+                    Scrollbar,
+                ),
+            ])
+    }
+
+    fn hscrollbar_harness(content_w: f32) -> (ComponentHost, ScrollOffset) {
+        let host = ComponentHost::new();
+        host.set_viewport(400.0, 300.0);
+        let handle = host.mount("HS", HScrollRigProps { content_w }, hscroll_rig);
+        host.run_until_idle();
+        let both = host
+            .instance_scroll_2d(handle.root_instance())
+            .expect("rig 2D handle");
+        (host, both.x())
+    }
+
+    /// Horizontal chrome rects (track spans the viewport width at
+    /// the target's bottom edge; thumb pins the transposed ratio).
+    fn hchrome_rects(plan: &oppa::FramePlan) -> ChromePair {
+        let mut track = Vec::new();
+        let mut thumb = Vec::new();
+        for op in &plan.ops {
+            if let oppa::DrawOp::Rect { x, y, w, h, .. } = op {
+                if approx(*y, 188.0) && approx(*h, 12.0) {
+                    if approx(*x, 0.0) && approx(*w, 200.0) {
+                        track.push((*x, *y, *w, *h));
+                    } else {
+                        thumb.push((*x, *y, *w, *h));
+                    }
+                }
+            }
+        }
+        (track, thumb)
+    }
+
+    /// Phase 36 PR2b: the horizontal thumb paints transposed (same
+    /// ratio as the vertical brief) and hides without overflow.
+    #[test]
+    fn horizontal_thumb_paints_transposed_and_hides_when_fit() {
+        let (host, _) = hscrollbar_harness(300.0);
+        let plan = scrollbar_plan(&host);
+        let (track, thumb) = hchrome_rects(&plan);
+        assert!(track.is_empty() && thumb.is_empty(), "idle paints nothing");
+        hover(&host, 100.0, 194.0);
+        let plan = scrollbar_plan(&host);
+        let (track, thumb) = hchrome_rects(&plan);
+        assert_eq!(track.len(), 1, "gutter hover paints track, got {track:?}");
+        assert_eq!(thumb.len(), 1, "gutter hover paints thumb, got {thumb:?}");
+        assert!(
+            approx(thumb[0].2, 200.0 * 200.0 / 300.0),
+            "thumb pins vp²/c, got {:?}",
+            thumb[0]
+        );
+        assert!(
+            approx(thumb[0].0, 0.0),
+            "rest parks at left, got {:?}",
+            thumb[0]
+        );
+        // No overflow: nothing paints even on hover.
+        let (host2, _) = hscrollbar_harness(100.0);
+        hover(&host2, 100.0, 194.0);
+        let plan2 = scrollbar_plan(&host2);
+        let (track2, thumb2) = hchrome_rects(&plan2);
+        assert!(
+            track2.is_empty() && thumb2.is_empty(),
+            "fits: paints nothing"
+        );
+    }
+
+    /// Phase 36 PR2b: dragging the horizontal thumb left-to-right
+    /// scrolls the content to 100% of its `content_w` overflow.
+    #[test]
+    fn horizontal_thumb_drag_scrolls_to_max() {
+        let (host, offset) = hscrollbar_harness(600.0);
+        // Thumb at rest: 0..66.67 on the 200 track; drag to the right
+        // edge (through the midpoint, like the vertical proof).
+        drag(&host, 33.0, 194.0, 190.0, 194.0);
+        assert!(
+            approx(offset.get(), 400.0),
+            "drag parks at max, got {}",
+            offset.get()
+        );
+        let plan = scrollbar_plan(&host);
+        let (_, thumb) = hchrome_rects(&plan);
+        assert_eq!(thumb.len(), 1, "thumb paints after drag");
+        assert!(
+            approx(thumb[0].0, (200.0f32 - 200.0 * 200.0 / 600.0).round()),
+            "thumb parks at travel, got {:?}",
+            thumb[0]
+        );
+    }
+
+    /// Phase 36 PR2b: Right/Left page by viewport on the horizontal
+    /// axis, and the track semantics carry the G18 numeric value.
+    #[test]
+    fn horizontal_keys_page_and_semantics_carry_range() {
+        let (host, offset) = hscrollbar_harness(600.0);
+        host.inject_input(InputEvent::key(keys::TAB, KeyState::Pressed));
+        host.run_until_idle();
+        host.inject_input(InputEvent::key(keys::RIGHT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(
+            approx(offset.get(), 200.0),
+            "Right pages, got {}",
+            offset.get()
+        );
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert!(
+            approx(offset.get(), 0.0),
+            "Left pages back, got {}",
+            offset.get()
+        );
+        // Range half (decision 352, wired in PR2b): the slider payload
+        // names the numeric position, not just the human percent.
+        let track = host.with_retained_mut(|rec, _| {
+            rec.retained_ids()
+                .into_iter()
+                .find(|id| {
+                    rec.get(*id)
+                        .is_some_and(|n| n.debug.starts_with("scrollbar-track-"))
+                })
+                .expect("track node lives")
+        });
+        let sem = host.retained_semantics(track).expect("track semantics");
+        assert_eq!(sem.role, oppa::Role::Slider);
+        assert_eq!(sem.value_num, Some(oppa::Num::of(0.0)));
+        assert_eq!(sem.min_value, Some(oppa::Num::of(0.0)));
+        assert_eq!(sem.max_value, Some(oppa::Num::of(400.0)));
     }
 
     /// Round 22.1 (decision 331): `masked` publishes into the

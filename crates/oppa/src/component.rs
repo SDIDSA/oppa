@@ -333,6 +333,56 @@ impl ScrollOffset {
     }
 }
 
+/// 2D scroll position value (Phase 36 PR2b, decision 354 — G15): the
+/// plain-data snapshot a [`ScrollOffset2D`] handle reads/writes.
+/// `Copy` so bodies destructure freely (`let ScrollXY { x, y } = off.get()`).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct ScrollXY {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Framework-owned 2D scroll position (Phase 36 PR2b, decision 354):
+/// one view over the instance's two offset signals (`scroll` +
+/// `scroll_x` — same residence, same keying as the 1D twins, so a
+/// body mixing `scroll_offset()` and `scroll_2d()` shares state,
+/// never forks it). 2D `ScrollArea` containers bind both feeds to
+/// this (see [`ComponentHost::bind_scroll_2d`]); 1D callers keep
+/// their handles untouched.
+#[derive(Clone)]
+pub struct ScrollOffset2D {
+    x: Signal<f32>,
+    y: Signal<f32>,
+}
+
+impl ScrollOffset2D {
+    pub fn get(&self) -> ScrollXY {
+        ScrollXY {
+            x: self.x.get(),
+            y: self.y.get(),
+        }
+    }
+
+    pub fn set(&self, pos: ScrollXY) {
+        self.x.set(pos.x);
+        self.y.set(pos.y);
+    }
+
+    /// Horizontal half-view (the `ctx.scroll_x()` twin — same signal).
+    pub fn x(&self) -> ScrollOffset {
+        ScrollOffset {
+            signal: self.x.clone(),
+        }
+    }
+
+    /// Vertical half-view (the `ctx.scroll_offset()` twin — same signal).
+    pub fn y(&self) -> ScrollOffset {
+        ScrollOffset {
+            signal: self.y.clone(),
+        }
+    }
+}
+
 /// App theme handle (Round 11.2, decision 306): a cloneable view over
 /// the host's theme-mode signal. Components read `tokens()` in their
 /// body (tracked — toggling re-renders every themed control in place;
@@ -1268,6 +1318,18 @@ impl ComponentHost {
             .and_then(|rec| rec.scroll_x.clone().map(|signal| ScrollOffset { signal }))
     }
 
+    /// Test hook for the 2D scroll seam (Phase 36 PR2b): the
+    /// instance's combined handle — `Some` exactly when the instance
+    /// created both halves (same signals the 1D twins return).
+    pub fn instance_scroll_2d(&self, instance: u64) -> Option<ScrollOffset2D> {
+        let inner = self.inner.instances.borrow();
+        let rec = inner.get(&instance)?;
+        Some(ScrollOffset2D {
+            x: rec.scroll_x.clone()?,
+            y: rec.scroll.clone()?,
+        })
+    }
+
     /// Binds a scroll-target node to a framework-owned offset signal
     /// (§9.3 INPUT feed, M7, decision 112): scroll events routed to
     /// `target` accumulate their `dy` into this signal at the INPUT
@@ -1299,6 +1361,23 @@ impl ComponentHost {
             .insert(target, offset.signal);
     }
 
+    /// Binds a scroll-target node to a framework-owned 2D offset
+    /// (Phase 36 PR2b, decision 354 — G15): `dy` accumulates into the
+    /// `y` half (the `bind_scroll` contract), `dx` into the `x` half
+    /// (the `bind_scroll_x` contract, clamped to the target's
+    /// `content_w` overflow). Re-binding replaces both feeds — one
+    /// call for 2D `ScrollArea` containers instead of two 1D binds.
+    pub fn bind_scroll_2d(&self, target: NodeId, offset: &ScrollOffset2D) {
+        self.inner
+            .scroll_feeds
+            .borrow_mut()
+            .insert(target, offset.y.clone());
+        self.inner
+            .scroll_x_feeds
+            .borrow_mut()
+            .insert(target, offset.x.clone());
+    }
+
     /// The offset signal bound to `target`, if any (diagnostics/tests).
     pub fn bound_scroll(&self, target: NodeId) -> Option<f32> {
         self.inner
@@ -1319,6 +1398,17 @@ impl ComponentHost {
             .get(&target)
             .cloned()
             .map(|sig| untrack(|| sig.get()))
+    }
+
+    /// Both offsets bound to `target`, if any (Phase 36 PR2b —
+    /// diagnostics/tests twin of the 1D pair; `None` unless both
+    /// halves are bound — a half-bound target is a wiring bug, never
+    /// a silent half-read).
+    pub fn bound_scroll_2d(&self, target: NodeId) -> Option<ScrollXY> {
+        Some(ScrollXY {
+            x: self.bound_scroll_x(target)?,
+            y: self.bound_scroll(target)?,
+        })
     }
 
     /// Binds a field node to the app-owned value signal
@@ -2599,6 +2689,15 @@ impl ComponentHost {
                     .map(|b| (b.content_w - b.w).max(0.0))
                     .unwrap_or(0.0);
                 sig.update(|v| (v + dx).clamp(0.0, max_x));
+            } else if let Some((sig, max_x)) = self.owner_scroll_x_signal(target) {
+                // Phase 36 PR2b (decision 354): the Round 24.2
+                // self-wire transposed — unbound `dx` feeds the
+                // target's handler-owner instance `scroll_x` (created
+                // via `ctx.scroll_x()` / `ctx.scroll_2d()`), clamped
+                // to the `content_w` overflow like the bound feed.
+                // Targets with no Scroll handler (or no owner offset)
+                // keep the M5 dispatch-only behavior.
+                sig.update(|v| (v + dx).clamp(0.0, max_x));
             }
         }
     }
@@ -2636,6 +2735,41 @@ impl ComponentHost {
                 .map(|b| (b.content_h - b.h).max(0.0))?
         };
         Some((signal, max_y))
+    }
+
+    /// Resolves a scroll target's self-wired horizontal feed (Phase 36
+    /// PR2b, decision 354): the [`ComponentHost::owner_scroll_signal`]
+    /// twin transposed — the target's `Scroll` handler names its
+    /// declaring component instance, and that instance's `scroll_x`
+    /// offset is the feed when the body created one with
+    /// `ctx.scroll_x()` / `ctx.scroll_2d()`. Clamped to the target's
+    /// committed `[0, content_w - w]` (`content_w` overflow — narrow
+    /// content pins at rest). `None` under the same quiet conditions
+    /// as the vertical twin (the M5 dispatch-only rule).
+    fn owner_scroll_x_signal(&self, target: NodeId) -> Option<(Signal<f32>, f32)> {
+        let hid = {
+            let rec = self.inner.rec.borrow();
+            input::handler_of(&rec, target, EventKind::Scroll)?
+        };
+        let instance = self.inner.rt.handler_owner(hid)?;
+        let signal = {
+            self.inner
+                .instances
+                .borrow()
+                .get(&instance)?
+                .scroll_x
+                .clone()?
+        };
+        let max_x = {
+            self.inner
+                .rec
+                .borrow()
+                .get(target)?
+                .layout
+                .clone()
+                .map(|b| (b.content_w - b.w).max(0.0))?
+        };
+        Some((signal, max_x))
     }
 
     /// Streams one held Move into the pointer's drag-scroll state
@@ -4199,6 +4333,22 @@ impl Ctx {
         ScrollOffset { signal: sig }
     }
 
+    /// Framework-owned 2D scroll position (Phase 36 PR2b, decision
+    /// 354 — G15): one view over the instance's `scroll` + `scroll_x`
+    /// signals (gets-or-creates both — same residence, same keying as
+    /// the 1D twins, so mixing `scroll_offset()` and `scroll_2d()` in
+    /// one body shares state, never forks it). 2D `ScrollArea`
+    /// containers bind both feeds via
+    /// [`ComponentHost::bind_scroll_2d`].
+    pub fn scroll_2d(&self) -> ScrollOffset2D {
+        let y = self.scroll_offset();
+        let x = self.scroll_x();
+        ScrollOffset2D {
+            x: x.signal,
+            y: y.signal,
+        }
+    }
+
     /// App theme (Round 11.2, decision 306): `let t =
     /// ctx.theme();` then `t.tokens().primary` — tracked reads, so a
     /// toggle re-renders every themed control in place (instances,
@@ -5318,5 +5468,109 @@ mod tests {
             (3, 2, 3),
             "set re-runs every reader"
         );
+    }
+
+    #[derive(Clone)]
+    struct TwoDProps;
+    impl Props for TwoDProps {}
+
+    /// 2D scroll area: 200×40 viewport over a 300×200 sheet (x bound
+    /// `[0, 100]`, y bound `[0, 160]`), owned through one 2D handle.
+    fn twod_comp(ctx: &Ctx, _: &TwoDProps) -> VNode {
+        let _both = ctx.scroll_2d();
+        crate::vnode::ScrollArea("sheet")
+            .style(crate::style::Style::new().size(200, 40))
+            .on_scroll(|| {})
+            .child(
+                crate::vnode::Div("sheet-wide")
+                    .style(crate::style::Style::new().size(300, 200))
+                    .build(),
+            )
+    }
+
+    #[test]
+    fn scroll_2d_shares_state_with_the_1d_twins() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let handle = host.mount("TwoD", TwoDProps, twod_comp);
+        host.run_until_idle();
+        let root = handle.root_instance();
+        let both = host.instance_scroll_2d(root).expect("2D handle");
+        // Same signals, never forked: 1D writes read back 2D and back.
+        let y = host.instance_scroll(root).expect("y twin");
+        let x = host.instance_scroll_x(root).expect("x twin");
+        y.set(12.0);
+        x.set(34.0);
+        assert_eq!(both.get(), ScrollXY { x: 34.0, y: 12.0 });
+        both.set(ScrollXY { x: 1.0, y: 2.0 });
+        assert_eq!((x.get(), y.get()), (1.0, 2.0));
+        assert_eq!(both.x().get(), 1.0);
+        assert_eq!(both.y().get(), 2.0);
+    }
+
+    #[test]
+    fn bind_scroll_2d_feeds_both_axes_and_reports_both() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let handle = host.mount("TwoD", TwoDProps, twod_comp);
+        host.run_until_idle();
+        let root = handle.root_instance();
+        let both = host.instance_scroll_2d(root).expect("2D handle");
+        let sheet = crate::find_retained_by_debug(&host, "sheet")[0];
+        host.bind_scroll_2d(sheet, &both);
+        assert_eq!(
+            host.bound_scroll_2d(sheet),
+            Some(ScrollXY { x: 0.0, y: 0.0 })
+        );
+        host.inject_input(crate::input::InputEvent::Scroll {
+            target: sheet,
+            dx: 30.0,
+            dy: 50.0,
+        });
+        host.run_until_idle();
+        assert_eq!(both.get(), ScrollXY { x: 30.0, y: 50.0 });
+        assert_eq!(
+            host.bound_scroll_2d(sheet),
+            Some(ScrollXY { x: 30.0, y: 50.0 })
+        );
+        // Half-bound targets report None (a half-wired 2D area is a
+        // wiring bug, never a silent half-read).
+        let host2 = ComponentHost::new();
+        host2.set_viewport(800.0, 600.0);
+        host2.mount("TwoD", TwoDProps, twod_comp);
+        host2.run_until_idle();
+        let sheet2 = crate::find_retained_by_debug(&host2, "sheet")[0];
+        assert_eq!(host2.bound_scroll_2d(sheet2), None);
+    }
+
+    #[test]
+    fn unbound_dx_self_wires_to_the_owner_x_offset() {
+        // Round 24.2 transposed (decision 354): no `bind_scroll_x`
+        // anywhere, but the target's Scroll owner holds a `scroll_x`
+        // offset — `dx` feeds it, clamped to the `content_w`
+        // overflow; narrow content pins at rest.
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let handle = host.mount("TwoD", TwoDProps, twod_comp);
+        host.run_until_idle();
+        let root = handle.root_instance();
+        let both = host.instance_scroll_2d(root).expect("2D handle");
+        let sheet = crate::find_retained_by_debug(&host, "sheet")[0];
+        assert_eq!(host.bound_scroll_x(sheet), None, "no bound feed");
+        host.inject_input(crate::input::InputEvent::Scroll {
+            target: sheet,
+            dx: 30.0,
+            dy: 0.0,
+        });
+        host.run_until_idle();
+        assert_eq!(both.get().x, 30.0, "owner x self-wires");
+        assert_eq!(both.get().y, 0.0, "dy untouched");
+        host.inject_input(crate::input::InputEvent::Scroll {
+            target: sheet,
+            dx: 500.0,
+            dy: 0.0,
+        });
+        host.run_until_idle();
+        assert_eq!(both.get().x, 100.0, "clamps to content_w - w");
     }
 }

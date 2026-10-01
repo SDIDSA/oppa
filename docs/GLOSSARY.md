@@ -26,4 +26,5 @@ concept, this file wins.
 - **AT action** — an assistive-technology invocation driving back into the framework (UIA Invoke/RangeValue, AT-SPI Action/Value, DOM native); always through host-loop callbacks, never direct framework access (decision 352).
 - **Grid** — the minimal 2D container (`Tag::Grid`, decision 353): `Px`/`Fr`/`Auto` track templates, row-major auto-flow with spans only (no explicit placement); variable-height virtualized rows stay out.
 - **Flex share** — weighted `flex_grow` remainder split over the intrinsic base (decision 353); `fill_width`/`fill_height` ride the same pool with weight 1; opt-in `flex_shrink` absorbs overflow.
+- **2D scroll (`ScrollXY` / `ScrollOffset2D`)** — the plain-data 2D position value and the one view over the instance's `scroll` + `scroll_x` signals (decision 354); mixing 1D and 2D handles shares state, never forks it.
 - **Slot** — a stable virtualization position in `ScrollArea`; keys are slots, not items.

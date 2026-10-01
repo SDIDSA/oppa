@@ -20,12 +20,19 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   `flex_grow`/`flex_shrink` (weighted pool, `fill` ≡ weight 1, explicit
   wins, opt-in shrink), `min`/`max` clamping (resolved clamp, explicit
   contradictions refuse); all pre-existing layout suites byte-identical.
+- Phase 36 PR2b (decision 354, gate green 2026-10-01): 2D `ScrollArea` —
+  `ScrollOffset { x, y }` unification (`ScrollXY`/`ScrollOffset2D`
+  sharing the 1D twin signals), horizontal thumb math, `content_w`
+  overflow with x self-wire, `Shift+Wheel` routing at the shell layer
+  (win + linux), transposed `Scrollbar` axis (incl. G18 range payload);
+  all pre-existing scroll suites green.
 
 ## Now (in progress)
 
-- Phase 36 PR2b (Core Engine v2): 2D `ScrollArea` — `ScrollOffset { x, y }`
-  unification, horizontal thumb, `content_w` overflow, `Shift+Wheel`
-  routing; existing scroll callers migrate in the same PR.
+- Phase 36 PR3 (Core Engine v2): Text v2 — multi-span
+  `VNode::RichText(Vec<TextSpan>)` shaped across line breaks per
+  `v2-paragraph.md`, cluster-accurate caret/hit-test, web text-metric
+  parity from bundled reference font bytes.
 
 ## Next (accepted, not started)
 

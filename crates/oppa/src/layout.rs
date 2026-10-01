@@ -325,6 +325,16 @@ pub struct ScrollbarThumb {
     pub h: f32,
 }
 
+/// Horizontal thumb geometry (Phase 36 PR2b, decision 354 — G15):
+/// the exact transpose of [`ScrollbarThumb`] — `x` is the
+/// thumb-left offset from the track left, `w` the thumb extent.
+/// Same formula, same contract, one axis over.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ScrollbarThumbX {
+    pub x: f32,
+    pub w: f32,
+}
+
 /// Maximum scroll offset for an extent (`content - viewport`,
 /// floored at zero — no negative travel, never NaN from empty
 /// boxes).
@@ -368,6 +378,34 @@ pub fn scrollbar_thumb(viewport_h: f32, content_h: f32, offset: f32) -> Option<S
         offset.clamp(0.0, max) / max * travel
     };
     Some(ScrollbarThumb { y, h })
+}
+
+/// Horizontal thumb rect (Phase 36 PR2b, decision 354 — G15): the
+/// [`scrollbar_thumb`] formula transposed (`w = max(24, viewport² /
+/// content)`, `x` linear in the clamped offset). Same loudness (only
+/// non-finite inputs refuse), same quiet `None` without overflow.
+pub fn scrollbar_thumb_x(viewport_w: f32, content_w: f32, offset: f32) -> Option<ScrollbarThumbX> {
+    if !viewport_w.is_finite() || !content_w.is_finite() || !offset.is_finite() {
+        panic!(
+            "scrollbar geometry must be finite, got viewport {viewport_w} content {content_w} \
+             offset {offset} — refuse, never paint"
+        );
+    }
+    if viewport_w <= 0.0 || content_w <= viewport_w {
+        return None;
+    }
+    let w = (viewport_w * viewport_w / content_w).max(SCROLLBAR_MIN_THUMB_PX);
+    // A min-clamped thumb wider than the track leaves no travel —
+    // pin it full-track instead of a negative run.
+    let w = w.min(viewport_w);
+    let travel = viewport_w - w;
+    let max = scrollbar_max_offset(viewport_w, content_w);
+    let x = if travel <= 0.0 || max <= 0.0 {
+        0.0
+    } else {
+        offset.clamp(0.0, max) / max * travel
+    };
+    Some(ScrollbarThumbX { x, w })
 }
 
 // ---------------------------------------------------------------------------
@@ -4517,5 +4555,34 @@ mod tests {
             scrollbar_thumb(200.0, 600.0, 0.0),
             "negative clamps to top"
         );
+    }
+
+    /// Phase 36 PR2b (decision 354): the horizontal twin pins the same
+    /// formula transposed — `w = max(24, viewport² / content)`, `x`
+    /// linear in the clamped offset over the travel.
+    #[test]
+    fn scrollbar_thumb_x_pins_the_transposed_formula() {
+        let t = scrollbar_thumb_x(200.0, 600.0, 0.0).expect("overflow thumbs");
+        assert!(
+            (t.w - 200.0 * 200.0 / 600.0).abs() < 1e-3,
+            "w pins vp²/c, got {}",
+            t.w
+        );
+        assert_eq!(t.x, 0.0, "rest parks at left");
+        let full = scrollbar_thumb_x(200.0, 600.0, 400.0).expect("right thumb");
+        assert!(
+            (full.x - (200.0 - t.w)).abs() < 1e-3,
+            "right parks at travel, got {}",
+            full.x
+        );
+        let mid = scrollbar_thumb_x(200.0, 600.0, 200.0).expect("mid thumb");
+        assert!(
+            (mid.x - (200.0 - t.w) / 2.0).abs() < 1e-3,
+            "linear ratio, got {}",
+            mid.x
+        );
+        assert_eq!(scrollbar_thumb_x(200.0, 200.0, 0.0), None);
+        assert_eq!(scrollbar_thumb_x(200.0, 100.0, 0.0), None);
+        assert_eq!(scrollbar_thumb_x(0.0, 600.0, 0.0), None);
     }
 }

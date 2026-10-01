@@ -34,7 +34,8 @@ pub use clipboard::{Clipboard, ClipboardError, InMemoryClipboard};
 pub use clock::{Clock, MockClock, SystemClock};
 pub use component::{
     find_retained_by_debug, BackOutcome, ComponentHost, Ctx, ImageCache, InstanceSnapshot,
-    MountHandle, OpaqueProps, Props, RenderFn, ScrollOffset, Store, Theme, TimerId,
+    MountHandle, OpaqueProps, Props, RenderFn, ScrollOffset, ScrollOffset2D, ScrollXY, Store,
+    Theme, TimerId,
 };
 pub use dialog::{
     FileDialog, FileDialogOptions, FileFilter, FilePickerOptions, FolderDialog,
@@ -54,9 +55,10 @@ pub use input::{
 };
 pub use interner::{Interner, StyleId};
 pub use layout::{
-    order_visual, scrollbar_max_offset, scrollbar_thumb, LaidCluster, LaidGlyph, LaidLine, LaidRun,
-    LayoutBox, LayoutEngine, LayoutLedger, LayoutStats, LayoutTextConfig, MeasuredText,
-    OrderedCluster, ScrollbarThumb, SCROLLBAR_HIT_PX, SCROLLBAR_MIN_THUMB_PX, SCROLLBAR_TRACK_PX,
+    order_visual, scrollbar_max_offset, scrollbar_thumb, scrollbar_thumb_x, LaidCluster, LaidGlyph,
+    LaidLine, LaidRun, LayoutBox, LayoutEngine, LayoutLedger, LayoutStats, LayoutTextConfig,
+    MeasuredText, OrderedCluster, ScrollbarThumb, ScrollbarThumbX, SCROLLBAR_HIT_PX,
+    SCROLLBAR_MIN_THUMB_PX, SCROLLBAR_TRACK_PX,
 };
 pub use nav::{NavError, NavStack, PopOutcome, ReplaceOutcome, Route};
 pub use pass_mask::PassMask;
@@ -69,7 +71,7 @@ pub use render::{
     SemanticsDiff, SemanticsEntry, SemanticsSnapshot, SurfaceDesc, SurfaceId, CARET_WIDTH_PX, INK,
     SELECTION_FILL,
 };
-pub use semantics::{Role, Semantics};
+pub use semantics::{Num, Role, Semantics};
 pub use shell::{AppLifecycleState, Event, EventKind, PlatformShell};
 pub use store::{
     Collection, CollectionPage, CollectionQuery, CollectionWriter, FsSandbox, InMemoryFs,

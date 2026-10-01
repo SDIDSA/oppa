@@ -127,7 +127,9 @@ pub enum ShellEvent {
     /// message time (wheel position arrives in *screen* coords,
     /// unlike the button messages) + signed delta in WHEEL_DELTA
     /// units. Raw integer layer like every sibling — `Cmd` carries
-    /// the converted floats.
+    /// the converted floats. Shift-held ticks arrive here as
+    /// [`ShellEvent::HWheel`] instead (Phase 36 PR2b — the proc
+    /// routes on the sampled Shift state, same message).
     Wheel {
         x: i32,
         y: i32,
@@ -170,6 +172,21 @@ pub enum ShellEvent {
     /// destroyed inline: the runner approves through the loop's
     /// close handler and destroys explicitly).
     CloseRequested,
+}
+
+/// Maps one `WM_MOUSEWHEEL` tick to its queued event (Phase 36 PR2b,
+/// decision 354): a Shift-held tick rolls horizontally (the native
+/// convention — browsers and listviews do the same) and queues as
+/// `HWheel` with the same delta, so the Cmd layer converts
+/// scale+sign exactly like the tilt wheel; otherwise `Wheel`. Pure
+/// over the sampled Shift state (the proc samples it at message
+/// time) — headless-testable without synthesizing key state.
+fn wheel_event(x: i32, y: i32, delta: i16, shift: bool) -> ShellEvent {
+    if shift {
+        ShellEvent::HWheel { x, y, delta }
+    } else {
+        ShellEvent::Wheel { x, y, delta }
+    }
 }
 
 /// Payload-shaped commands, drained by the registered field handler in
@@ -1116,17 +1133,17 @@ unsafe extern "system" fn shell_wnd_proc(
             // Delta rides the high word (signed 16-bit); the
             // position packs screen (not client) coords — convert at
             // message time, before anything can move the window.
+            // Shift+wheel rolls horizontally (see `wheel_event`).
             let delta = ((wparam.0 >> 16) as u16) as i16;
             let mut pt = POINT {
                 x: client_x(lparam),
                 y: client_y(lparam),
             };
             let _ = ScreenToClient(hwnd, &mut pt);
-            shared.borrow_mut().queue.push_back(ShellEvent::Wheel {
-                x: pt.x,
-                y: pt.y,
-                delta,
-            });
+            shared
+                .borrow_mut()
+                .queue
+                .push_back(wheel_event(pt.x, pt.y, delta, shift_down));
             LRESULT(0)
         }
         WM_MOUSEHWHEEL => {
@@ -1953,6 +1970,40 @@ mod pointer_tests {
             }
             other => panic!("WHEEL must dispatch Scroll, got {other:?}"),
         }
+    }
+
+    /// Phase 36 PR2b (decision 354): the `WM_MOUSEWHEEL` → event
+    /// mapping routes on Shift — plain ticks queue vertical `Wheel`,
+    /// Shift-held ticks queue `HWheel` with the same delta (the Cmd
+    /// layer converts them exactly like the tilt wheel). Pure mapping
+    /// over the proc-sampled Shift state (no synthesized key state).
+    #[test]
+    fn shift_wheel_routes_horizontal_without_shift_stays_vertical() {
+        assert_eq!(
+            super::wheel_event(10, 20, -120, false),
+            ShellEvent::Wheel {
+                x: 10,
+                y: 20,
+                delta: -120
+            }
+        );
+        assert_eq!(
+            super::wheel_event(10, 20, -120, true),
+            ShellEvent::HWheel {
+                x: 10,
+                y: 20,
+                delta: -120
+            },
+            "Shift+wheel rolls horizontally with the same delta"
+        );
+        assert_eq!(
+            super::wheel_event(30, 40, 120, true),
+            ShellEvent::HWheel {
+                x: 30,
+                y: 40,
+                delta: 120
+            }
+        );
     }
 
     /// Round 20.2 (decision 325): a real `WM_MOUSEHWHEEL` through the
