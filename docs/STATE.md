@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-01 (through Decision 351).
+Status: current. Last verified: 2026-10-01 (through Decision 367).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -60,21 +60,36 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   path deps, loud refusals — a generated desktop project compiles
   against the live checkout); templates ride `child_auto`; G9 reload
   recipe on `oppa-reload` rustdoc (+ `app_loop`).
+- Phase 38a (decisions 366–367, gate green 2026-10-01): Form
+  validation props (G7) — `invalid` / `required` / `error_message` /
+  `helper_text` on TextInput, TextArea, Checkbox, Toggle,
+  RadioGroup, Select, Slider (announced marks via decision-352
+  payloads, `error`-ink borders, footer captions; validators stay
+  app-side; valid trees byte-identical); Slider `Home`/`End` jumps
+  + `value_num`/`min_value`/`max_value` range announcement (G18)
+  over the continuous pointer-capture drag.
 
 ## Now (in progress)
 
 - Phase 38 (Control Catalog, Cookbook, Styling, Packaging & PWA):
-  validation/drag/keyboard control contracts; new controls; G10/G11
-  cookbook recipes; theme/styling pass; desktop installers + PWA
-  packaging.
+  38a shipped (validation + slider keys); remaining: new controls
+  (Tree, Splitter, DatePicker, Toolbar/Menubar/FilePicker,
+  RichText/Image/Canvas/NavHost); G10/G11 cookbook + styling;
+  theme/styling pass; desktop installers + PWA packaging.
 
 ## Next (accepted, not started)
 
-Ordered productization P1s (G7–G23): form-validation props, `cargo-oppa new` (G8), reload recipe (G9), cookbook additions, styling page flip, Tree, Splitter, Date picker, Grid + h-scroll, fetch backends/cancel, log facade, accessibility-action gap (UIA Invoke/RangeValue, AT-SPI Action/Value), packaging promotion, PWA story, Toolbar/Menubar/FilePicker, RichText/Image/Canvas/NavHost, persistence helpers.
+Ordered productization P1s (G10–G14, G19–G23): cookbook additions,
+styling page flip, Tree, Splitter, Date picker, packaging
+promotion, PWA story, Toolbar/Menubar/FilePicker,
+RichText/Image/Canvas/NavHost, persistence helpers.
 
-Planned v2 specs (unimplemented; full text in git history): TIME-interpolation keyframes, shared-core paragraph shaping, DOM→framework value-loop text entry.
+Planned v2 specs (unimplemented; full text in git history):
+DOM→framework value-loop text entry.
 
-Accepted-carry: `component_manifest!` generics (refused loudly until designed), web text-metric drift audit, c3 CDP/Edge re-baseline whenever the harness is next exercised, Firefox full-leg automation (optional tooling), weak-GPU sustained-cost standing rule.
+Accepted-carry: c3 CDP/Edge re-baseline whenever the harness is next
+exercised, Firefox full-leg automation (optional tooling), weak-GPU
+sustained-cost standing rule.
 
 ## Blocked (with blocker)
 
@@ -93,5 +108,5 @@ Accepted-carry: `component_manifest!` generics (refused loudly until designed), 
 
 - Environmental flakes: `oppa-shell-win` live-Shift sampling; sandboxed clipboard returns NULL handle with `ERROR_SUCCESS` (loud skip); transient clipboard box contention in full-suite runs.
 - Stated edges: ZWJ-inside-regional-indicator double-click selects the joiner alone (pathological); right-held single-gesture drag-select stays out (tap-to-open).
-- Standing debt: one pre-existing `FpsApp` clippy lint on record; web text-metric drift open; hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question).
+- Standing debt: one pre-existing `FpsApp` clippy lint on record; hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question).
 - Deliberate non-goals (not debt): fixed decorative literals, `SELECTION_FILL`, OS title-bar theming; right-held menu drag-select; color-emoji rendering.

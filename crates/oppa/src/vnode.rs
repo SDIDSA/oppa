@@ -426,6 +426,32 @@ impl ElementBuilder {
         self
     }
 
+    /// Home-key handler (Phase 38a, decision 367): fired by the
+    /// router when the focused owner declares one (jump to range
+    /// minimum on Slider); otherwise the generic Key handler runs
+    /// (the arrow precedent), else quiet. Requires focus.
+    pub fn on_key_home(mut self, f: impl Fn() + 'static) -> Self {
+        self.inner.handlers.push(HandlerAttachment {
+            kind: EventKind::KeyHome,
+            id: auto_handler_id(&self.inner.debug),
+            pending: RefCell::new(Some(Box::new(f))),
+            owner: std::cell::Cell::new(None),
+        });
+        self
+    }
+
+    /// End-key handler (Phase 38a, decision 367 — see
+    /// [`ElementBuilder::on_key_home`]; jumps to range maximum).
+    pub fn on_key_end(mut self, f: impl Fn() + 'static) -> Self {
+        self.inner.handlers.push(HandlerAttachment {
+            kind: EventKind::KeyEnd,
+            id: auto_handler_id(&self.inner.debug),
+            pending: RefCell::new(Some(Box::new(f))),
+            owner: std::cell::Cell::new(None),
+        });
+        self
+    }
+
     /// Attaches a secondary-press handler closure (Round 9.2, decision
     /// 301): the raw right-click tap, fired by the router on the
     /// capture owner when declared (quiet otherwise — a secondary tap

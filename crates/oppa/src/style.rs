@@ -354,6 +354,12 @@ pub struct ThemeTokens {
     pub focus_ring: Color,
     /// Washed fills (disabled tracks, boxes, inputs).
     pub disabled: Color,
+    /// Validation error ink + invalid field borders (Phase 38a,
+    /// decisions 366–367 — G7): saturated red in both palettes
+    /// (keeps white contrast out — error text paints in this ink
+    /// on `surface`, invalid borders edge with it; valid controls
+    /// never read it, so Light oracles stay byte-identical).
+    pub error: Color,
 }
 
 impl ThemeTokens {
@@ -370,6 +376,7 @@ impl ThemeTokens {
             border: Color(0x88_88_88),
             focus_ring: Color(0x1A_56_CC),
             disabled: Color(0xEE_EE_EE),
+            error: Color(0xCC_22_22),
         }
     }
 
@@ -387,6 +394,7 @@ impl ThemeTokens {
             border: Color(0x55_55_55),
             focus_ring: Color(0x7F_AE_E8),
             disabled: Color(0x33_33_33),
+            error: Color(0xE5_6B_6B),
         }
     }
 

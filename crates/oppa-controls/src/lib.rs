@@ -203,12 +203,22 @@ pub fn Button(ctx: &Ctx, props: &ButtonProps) -> VNode {
 /// `on_change` reports flips (round 5.4 — `None` keeps the exact
 /// pre-5.4 behavior); see [`UncontrolledCheckbox`] for the
 /// self-managed companion.
+///
+/// Form validation (Phase 38a, decision 366 — G7): `invalid` /
+/// `required` / `error_message` announce through [`Semantics`]
+/// (validators stay app-side); `helper_text` renders a dimmed
+/// caption under the row (visual-only, never announced). All four
+/// default off/empty — plain checkboxes keep byte-identical trees.
 #[derive(Clone)]
 pub struct CheckboxProps {
     pub label: SharedString,
     pub checked: Signal<bool>,
     pub enabled: bool,
     pub on_change: Option<Change<bool>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for CheckboxProps {}
@@ -230,10 +240,15 @@ impl Props for CheckboxProps {}
 pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
     let t = ctx.theme().tokens();
     let checked = props.checked.get();
-    let semantics = Semantics::checkbox()
-        .checked(checked)
-        .label(&props.label)
-        .disabled(!props.enabled);
+    let semantics = with_validation_marks(
+        Semantics::checkbox()
+            .checked(checked)
+            .label(&props.label)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let press = if props.enabled {
         let (checked, notify) = (props.checked.clone(), props.on_change.clone());
         Some(action(move || {
@@ -263,6 +278,9 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
     } else {
         (t.surface, t.border, CONTRAST_INK)
     };
+    // Phase 38a: an invalid box edges in `error` (announced through
+    // the payload above); valid boxes keep the exact palette.
+    let edge = if props.invalid { t.error } else { edge };
     let box_style = focus_ringed(
         ctx,
         props.enabled,
@@ -308,13 +326,23 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
         Some(press) => builder.on_press(move || press()),
         None => builder,
     };
-    builder.children([
+    let root = builder.children([
         box_vnode,
         VNode::from(Text {
             text: props.label.clone(),
             style: Text::body_secondary,
         }),
-    ])
+    ]);
+    // Phase 38a: validation footer stacks under the row only when a
+    // message is present (valid rows keep the exact tree).
+    with_validation_footer(
+        root,
+        ctx,
+        "checkbox",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled checkbox (round 5.4, OQ-G2-4): self-managed
@@ -326,6 +354,10 @@ pub struct UncontrolledCheckboxProps {
     pub initial: bool,
     pub enabled: bool,
     pub on_change: Option<Change<bool>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledCheckboxProps {}
@@ -338,6 +370,10 @@ pub fn UncontrolledCheckbox(ctx: &Ctx, props: &UncontrolledCheckboxProps) -> VNo
             checked,
             enabled: props.enabled,
             on_change: props.on_change.clone(),
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         Checkbox,
     )
@@ -351,12 +387,20 @@ pub fn UncontrolledCheckbox(ctx: &Ctx, props: &UncontrolledCheckboxProps) -> VNo
 /// as a shipped control). `on_change` reports flips (round 5.4 —
 /// `None` keeps the exact pre-5.4 behavior); see
 /// [`UncontrolledToggle`] for the self-managed companion.
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`CheckboxProps`] (announced `invalid` / `required` /
+/// `error_message`, visual `helper_text`; all default off/empty).
 #[derive(Clone)]
 pub struct ToggleProps {
     pub label: SharedString,
     pub on: Signal<bool>,
     pub enabled: bool,
     pub on_change: Option<Change<bool>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for ToggleProps {}
@@ -374,10 +418,15 @@ impl Props for ToggleProps {}
 pub fn Toggle(ctx: &Ctx, props: &ToggleProps) -> VNode {
     let t = ctx.theme().tokens();
     let on = props.on.get();
-    let semantics = Semantics::switch()
-        .checked(on)
-        .label(&props.label)
-        .disabled(!props.enabled);
+    let semantics = with_validation_marks(
+        Semantics::switch()
+            .checked(on)
+            .label(&props.label)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let press = if props.enabled {
         let (on, notify) = (props.on.clone(), props.on_change.clone());
         Some(action(move || {
@@ -438,13 +487,22 @@ pub fn Toggle(ctx: &Ctx, props: &ToggleProps) -> VNode {
         Some(press) => builder.on_press(move || press()),
         None => builder,
     };
-    builder.children([
+    let root = builder.children([
         track,
         VNode::from(Text {
             text: props.label.clone(),
             style: Text::body_secondary,
         }),
-    ])
+    ]);
+    // Phase 38a: validation footer only when a message is present.
+    with_validation_footer(
+        root,
+        ctx,
+        "toggle",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled toggle (round 5.4, OQ-G2-4): self-managed `on`
@@ -458,6 +516,10 @@ pub struct UncontrolledToggleProps {
     pub initial: bool,
     pub enabled: bool,
     pub on_change: Option<Change<bool>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledToggleProps {}
@@ -470,6 +532,10 @@ pub fn UncontrolledToggle(ctx: &Ctx, props: &UncontrolledToggleProps) -> VNode {
             on,
             enabled: props.enabled,
             on_change: props.on_change.clone(),
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         Toggle,
     )
@@ -483,6 +549,11 @@ pub fn UncontrolledToggle(ctx: &Ctx, props: &UncontrolledToggleProps) -> VNode {
 /// `on_change` reports every internal set (round 5.4 — `None`
 /// keeps the exact pre-5.4 behavior); see [`UncontrolledSlider`]
 /// for the self-managed companion.
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`CheckboxProps`]; the numeric range announces through
+/// `value_num` / `min_value` / `max_value` (Phase 38a, decision
+/// 367 — G18) alongside the human `value_text`.
 #[derive(Clone)]
 pub struct SliderProps {
     pub label: SharedString,
@@ -492,6 +563,10 @@ pub struct SliderProps {
     pub step: f32,
     pub enabled: bool,
     pub on_change: Option<Change<f32>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for SliderProps {}
@@ -542,16 +617,30 @@ fn apply_slider_value(
 /// (round 5.3, OQ-G2-1 — the track drags and arrows step: press
 /// focuses + captures, moves set the value from the pointer x over
 /// the track box, Left/Down step down and Right/Up step up; held
-/// arrows repeat-step). Steps snap and clamp; ends are quiet no-ops
-/// (a step past the end re-sets the same value — signals dedup
+/// arrows repeat-step). Phase 38a (decision 367): the thumb drag is
+/// the continuous pointer-capture stream (`Down` captures on the
+/// root press, every `Move` re-maps through `capture_position`,
+/// `Up`/`Cancel` clears — the 2D Scrollbar precedent, decision
+/// 354); `Home`/`End` jump to `min`/`max`; the numeric range
+/// announces through `value_num`/`min_value`/`max_value` (G18) next
+/// to the human `value_text`. Steps snap and clamp; ends are quiet
+/// no-ops (a step past the end re-sets the same value — signals dedup
 /// downstream... precisely: `Signal::set` always invalidates; the
 /// value is unchanged so memos gate it out).
 pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
     let v = snap_value(props.value.get(), props.min, props.max, props.step);
-    let semantics = Semantics::slider()
-        .label(&props.label)
-        .value_text(&value_text(v))
-        .disabled(!props.enabled);
+    let semantics = with_validation_marks(
+        Semantics::slider()
+            .label(&props.label)
+            .value_text(&value_text(v))
+            .value_num(v)
+            .min_value(props.min)
+            .max_value(props.max)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let dec_props = ButtonProps {
         label: SharedString::from("-"),
         enabled: props.enabled,
@@ -621,7 +710,9 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
         );
     };
     // Arrow steps (round 5.3): directional handlers on the focused
-    // track (held keys repeat-step through the router).
+    // track (held keys repeat-step through the router). Phase 38a:
+    // Home/End jump to the range ends (the text-field caret
+    // precedent — same keys, range ends instead of content ends).
     let step_action = |dir: f32| {
         let (value, min, max, step, notify) = (
             props.value.clone(),
@@ -631,6 +722,25 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
             props.on_change.clone(),
         );
         move || apply_slider_value(&value, &notify, value.get() + dir * step, min, max, step)
+    };
+    let jump_action = |to_min: bool| {
+        let (value, min, max, step, notify) = (
+            props.value.clone(),
+            props.min,
+            props.max,
+            props.step,
+            props.on_change.clone(),
+        );
+        move || {
+            apply_slider_value(
+                &value,
+                &notify,
+                if to_min { min } else { max },
+                min,
+                max,
+                step,
+            )
+        }
     };
     let kids = [
         ctx.child_auto(&dec_props, Button),
@@ -694,7 +804,7 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
         let row = Row("slider-row")
             .style(Style::new().size(160, 32).align_items(AlignItems::Center))
             .children([dec, trackbox, inc]);
-        return Div("slider")
+        let root = Div("slider")
             .style(focus_ringed(
                 ctx,
                 props.enabled,
@@ -702,6 +812,16 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
             ))
             .semantics(semantics)
             .child(row);
+        // Phase 38a: validation footer rides the disabled path too
+        // (announcement + message never depend on enabled).
+        return with_validation_footer(
+            root,
+            ctx,
+            "slider",
+            props.invalid,
+            &props.error_message,
+            &props.helper_text,
+        );
     }
     let [dec, inc] = kids;
     let trackbox = Div("slider-trackbox")
@@ -710,7 +830,7 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
     let row = Row("slider-row")
         .style(Style::new().size(160, 32).align_items(AlignItems::Center))
         .children([dec, trackbox, inc]);
-    Div("slider")
+    let root = Div("slider")
         .style(focus_ringed(
             ctx,
             props.enabled,
@@ -726,7 +846,18 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
         .on_key_down(step_action(-1.0))
         .on_key_right(step_action(1.0))
         .on_key_up(step_action(1.0))
-        .child(row)
+        .on_key_home(jump_action(true))
+        .on_key_end(jump_action(false))
+        .child(row);
+    // Phase 38a: validation footer only when a message is present.
+    with_validation_footer(
+        root,
+        ctx,
+        "slider",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled slider (round 5.4, OQ-G2-4): self-managed `value`
@@ -743,6 +874,10 @@ pub struct UncontrolledSliderProps {
     pub step: f32,
     pub enabled: bool,
     pub on_change: Option<Change<f32>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledSliderProps {}
@@ -758,6 +893,10 @@ pub fn UncontrolledSlider(ctx: &Ctx, props: &UncontrolledSliderProps) -> VNode {
             step: props.step,
             enabled: props.enabled,
             on_change: props.on_change.clone(),
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         Slider,
     )
@@ -771,6 +910,12 @@ pub fn UncontrolledSlider(ctx: &Ctx, props: &UncontrolledSliderProps) -> VNode {
 /// `on_change` reports committed edits (round 5.4 — `None` keeps the
 /// exact pre-5.4 behavior); see [`UncontrolledTextInput`] for the
 /// self-managed companion.
+///
+/// Form validation (Phase 38a, decision 366 — G7): `invalid` /
+/// `required` / `error_message` announce through [`Semantics`]
+/// (validators stay app-side); `helper_text` renders a dimmed caption
+/// under the field (visual-only). All four default off/empty —
+/// `new` keeps the exact pre-38a shape.
 #[derive(Clone)]
 pub struct TextInputProps {
     pub label: SharedString,
@@ -783,6 +928,10 @@ pub struct TextInputProps {
     pub debug: SharedString,
     pub on_change: Option<Change<SharedString>>,
     pub masked: bool,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for TextInputProps {}
@@ -800,6 +949,10 @@ impl TextInputProps {
             debug: SharedString::from("text-input"),
             on_change: None,
             masked: false,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         }
     }
 
@@ -928,6 +1081,76 @@ fn focus_ringed(ctx: &Ctx, enabled: bool, style: StyleBuilder) -> StyleBuilder {
     }
 }
 
+/// Form-validation marks (Phase 38a, decision 366 — G7): `invalid` /
+/// `required` / `error_message` ride [`Semantics`] (validators stay
+/// app-side — the payload only announces, the decision-352 shape);
+/// `helper_text` is visual-only (never announced). Applies the three
+/// announced marks onto a payload under construction.
+fn with_validation_marks(
+    base: Semantics,
+    invalid: bool,
+    required: bool,
+    error_message: &Option<SharedString>,
+) -> Semantics {
+    let mut s = base.invalid(invalid).required(required);
+    if let Some(msg) = error_message {
+        s = s.error_message(msg);
+    }
+    s
+}
+
+/// Validation footer line (Phase 38a, decision 366): `error_message`
+/// wins while `invalid`, else `helper_text`; `None` renders nothing
+/// (callers skip the wrapper — valid controls keep byte-identical
+/// trees). Error text paints in the theme `error` ink, helper text
+/// in `text_secondary`; both at 12px (the chip-caption precedent).
+fn validation_footer(
+    ctx: &Ctx,
+    debug: &str,
+    invalid: bool,
+    error_message: &Option<SharedString>,
+    helper_text: &Option<SharedString>,
+) -> Option<VNode> {
+    let t = ctx.theme().tokens();
+    let (text, ink) = match (invalid, error_message, helper_text) {
+        (true, Some(msg), _) => (msg.clone(), t.error),
+        (_, _, Some(help)) => (help.clone(), t.text_secondary),
+        _ => return None,
+    };
+    // Debug label rides the caller's field (findable in dumps).
+    let _ = debug;
+    Some(with_ink(VNode::from(Text::new(text).size(12)), ink))
+}
+
+/// Wraps a control root with its validation footer (Phase 38a):
+/// no message → the root returns unwrapped (existing oracles and
+/// tab orders byte-identical); a message → `Div("<debug>-field")`
+/// stacking the root over the footer line. The wrapper is a plain
+/// block `Div` (vertical stack, no style — sizes to content).
+fn with_validation_footer(
+    root: VNode,
+    ctx: &Ctx,
+    debug: &str,
+    invalid: bool,
+    error_message: &Option<SharedString>,
+    helper_text: &Option<SharedString>,
+) -> VNode {
+    let Some(foot) = validation_footer(ctx, debug, invalid, error_message, helper_text) else {
+        return root;
+    };
+    Div(format!("{debug}-field").as_str()).children([root, foot])
+}
+
+/// Invalid field edge (Phase 38a): `error` ink while `invalid`,
+/// else the theme `border` (valid controls keep exact pixels).
+fn field_edge(ctx: &Ctx, invalid: bool) -> Color {
+    if invalid {
+        ctx.theme().tokens().error
+    } else {
+        ctx.theme().tokens().border
+    }
+}
+
 /// Text input: bordered field box + [`TextField`](oppa::TextField) payload
 /// (the DOM backend's verdict-(b) `<input>` shape; native backends render
 /// the text run). The [`EditSession`](oppa::EditSession) is keyed to this
@@ -961,9 +1184,16 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     if let Some(notify) = props.on_change.clone() {
         session.set_on_change(Rc::new(move |value| notify(value)));
     }
-    let semantics = Semantics::text_field()
-        .label(&props.label)
-        .disabled(!props.enabled);
+    // Phase 38a (decision 366): validation marks announce; the edge
+    // tints `error` while invalid (valid fields keep exact pixels).
+    let semantics = with_validation_marks(
+        Semantics::text_field()
+            .label(&props.label)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let raw_val = props.value.get();
     let display_text = if props.masked && !raw_val.is_empty() {
         SharedString::from("•".repeat(raw_val.chars().count()))
@@ -987,12 +1217,13 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     };
     // (One `.style()` call — the builder replaces the whole style per
     // call, so size/bg/border/pad fold into a single chain. Round 8.3:
-    // enabled fields show the I-beam; disabled stays the arrow.)
+    // enabled fields show the I-beam; disabled stays the arrow.
+    // Phase 38a: the border edges `error` while invalid.)
     let mut field_style = Style::new()
         .size(props.width, props.height)
         .radius(4)
         .bg(if props.enabled { t.surface } else { t.disabled })
-        .border(1, t.border)
+        .border(1, field_edge(ctx, props.invalid))
         .pad_x(8)
         .pad_y(4);
     if props.enabled {
@@ -1019,7 +1250,18 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     } else {
         builder
     };
-    builder.child(payload)
+    // Phase 38a: footer stacks under the field only when a message
+    // is present (the wrapper debug derives from the field debug).
+    let debug = props.debug.clone();
+    let root = builder.child(payload);
+    with_validation_footer(
+        root,
+        ctx,
+        &debug,
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled text input (round 5.4, OQ-G2-4): self-managed
@@ -1039,6 +1281,10 @@ pub struct UncontrolledTextInputProps {
     pub debug: SharedString,
     pub on_change: Option<Change<SharedString>>,
     pub masked: bool,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledTextInputProps {}
@@ -1064,6 +1310,10 @@ pub fn UncontrolledTextInput(ctx: &Ctx, props: &UncontrolledTextInputProps) -> V
             debug: props.debug.clone(),
             on_change: props.on_change.clone(),
             masked: props.masked,
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         TextInput,
     )
@@ -1081,6 +1331,9 @@ pub fn UncontrolledTextInput(ctx: &Ctx, props: &UncontrolledTextInputProps) -> V
 /// inserts a newline through the router instead of activating).
 /// `on_change` reports committed edits (round 5.4 — `None` keeps
 /// the exact pre-5.4 behavior).
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`TextInputProps`].
 #[derive(Clone)]
 pub struct TextAreaProps {
     pub label: SharedString,
@@ -1091,6 +1344,10 @@ pub struct TextAreaProps {
     pub style: TextClass,
     pub debug: SharedString,
     pub on_change: Option<Change<SharedString>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for TextAreaProps {}
@@ -1106,6 +1363,10 @@ impl TextAreaProps {
             style: Text::body_secondary,
             debug: SharedString::from("text-area"),
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         }
     }
 
@@ -1152,9 +1413,16 @@ pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
     if let Some(notify) = props.on_change.clone() {
         session.set_on_change(Rc::new(move |value| notify(value)));
     }
-    let semantics = Semantics::text_area()
-        .label(&props.label)
-        .disabled(!props.enabled);
+    // Phase 38a (decision 366): validation marks announce; the edge
+    // tints `error` while invalid.
+    let semantics = with_validation_marks(
+        Semantics::text_area()
+            .label(&props.label)
+            .disabled(!props.enabled),
+        props.invalid,
+        props.required,
+        &props.error_message,
+    );
     let payload: VNode = match (props.value.get().is_empty(), &props.placeholder) {
         (true, Some(placeholder)) => with_ink(
             VNode::from(Text {
@@ -1184,7 +1452,7 @@ pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
         Style::new()
             .radius(4)
             .bg(if props.enabled { t.surface } else { t.disabled })
-            .border(1, t.border)
+            .border(1, field_edge(ctx, props.invalid))
             .pad_x(8)
             .pad_y(4),
     );
@@ -1210,7 +1478,18 @@ pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
     } else {
         builder
     };
-    builder.child(payload)
+    // Phase 38a: footer stacks under the area only when a message
+    // is present (wrapper debug derives from the area debug).
+    let debug = props.debug.clone();
+    let root = builder.child(payload);
+    with_validation_footer(
+        root,
+        ctx,
+        &debug,
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 /// Uncontrolled text area (round 5.4, OQ-G2-4): self-managed
@@ -1226,6 +1505,10 @@ pub struct UncontrolledTextAreaProps {
     pub style: TextClass,
     pub debug: SharedString,
     pub on_change: Option<Change<SharedString>>,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl Props for UncontrolledTextAreaProps {}
@@ -1242,6 +1525,10 @@ pub fn UncontrolledTextArea(ctx: &Ctx, props: &UncontrolledTextAreaProps) -> VNo
             style: props.style,
             debug: props.debug.clone(),
             on_change: props.on_change.clone(),
+            invalid: props.invalid,
+            required: props.required,
+            error_message: props.error_message.clone(),
+            helper_text: props.helper_text.clone(),
         },
         TextArea,
     )
@@ -1586,11 +1873,20 @@ pub struct RadioOption<T> {
 
 /// RadioGroup props (controlled — `selected` holds the chosen value;
 /// clicking an option sets it, so exactly one option reads selected).
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`CheckboxProps`]; the marks announce on the group container
+/// (role `Generic` — there is no group role in [`Semantics`], so the
+/// payload carries only the marks, never an invented role).
 #[derive(Clone, Props)]
 pub struct RadioGroupProps<T: 'static> {
     pub options: Vec<RadioOption<T>>,
     pub selected: Signal<T>,
     pub enabled: bool,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 /// Radio button: 18×18 circle indicator (8×8 centered dot when
@@ -1678,7 +1974,30 @@ pub fn RadioGroup<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &RadioGroupP
             ctx.child_keyed(i as u64, &rp, Radio)
         })
         .collect::<Vec<_>>();
-    Column::new().children(children)
+    // Phase 38a: validation marks ride the group container only when
+    // set (valid groups keep the exact tree); the footer stacks
+    // under the options only when a message is present.
+    let validation_active = props.invalid || props.required || props.error_message.is_some();
+    let root = if validation_active {
+        Column::new()
+            .semantics(with_validation_marks(
+                Semantics::default(),
+                props.invalid,
+                props.required,
+                &props.error_message,
+            ))
+            .children(children)
+    } else {
+        Column::new().children(children)
+    };
+    with_validation_footer(
+        root,
+        ctx,
+        "radio-group",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1833,6 +2152,9 @@ pub struct SelectItem<T> {
 /// `open` holds the list visibility; both author-owned signals).
 /// `width` defaults to 160.0 via [`SelectProps::new`] (the slider
 /// width precedent — decision 213 explicit sizes).
+///
+/// Form validation (Phase 38a, decision 366 — G7): same four marks
+/// as [`CheckboxProps`]; the marks announce on the `combobox` box.
 #[derive(Clone, Props)]
 pub struct SelectProps<T: 'static> {
     pub items: Vec<SelectItem<T>>,
@@ -1840,6 +2162,10 @@ pub struct SelectProps<T: 'static> {
     pub open: Signal<bool>,
     pub enabled: bool,
     pub width: f32,
+    pub invalid: bool,
+    pub required: bool,
+    pub error_message: Option<SharedString>,
+    pub helper_text: Option<SharedString>,
 }
 
 impl<T: Clone + PartialEq + 'static> SelectProps<T> {
@@ -1850,6 +2176,10 @@ impl<T: Clone + PartialEq + 'static> SelectProps<T> {
             open,
             enabled: true,
             width: 160.0,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         }
     }
 }
@@ -1956,17 +2286,20 @@ pub fn Select<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &SelectProps<T>)
             Style::new()
                 .size(props.width, 32)
                 .radius(4)
-                .border(1, t.border)
+                .border(1, field_edge(ctx, props.invalid))
                 .bg(if props.enabled { t.surface } else { t.disabled })
                 .pad_x(8)
                 .gap(8)
                 .align_items(AlignItems::Center),
         ))
-        .semantics(
+        .semantics(with_validation_marks(
             Semantics::combobox()
                 .label(&current_label)
                 .disabled(!props.enabled),
-        );
+            props.invalid,
+            props.required,
+            &props.error_message,
+        ));
     // The box keeps its handler while enabled even when open
     // (re-press closes — the toggle, not a select).
     let box_builder = if props.enabled {
@@ -2022,9 +2355,19 @@ pub fn Select<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &SelectProps<T>)
     }
     // Constant 32px root (Round 7.21): the box owns the height, the
     // popup is out-of-flow — open and closed lay out identically.
-    Div("select")
+    // Phase 38a: validation footer stacks under the box only when a
+    // message is present (valid selects keep the exact tree).
+    let root = Div("select")
         .style(Style::new().size(props.width, 32))
-        .children(children)
+        .children(children);
+    with_validation_footer(
+        root,
+        ctx,
+        "select",
+        props.invalid,
+        &props.error_message,
+        &props.helper_text,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -3655,6 +3998,10 @@ mod tests {
             checked: checked.clone(),
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Chk", CheckCase { props }, check_render);
         host.run_until_idle();
@@ -3706,6 +4053,10 @@ mod tests {
             checked: checked.clone(),
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("ChkV", CheckCase { props }, check_render);
         host.run_until_idle();
@@ -3756,6 +4107,10 @@ mod tests {
             on: on.clone(),
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Tgl", ToggleCase { props }, toggle_render);
         host.run_until_idle();
@@ -3801,6 +4156,10 @@ mod tests {
             on: on.clone(),
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("TglV", ToggleCase { props }, toggle_render);
         host.run_until_idle();
@@ -3834,6 +4193,10 @@ mod tests {
             step: 10.0,
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Sld", SliderCase { props }, slider_render);
         host.run_until_idle();
@@ -3869,6 +4232,10 @@ mod tests {
             step: 10.0,
             enabled: false,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("SldDis", SliderCase { props }, slider_render);
         host.run_until_idle();
@@ -3905,6 +4272,10 @@ mod tests {
             step: 10.0,
             enabled: true,
             on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Sld", SliderCase { props }, slider_render);
         host.run_until_idle();
@@ -4750,6 +5121,10 @@ mod tests {
             ],
             selected: selected.clone(),
             enabled: true,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("G", props, RadioGroup::<SharedString>);
         host.run_until_idle();
@@ -5549,6 +5924,10 @@ mod tests {
                     on: on.clone(),
                     enabled: true,
                     on_change: Some(notify),
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
             },
             toggle_render,
@@ -5570,6 +5949,10 @@ mod tests {
                     checked: checked.clone(),
                     enabled: true,
                     on_change: Some(notify2),
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
             },
             check_render,
@@ -5595,6 +5978,10 @@ mod tests {
             step: 10.0,
             enabled: true,
             on_change: Some(notify),
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
         };
         host.mount("Sld", SliderCase { props }, slider_render);
         host.run_until_idle();
@@ -5629,6 +6016,10 @@ mod tests {
                 initial: false,
                 enabled: true,
                 on_change: Some(notify),
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledToggle,
         );
@@ -5650,6 +6041,10 @@ mod tests {
                 step: 10.0,
                 enabled: true,
                 on_change: Some(notify2),
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledSlider,
         );
@@ -5666,6 +6061,10 @@ mod tests {
                 initial: false,
                 enabled: true,
                 on_change: Some(notify3),
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledCheckbox,
         );
@@ -5695,6 +6094,10 @@ mod tests {
                 debug: SharedString::from("text-input"),
                 on_change: Some(notify),
                 masked: false,
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledTextInput,
         );
@@ -5726,6 +6129,10 @@ mod tests {
                 style: Text::body_secondary,
                 debug: SharedString::from("text-area"),
                 on_change: Some(notify2),
+                invalid: false,
+                required: false,
+                error_message: None,
+                helper_text: None,
             },
             UncontrolledTextArea,
         );
@@ -6205,12 +6612,20 @@ mod tests {
                     on: on.clone(),
                     enabled: true,
                     on_change: None,
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
                 check: CheckboxProps {
                     label: SharedString::from("T&C"),
                     checked: checked.clone(),
                     enabled: true,
                     on_change: None,
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
             },
             cursor_tc_render,
@@ -6286,6 +6701,10 @@ mod tests {
                     on: on.clone(),
                     enabled: true,
                     on_change: None,
+                    invalid: false,
+                    required: false,
+                    error_message: None,
+                    helper_text: None,
                 },
                 modal: ModalProps::new("Delete file?", open.clone()),
             },
@@ -8308,5 +8727,268 @@ mod tests {
         assert_eq!(find_retained_by_debug(&host, "custom-fallback").len(), 1);
 
         std::panic::set_hook(hook);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 38a (decisions 366–367): form validation + slider keys
+    // ------------------------------------------------------------------
+
+    #[derive(Clone)]
+    struct ValidationFieldCase {
+        props: TextInputProps,
+    }
+    impl Props for ValidationFieldCase {}
+
+    fn validation_field_render(ctx: &Ctx, p: &ValidationFieldCase) -> VNode {
+        ctx.child("oppa::TextInput", 7, &p.props, TextInput)
+    }
+
+    /// G7: invalid/required/error_message announce through Semantics;
+    /// the footer stacks under the field only when a message is
+    /// present (valid fields keep the exact tree — no wrapper).
+    #[test]
+    fn validation_marks_announce_and_footer_stacks() {
+        let host = ComponentHost::new();
+        host.set_text_service(Box::new(FakeText));
+        let value = host.runtime().signal(SharedString::from(""));
+        let props = TextInputProps {
+            label: SharedString::from("Age"),
+            value: value.clone(),
+            placeholder: None,
+            enabled: true,
+            width: 200.0,
+            height: 32.0,
+            style: Text::body_secondary,
+            debug: SharedString::from("text-input"),
+            on_change: None,
+            masked: false,
+            invalid: true,
+            required: true,
+            error_message: Some(SharedString::from("err-age")),
+            helper_text: Some(SharedString::from("Years, digits only")),
+        };
+        host.mount(
+            "Val",
+            ValidationFieldCase { props },
+            validation_field_render,
+        );
+        host.run_until_idle();
+        let id = node_by_debug(&host, "text-input");
+        let sem = host.retained_semantics(id).expect("semantics");
+        assert!(sem.invalid, "invalid announces");
+        assert!(sem.required, "required announces");
+        assert_eq!(
+            sem.error_message.as_deref(),
+            Some("err-age"),
+            "error node identity announces"
+        );
+        // Error wins over helper while invalid; the wrapper stacks it.
+        assert_eq!(
+            find_retained_by_debug(&host, "text-input-field").len(),
+            1,
+            "footer wrapper stacks under the field"
+        );
+        // Helper-only (valid): footer renders, marks stay off.
+        let host2 = ComponentHost::new();
+        host2.set_text_service(Box::new(FakeText));
+        let value2 = host2.runtime().signal(SharedString::from(""));
+        let props2 = TextInputProps {
+            label: SharedString::from("Age"),
+            value: value2.clone(),
+            placeholder: None,
+            enabled: true,
+            width: 200.0,
+            height: 32.0,
+            style: Text::body_secondary,
+            debug: SharedString::from("text-input"),
+            on_change: None,
+            masked: false,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: Some(SharedString::from("Years, digits only")),
+        };
+        host2.mount(
+            "ValHelp",
+            ValidationFieldCase { props: props2 },
+            validation_field_render,
+        );
+        host2.run_until_idle();
+        let id2 = node_by_debug(&host2, "text-input");
+        let sem2 = host2.retained_semantics(id2).expect("semantics");
+        assert!(!sem2.invalid);
+        assert!(!sem2.required);
+        assert_eq!(sem2.error_message, None);
+        assert_eq!(
+            find_retained_by_debug(&host2, "text-input-field").len(),
+            1,
+            "helper-only still stacks the caption"
+        );
+        // Plain (no message): no wrapper — the pre-38a tree exactly.
+        let host3 = ComponentHost::new();
+        host3.set_text_service(Box::new(FakeText));
+        let value3 = host3.runtime().signal(SharedString::from(""));
+        host3.mount(
+            "ValPlain",
+            ValidationFieldCase {
+                props: TextInputProps::new("Age", value3),
+            },
+            validation_field_render,
+        );
+        host3.run_until_idle();
+        assert!(
+            find_retained_by_debug(&host3, "text-input-field").is_empty(),
+            "valid fields keep the exact tree"
+        );
+    }
+
+    /// G7 across the catalog: Checkbox, Toggle, Select, and
+    /// RadioGroup carry the same four marks (validators stay
+    /// app-side — the payload only announces).
+    #[test]
+    fn checkbox_toggle_select_radiogroup_carry_validation() {
+        // Checkbox.
+        let host = ComponentHost::new();
+        let checked = host.runtime().signal(false);
+        host.mount(
+            "ChkV",
+            CheckCase {
+                props: CheckboxProps {
+                    label: SharedString::from("T&C"),
+                    checked: checked.clone(),
+                    enabled: true,
+                    on_change: None,
+                    invalid: true,
+                    required: true,
+                    error_message: Some(SharedString::from("err-tc")),
+                    helper_text: None,
+                },
+            },
+            check_render,
+        );
+        host.run_until_idle();
+        let sem = host
+            .retained_semantics(node_by_debug(&host, "checkbox"))
+            .expect("semantics");
+        assert!(sem.invalid && sem.required);
+        assert_eq!(sem.error_message.as_deref(), Some("err-tc"));
+        assert_eq!(find_retained_by_debug(&host, "checkbox-field").len(), 1);
+        // Toggle.
+        let host2 = ComponentHost::new();
+        let on = host2.runtime().signal(false);
+        host2.mount(
+            "TglV",
+            ToggleCase {
+                props: ToggleProps {
+                    label: SharedString::from("Wi-Fi"),
+                    on: on.clone(),
+                    enabled: true,
+                    on_change: None,
+                    invalid: true,
+                    required: false,
+                    error_message: Some(SharedString::from("err-wifi")),
+                    helper_text: None,
+                },
+            },
+            toggle_render,
+        );
+        host2.run_until_idle();
+        let sem2 = host2
+            .retained_semantics(node_by_debug(&host2, "toggle"))
+            .expect("semantics");
+        assert!(sem2.invalid);
+        assert_eq!(sem2.error_message.as_deref(), Some("err-wifi"));
+        assert_eq!(find_retained_by_debug(&host2, "toggle-field").len(), 1);
+        // Select.
+        let host3 = ComponentHost::new();
+        let sel = host3.runtime().signal("a".to_string());
+        let open = host3.runtime().signal(false);
+        let mut sp = SelectProps::new(
+            vec![SelectItem {
+                value: "a".to_string(),
+                label: SharedString::from("Alpha"),
+            }],
+            sel,
+            open,
+        );
+        sp.invalid = true;
+        sp.required = true;
+        sp.error_message = Some(SharedString::from("err-sel"));
+        host3.mount("SelV", sp, Select::<String>);
+        host3.run_until_idle();
+        let sem3 = host3
+            .retained_semantics(node_by_debug(&host3, "select-box"))
+            .expect("semantics");
+        assert!(sem3.invalid && sem3.required);
+        assert_eq!(sem3.error_message.as_deref(), Some("err-sel"));
+        assert_eq!(find_retained_by_debug(&host3, "select-field").len(), 1);
+        // RadioGroup.
+        let host4 = ComponentHost::new();
+        let gsel = host4.runtime().signal(SharedString::from("Free"));
+        host4.mount(
+            "GV",
+            RadioGroupProps {
+                options: vec![RadioOption {
+                    value: SharedString::from("Free"),
+                    label: SharedString::from("Free"),
+                }],
+                selected: gsel,
+                enabled: true,
+                invalid: true,
+                required: true,
+                error_message: Some(SharedString::from("err-plan")),
+                helper_text: None,
+            },
+            RadioGroup::<SharedString>,
+        );
+        host4.run_until_idle();
+        assert_eq!(
+            find_retained_by_debug(&host4, "radio-group-field").len(),
+            1,
+            "group footer stacks under the options"
+        );
+    }
+
+    /// Decision 367: the numeric range announces through value_num /
+    /// min_value / max_value (G18) next to the human value_text; Home
+    /// jumps to min, End to max (held arrows keep repeat-stepping).
+    #[test]
+    fn slider_home_end_jump_and_range_announces() {
+        let host = ComponentHost::new();
+        let value = host.runtime().signal(50.0f32);
+        let props = SliderProps {
+            label: SharedString::from("Volume"),
+            value: value.clone(),
+            min: 0.0,
+            max: 100.0,
+            step: 10.0,
+            enabled: true,
+            on_change: None,
+            invalid: false,
+            required: false,
+            error_message: None,
+            helper_text: None,
+        };
+        host.mount("SldHE", SliderCase { props }, slider_render);
+        host.run_until_idle();
+        let track = node_by_debug(&host, "slider");
+        let sem = host.retained_semantics(track).expect("semantics");
+        assert_eq!(sem.value_text.as_deref(), Some("50 percent"));
+        assert_eq!(sem.value_num, Some(oppa::Num::of(50.0)));
+        assert_eq!(sem.min_value, Some(oppa::Num::of(0.0)));
+        assert_eq!(sem.max_value, Some(oppa::Num::of(100.0)));
+        // Focus the track (press owns capture + focus), then jump.
+        press_node(&host, track);
+        assert_eq!(host.focused_node(), Some(track));
+        host.inject_input(InputEvent::key(keys::HOME, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(value.get(), 0.0, "Home jumps to min");
+        host.inject_input(InputEvent::key(keys::END, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(value.get(), 100.0, "End jumps to max");
+        // Arrows still step from the jumped ends.
+        host.inject_input(InputEvent::key(keys::LEFT, KeyState::Pressed));
+        host.run_until_idle();
+        assert_eq!(value.get(), 90.0, "Left steps down from max");
     }
 }

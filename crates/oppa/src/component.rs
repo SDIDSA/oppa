@@ -3674,16 +3674,18 @@ impl ComponentHost {
                 let Some(focus) = self.focused_node() else {
                     return;
                 };
-                // Round 5.3 arrows: the focused owner's directional
-                // handler wins when declared (held keys repeat-step —
-                // no repeat suppression, standard); otherwise the
-                // generic Key handler below runs (existing ambient
-                // path, unchanged), else quiet.
+                // Round 5.3 arrows (+ Phase 38a Home/End): the focused
+                // owner's directional handler wins when declared (held
+                // keys repeat-step — no repeat suppression, standard);
+                // otherwise the generic Key handler below runs
+                // (existing ambient path, unchanged), else quiet.
                 let directional = match code {
                     input::keys::LEFT => Some(EventKind::KeyLeft),
                     input::keys::UP => Some(EventKind::KeyUp),
                     input::keys::RIGHT => Some(EventKind::KeyRight),
                     input::keys::DOWN => Some(EventKind::KeyDown),
+                    input::keys::HOME => Some(EventKind::KeyHome),
+                    input::keys::END => Some(EventKind::KeyEnd),
                     _ => None,
                 };
                 if let Some(kind) = directional {

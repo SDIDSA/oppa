@@ -36,7 +36,7 @@ contract test suite — not prose — defines sameness.
 
 - One normalized `InputEvent` (`Pointer` / `Scroll` / `Key` / `Ime` / `Focus`) everywhere.
 - Pointer: hit-test deepest-wins, later-sibling on ties, no root fallback; capture on Down, Up only inside the capture subtree, Cancel clears.
-- Keyboard: `Key(code, mods, state, repeat)`; Tab wraps in deterministic press-node DFS pre-order; Enter/Space pulse press; Escape blurs; other keys go to the focused handler else no-op.
+- Keyboard: `Key(code, mods, state, repeat)`; Tab wraps in deterministic press-node DFS pre-order; Enter/Space pulse press; Escape blurs; Slider arrows step by `step` and `Home`/`End` jump to `min`/`max` (Phase 38a); other keys go to the focused handler else no-op.
 - Focus: at most one editing session; focus loss mid-composition commits; click follows focus.
 - IME: single `dispatch_ime_event` seam for scripted + platform feeds; `ImeOps` via `PlatformShell::set_ime`.
 
@@ -48,6 +48,7 @@ contract test suite — not prose — defines sameness.
 - Multi-span RichText: spans share one size; each span shapes with its own weight (no cross-span shaping, never re-shaped on wrap); concatenated bytes are the caret/selection space with leading affinity at span boundaries; ink splits paint (one op/span per ink run, single-ink scenes unchanged).
 - Web display serves the measured font bytes (`@font-face` data URI); residual browser-shaper differences are stated tolerance, not contract.
 - Editing: controlled components (content = author signal; caret/selection/composition/undo = core session, survives hot swap). Authority: GPU backend owns on GPU, DOM `<input>` owns on Web, shared op-suite is the contract. Clipboard is plain-text only via the `Clipboard` trait; non-Win32 clipboard refuses loudly.
+- Form validation (Phase 38a, G7): `invalid` / `required` / `error_message` announce through `Semantics` (validators stay app-side — the payload only announces); `helper_text` renders a visual-only caption. `error_message` wins while `invalid`; controls without a message keep byte-identical trees.
 
 ## Transitions
 
