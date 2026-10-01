@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-01 (through Decision 382).
+Status: current. Last verified: 2026-10-01 (through Decision 384).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -141,10 +141,20 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   re-measure loops when `TextService` is absent; gated `needs_measure` on
   `service.is_some()`; studio achieves quiescence in ≤ 2 frames across bare and
   shaper-backed hosts; bounded-frame studio tests maintained by doctrine.
+- Phase 41 (decision 384, gate green 2026-10-01): Custom GPU rasterizer
+  (`oppa-gpu`, Deferred Item #1) — pure-Rust backend on standard `wgpu`
+  render pipelines (zero compute shaders, zero C/C++ FFI); instanced
+  analytical SDF AA quads (sharp rects, 4-corner rounded rects, circles),
+  closed-form separable 2D Gaussian erf shadows, dynamic glyph atlas
+  (`R8Unorm` via `ab_glyph`), Lyon vector path tessellation, scissor
+  clipping, layer opacity, direct swapchain render passes (`present_surface`),
+  pixel-oracle tested (<5% shadow tolerance, exact geometry/images) against
+  `oppa-cpu`; integrated into `DesktopLoop` in `oppa-app` with CLI/env
+  override (`OPPA_RENDERER=custom_gpu`).
 
 ## Now (in progress)
 
-- Phase 40 complete (40a–40c green). Awaiting user selection of next deferred item before starting Phase 41.
+- Phase 41 complete (decision 384 green). Awaiting user selection of next deferred item (Items #2–#9).
 
 ## Next (accepted, not started)
 

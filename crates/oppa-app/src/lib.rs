@@ -39,6 +39,7 @@ use oppa::{
     WindowIcon,
 };
 use oppa_cpu::{CpuBackend, FramePlanBuilder};
+use oppa_gpu::CustomGpuBackend;
 use oppa_vello::VelloBackend;
 
 #[cfg(target_os = "linux")]
@@ -147,6 +148,7 @@ fn is_edit_shortcut_code(code: u32) -> bool {
 pub enum RendererKind {
     Cpu,
     Gpu,
+    CustomGpu,
 }
 
 /// Parses one `OPPA_RENDERER` value (pure — headless-testable):
@@ -157,6 +159,7 @@ pub fn parse_renderer_override(value: Option<&str>) -> Option<RendererKind> {
     match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
         Some("cpu") => Some(RendererKind::Cpu),
         Some("gpu") => Some(RendererKind::Gpu),
+        Some("custom_gpu") | Some("custom-gpu") => Some(RendererKind::CustomGpu),
         _ => None,
     }
 }
@@ -206,6 +209,8 @@ pub struct DesktopLoop {
     /// CPU path still draws bars — the decision-200 contract).
     vello: VelloBackend,
     vello_surface: SurfaceId,
+    custom_gpu: CustomGpuBackend,
+    custom_gpu_surface: SurfaceId,
     /// Which backend the platform glue presents. CPU until a runner
     /// enables GPU against a live window; runners flip it back on
     /// loud GPU failure (fallback, never silent).
@@ -340,12 +345,22 @@ impl DesktopLoop {
                 background: page_bg,
             })
             .map_err(|e| format!("desktop loop: create vello surface: {e:?}"))?;
+        let mut custom_gpu = CustomGpuBackend::new();
+        let custom_gpu_surface = custom_gpu
+            .create_surface(SurfaceDesc {
+                width_px: w,
+                height_px: h,
+                background: page_bg,
+            })
+            .map_err(|e| format!("desktop loop: create custom_gpu surface: {e:?}"))?;
         Ok(Self {
             host,
             cpu,
             surface,
             vello,
             vello_surface,
+            custom_gpu,
+            custom_gpu_surface,
             active: RendererKind::Cpu,
             gpu_mode: None,
             builder: FramePlanBuilder::new(1.0),
@@ -372,13 +387,14 @@ impl DesktopLoop {
 
     /// True once a runner enabled hardware presentation.
     pub fn is_gpu(&self) -> bool {
-        self.active == RendererKind::Gpu
+        self.active == RendererKind::Gpu || self.active == RendererKind::CustomGpu
     }
 
-    /// Human name for logs (`gpu` / `cpu`).
+    /// Human name for logs (`gpu` / `custom_gpu` / `cpu`).
     pub fn renderer_name(&self) -> &'static str {
         match self.active {
             RendererKind::Gpu => "gpu",
+            RendererKind::CustomGpu => "custom_gpu",
             RendererKind::Cpu => "cpu",
         }
     }
@@ -394,6 +410,17 @@ impl DesktopLoop {
         self.vello_surface
     }
 
+    /// Custom GPU surface (painted whenever
+    /// [`RendererKind::CustomGpu`] is active).
+    pub fn custom_gpu_surface_id(&self) -> SurfaceId {
+        self.custom_gpu_surface
+    }
+
+    /// Custom GPU retained op count.
+    pub fn custom_gpu_retained_op_count(&self) -> Option<usize> {
+        self.custom_gpu.retained_op_count(self.custom_gpu_surface)
+    }
+
     /// CPU pixmap surface (always painted — the GDI / softbuffer
     /// source and the GPU fallback pixels).
     pub fn cpu_surface_id(&self) -> SurfaceId {
@@ -403,10 +430,20 @@ impl DesktopLoop {
     /// Enables hardware presentation after the runner configured the
     /// swapchain (mirrors the fps driver's GPU arm): the next
     /// [`DesktopLoop::repaint`] paints both backends. Callers repaint
-    /// immediately so the Vello twin catches up from its
+    /// immediately so the GPU twin catches up from its
     /// creation-time scene.
     pub fn enable_gpu(&mut self, mode: wgpu::PresentMode) {
-        self.active = RendererKind::Gpu;
+        if renderer_override() == Some(RendererKind::CustomGpu) {
+            self.active = RendererKind::CustomGpu;
+        } else {
+            self.active = RendererKind::Gpu;
+        }
+        self.gpu_mode = Some(mode);
+    }
+
+    /// Explicitly enables custom GPU rasterizer mode.
+    pub fn enable_custom_gpu(&mut self, mode: wgpu::PresentMode) {
+        self.active = RendererKind::CustomGpu;
         self.gpu_mode = Some(mode);
     }
 
@@ -434,9 +471,18 @@ impl DesktopLoop {
         surface: &wgpu::Surface<'_>,
         cache_data: Option<Vec<u8>>,
     ) -> Result<(String, Option<Vec<u8>>), String> {
-        self.vello
-            .ensure_gpu_for_surface_with_cache(instance, surface, cache_data)
-            .map_err(|e| format!("desktop loop: ensure gpu for surface: {e:?}"))
+        if renderer_override() == Some(RendererKind::CustomGpu) {
+            let info = self
+                .custom_gpu
+                .ensure_gpu_for_surface(instance, surface)
+                .map_err(|e| format!("desktop loop: ensure custom gpu for surface: {e:?}"))?;
+            self.active = RendererKind::CustomGpu;
+            Ok((format!("{info} (custom_gpu)"), None))
+        } else {
+            self.vello
+                .ensure_gpu_for_surface_with_cache(instance, surface, cache_data)
+                .map_err(|e| format!("desktop loop: ensure gpu for surface: {e:?}"))
+        }
     }
 
     /// Configures `surface` for presentation of the current viewport
@@ -445,15 +491,21 @@ impl DesktopLoop {
     /// [`DesktopLoop::ensure_gpu_for_surface_with_cache`]. Returns
     /// the chosen format for the run record.
     pub fn configure_gpu_surface(
-        &self,
+        &mut self,
         surface: &wgpu::Surface<'_>,
         width: u32,
         height: u32,
         mode: wgpu::PresentMode,
     ) -> Result<wgpu::TextureFormat, String> {
-        self.vello
-            .configure_surface_with_present_mode(surface, width, height, mode)
-            .map_err(|e| format!("desktop loop: configure gpu surface: {e:?}"))
+        if self.active == RendererKind::CustomGpu {
+            self.custom_gpu
+                .configure_surface(surface, width, height, mode)
+                .map_err(|e| format!("desktop loop: configure custom gpu surface: {e:?}"))
+        } else {
+            self.vello
+                .configure_surface_with_present_mode(surface, width, height, mode)
+                .map_err(|e| format!("desktop loop: configure gpu surface: {e:?}"))
+        }
     }
 
     /// Picks the present mode: uncapped Immediate first, then
@@ -461,11 +513,17 @@ impl DesktopLoop {
     /// throughput leg first). Loud either way, with the offered list
     /// for blank-window diagnosis.
     pub fn pick_gpu_mode(&self, surface: &wgpu::Surface<'_>) -> wgpu::PresentMode {
-        let offered = self
-            .vello
-            .gpu_adapter()
-            .map(|a| surface.get_capabilities(a).present_modes)
-            .unwrap_or_default();
+        let offered = if self.active == RendererKind::CustomGpu {
+            self.custom_gpu
+                .adapter()
+                .map(|a| surface.get_capabilities(a).present_modes)
+                .unwrap_or_default()
+        } else {
+            self.vello
+                .gpu_adapter()
+                .map(|a| surface.get_capabilities(a).present_modes)
+                .unwrap_or_default()
+        };
         eprintln!("oppa-app: offered present modes: {offered:?}");
         for mode in [
             wgpu::PresentMode::Immediate,
@@ -481,21 +539,37 @@ impl DesktopLoop {
         wgpu::PresentMode::Fifo
     }
 
-    /// Presents the Vello twin through the real swapchain (scene →
-    /// intermediate texture → blit → `present`). Requires GPU mode
-    /// (see `enable_gpu`); a CPU-only call is a loud `Err`, never a
-    /// silent no-op. Swapchain `Outdated` is returned verbatim so the
-    /// runner can reconfigure and retry (the fps storm rule).
+    /// Presents the active GPU backend through the real swapchain.
+    /// Requires GPU mode (see `enable_gpu`); a CPU-only call is a loud `Err`.
     pub fn present_gpu(
         &mut self,
         surface: &wgpu::Surface<'_>,
     ) -> Result<oppa_vello::PresentReport, String> {
-        if self.active != RendererKind::Gpu {
+        if !self.is_gpu() {
             return Err("desktop loop: present_gpu while CPU-only".to_string());
         }
-        self.vello
-            .present_surface(self.vello_surface, surface)
-            .map_err(|e| format!("desktop loop: present gpu: {e:?}"))
+        if self.active == RendererKind::CustomGpu {
+            let rep = self
+                .custom_gpu
+                .present_surface(self.custom_gpu_surface, surface)
+                .map_err(|e| format!("desktop loop: present custom gpu: {e:?}"))?;
+            Ok(oppa_vello::PresentReport {
+                width: rep.width,
+                height: rep.height,
+                format: rep.format,
+                cpu_ms: rep.cpu_ms,
+                acquire_ms: 0.0,
+                render_ms: rep.cpu_ms,
+                blit_setup_ms: 0.0,
+                blit_submit_ms: 0.0,
+                present_ms: 0.0,
+                target_ms: 0.0,
+            })
+        } else {
+            self.vello
+                .present_surface(self.vello_surface, surface)
+                .map_err(|e| format!("desktop loop: present gpu: {e:?}"))
+        }
     }
 
     /// Current output scale (device px per CSS px).
@@ -935,6 +1009,9 @@ impl DesktopLoop {
             self.vello
                 .commit(&d)
                 .map_err(|e| format!("desktop loop: vello commit: {e:?}"))?;
+            self.custom_gpu
+                .commit(&d)
+                .map_err(|e| format!("desktop loop: custom_gpu commit: {e:?}"))?;
         }
         // Round 15.2 (decision 313): the text overlays ride every
         // committed frame — the shared build-scoped rule from the
@@ -970,6 +1047,10 @@ impl DesktopLoop {
             self.vello
                 .paint(self.vello_surface, &plan)
                 .map_err(|e| format!("desktop loop: vello paint: {e:?}"))?;
+        } else if self.active == RendererKind::CustomGpu {
+            self.custom_gpu
+                .paint(self.custom_gpu_surface, &plan)
+                .map_err(|e| format!("desktop loop: custom_gpu paint: {e:?}"))?;
         }
         Ok(damage)
     }
@@ -1095,6 +1176,17 @@ impl DesktopLoop {
             .map_err(|e| format!("desktop loop: recreate vello surface: {e:?}"))?;
         self.vello_surface = next_vello;
         let _ = self.vello.destroy_surface(old_vello);
+        let old_custom = self.custom_gpu_surface;
+        let next_custom = self
+            .custom_gpu
+            .create_surface(SurfaceDesc {
+                width_px: w,
+                height_px: h,
+                background: bg,
+            })
+            .map_err(|e| format!("desktop loop: recreate custom_gpu surface: {e:?}"))?;
+        self.custom_gpu_surface = next_custom;
+        let _ = self.custom_gpu.destroy_surface(old_custom);
         Ok(())
     }
 
@@ -1296,7 +1388,8 @@ impl DesktopLoop {
     /// later `enable_gpu` never paints tofu.
     pub fn set_font_for(&mut self, id: oppa::text::FontId, bytes: Vec<u8>, index: u32) {
         self.cpu.set_font_for(id, bytes.clone(), index);
-        self.vello.set_font_for(id, bytes, index);
+        self.vello.set_font_for(id, bytes.clone(), index);
+        self.custom_gpu.set_font_for(id, bytes, index);
     }
 
     /// Vello twin observability for tests (how many ops the last GPU
@@ -3005,6 +3098,14 @@ mod tests {
             parse_renderer_override(Some("  Gpu  ")),
             Some(RendererKind::Gpu)
         );
+        assert_eq!(
+            parse_renderer_override(Some("custom_gpu")),
+            Some(RendererKind::CustomGpu)
+        );
+        assert_eq!(
+            parse_renderer_override(Some("custom-gpu")),
+            Some(RendererKind::CustomGpu)
+        );
         assert_eq!(parse_renderer_override(Some("")), None);
         assert_eq!(parse_renderer_override(Some("vulkan")), None);
     }
@@ -3134,6 +3235,27 @@ mod tests {
         assert!(!loop_.is_gpu());
         assert_eq!(loop_.gpu_present_mode(), None);
         loop_.repaint().expect("cpu repaint after disable works");
+    }
+
+    #[test]
+    fn enable_custom_gpu_paints_and_retains() {
+        let mut loop_ =
+            DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+        loop_.mount("Plain", PlainProps, plain_app);
+        loop_.enable_custom_gpu(wgpu::PresentMode::Fifo);
+        assert!(loop_.is_gpu());
+        assert_eq!(loop_.renderer_name(), "custom_gpu");
+        assert_eq!(loop_.renderer_kind(), RendererKind::CustomGpu);
+        let damage = loop_.repaint().expect("custom_gpu repaint works");
+        assert!(damage > 0);
+        assert!(loop_.cpu_retained_op_count().unwrap_or(0) > 0);
+        assert!(
+            loop_.custom_gpu_retained_op_count().unwrap_or(0) > 0,
+            "Custom GPU backend encodes and retains ops"
+        );
+        loop_.disable_gpu();
+        assert!(!loop_.is_gpu());
+        assert_eq!(loop_.renderer_name(), "cpu");
     }
 
     /// Round 7.4: refit keeps both surfaces in lockstep (a later

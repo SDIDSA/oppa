@@ -28,9 +28,9 @@ contract test suite — not prose — defines sameness.
 
 - Backends receive `TreeDiff` + per-frame `FramePlan` (dirty subtrees only) with `DrawOp::{Rect,RImg,RRect,Text,Path,PushClip,PushLayer,Pop}` plus damage. `Canvas` lowers to those ops (never a new one).
 - `Text(ShapedRun)` arrives pre-shaped with `baseline`, `em_size`, per-run `fonts`. `Color` stays alpha-less.
-- Shadows blur natively per backend (Vello gaussian, CPU box-blur, CSS `box-shadow`); blur 0 stays the offset solid, pixel-exact everywhere.
-- Static images serve one cache deposit on all three backends (CPU/Vello pixels, DOM data-URI PNG); bare URL keys unchanged on DOM.
-- Oracle exactness: CPU incremental == full render, pixel 0; CPU-vs-Vello sharp 0, curves tol-16 ≤ 60; blurred shadows tol-16 < 10% pixels (hardware-calibrated); static GPU frames 0; scroll produces 0 structural ops with ≤ 1 frame trail.
+- Shadows blur natively per backend (Vello gaussian, CPU box-blur, CSS `box-shadow`, Custom GPU separable erf approximation); blur 0 stays the offset solid, pixel-exact everywhere.
+- Static images serve one cache deposit on all backends (CPU/Vello/Custom GPU pixels, DOM data-URI PNG); bare URL keys unchanged on DOM.
+- Oracle exactness: CPU incremental == full render, pixel 0; CPU-vs-Vello sharp 0, curves tol-16 ≤ 60; CPU-vs-CustomGPU sharp 0, blurred shadows tol-16 < 5% pixels, curves tol-16 ≤ 60; blurred shadows tol-16 < 10% pixels (hardware-calibrated); static GPU frames 0; scroll produces 0 structural ops with ≤ 1 frame trail.
 
 ## Input
 

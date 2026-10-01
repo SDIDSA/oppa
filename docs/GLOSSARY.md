@@ -44,3 +44,4 @@ concept, this file wins.
 - **Fetcher** — the pluggable fetch backend seam (decision 362): `fetch(url)` off-thread; scripted doubles, app closures, and the wasm platform binding meet here, never a built-in client.
 - **Persisted** — signal-backed write-through persistence (decision 364): reads track, writes hit the signal and the `KvStore` synchronously; collections snapshot values in commit order through the same hook.
 - **Slot** — a stable virtualization position in `ScrollArea`; keys are slots, not items.
+- **Custom GPU rasterizer (`oppa-gpu`)** — a pure-Rust GPU backend implementing `RendererBackend` on standard `wgpu` render pipelines (decision 384): analytical SDF antialiasing for rects/circles, closed-form separable 2D Gaussian erf shadows, dynamic glyph atlas, Lyon vector path tessellation, zero compute shaders, direct swapchain render passes.
