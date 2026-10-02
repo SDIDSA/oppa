@@ -197,7 +197,9 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    via re-exports, `SiteKey` + instance backends widened to `pub(crate)`),
    `crates/oppa/src/editing.rs` (1,991 $\rightarrow$ 83-line hub + `session.rs` 344 +
    `caret.rs` 844 + `edit_ops.rs` 334 + `platform.rs` 185 + `geometry.rs` 235;
-   `editing::` paths preserved via re-exports, shared state/helpers `pub(crate)`).
+   `editing::` paths preserved via re-exports, shared state/helpers `pub(crate)`),
+   `crates/oppa-dom/src/dom.rs` (2,386 $\rightarrow$ 1,700-line hub + `element.rs` 386 +
+   `render.rs` 313; element model + serialization split out, paths preserved via re-exports).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
