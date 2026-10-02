@@ -1,0 +1,159 @@
+use super::*;
+
+impl ComponentHost {
+    /// One back-press step (round 3.3, OQ-G11-2 — the dismiss-first
+    /// chain over host-owned state): an active composition cancels
+    /// first (before any focus change — clearing focus would commit
+    /// it instead, locked #27), else a focused node blurs, else the
+    /// press is unhandled (the runner pops navigation or exits —
+    /// see the `BackPress` section in `nav.rs` for the full
+    /// cross-layer order). No settle inside (batch-safe like every
+    /// other direct host mutation — runners settle/repaint after;
+    /// `route_key` rides the INPUT batch, direct callers settle
+    /// explicitly).
+    pub fn handle_back(&self) -> BackOutcome {
+        if self.cancel_edit_compositions() {
+            return BackOutcome::CompositionCancelled;
+        }
+        if self.focused_node().is_some() {
+            self.set_focus_node(None);
+            return BackOutcome::FocusCleared;
+        }
+        BackOutcome::Unhandled
+    }
+
+    /// Requests window close from component code (Round 26.2,
+    /// decision 342 -- desktop-only drain): sets the close flag;
+    /// desktop runners drain it per pump iteration through the veto
+    /// consult, so a dirty veto re-raises instead of exiting.
+    /// Android/Web runners never drain it (stated parity gap --
+    /// the flag simply stays set there).
+    pub fn request_close(&self) {
+        self.inner.close_requested_flag.set(true);
+    }
+
+    /// Drains the component close request (runner-side -- pumps call
+    /// this once per iteration; a second call without a new request
+    /// reads false, never a stuck exit).
+    pub fn take_close_request(&self) -> bool {
+        self.inner.close_requested_flag.replace(false)
+    }
+
+    /// Starts a platform-driven fetch (round 4.1, web fetch — the
+    /// wasm half of decision 221): sets the keyed `FetchState<String>`
+    /// to `Loading` synchronously (first paint already shows it, the
+    /// native `spawn_fetch` rule) and bumps the key's generation,
+    /// returning it. The platform binding passes the generation back
+    /// to [`ComponentHost::resolve_fetch`] with the promise result —
+    /// same generation-discard rule as the native path (§9.6).
+    pub fn start_fetch(&self, key: u64) -> u64 {
+        use crate::fetch::FetchState;
+        let mut gens = self.inner.fetch_gens.borrow_mut();
+        let gen = gens.get(&key).copied().unwrap_or(0) + 1;
+        gens.insert(key, gen);
+        self.inner
+            .rt
+            .keyed_state::<FetchState<String>>(key, || FetchState::Idle)
+            .set(FetchState::Loading);
+        gen
+    }
+
+    /// Resolves a platform-driven fetch (round 4.1): applies
+    /// `Ready`/`Failed` iff `generation` is still current for `key`
+    /// (a result landing after a re-fetch is discarded — `false`,
+    /// never applied half-swapped). Unknown keys (never started)
+    /// discard too (`false` — a typo'd name addresses nothing, and
+    /// inventing `Loading` for it would lie about state). No settle
+    /// inside (batch-safe — the binding settles by syncing after).
+    pub fn resolve_fetch(&self, key: u64, generation: u64, result: Result<String, String>) -> bool {
+        use crate::fetch::FetchState;
+        let current = self.inner.fetch_gens.borrow().get(&key).copied();
+        if current != Some(generation) {
+            return false;
+        }
+        self.inner
+            .rt
+            .keyed_state::<FetchState<String>>(key, || FetchState::Idle)
+            .set(match result {
+                Ok(text) => FetchState::Ready(text),
+                Err(e) => FetchState::Failed(e),
+            });
+        true
+    }
+
+    /// Reads the rendezvous `FetchState<String>` for `key`
+    /// (diagnostics/bindings — `Idle` when never started; read-only,
+    /// never schedules).
+    pub fn fetch_snapshot(&self, key: u64) -> crate::fetch::FetchState<String> {
+        use crate::fetch::FetchState;
+        self.inner
+            .rt
+            .keyed_state::<FetchState<String>>(key, || FetchState::Idle)
+            .get()
+    }
+
+    /// Reads the TIME transition evaluator (§9.4, M8): backends resolve
+    /// evaluated paint values through this; tests read the interpolator
+    /// instruments (created/suppressed/active) through it.
+    pub fn with_evaluator<R>(&self, f: impl FnOnce(&TransitionEvaluator) -> R) -> R {
+        f(&self.inner.evaluator.borrow())
+    }
+
+    /// Mutable evaluator access (the TIME-phase drive: `settle(now)`).
+    pub fn with_evaluator_mut<R>(&self, f: impl FnOnce(&mut TransitionEvaluator) -> R) -> R {
+        f(&mut self.inner.evaluator.borrow_mut())
+    }
+
+    pub fn run_until_idle(&self) -> usize {
+        self.fire_due_longpresses();
+        self.inner.rt.run_until_idle()
+    }
+
+    /// Runs one frame if there is demand (M8: TIME-stepped tests advance
+    /// the injected clock one vsync at a time through this).
+    pub fn run_once(&self) -> bool {
+        self.fire_due_longpresses();
+        self.inner.rt.run_once()
+    }
+
+    /// Fires every long-press arm whose deadline has passed (G11,
+    /// decision 228 — the pump half of the no-self-demand rule: arms
+    /// never create frame demand themselves, so a held finger can
+    /// neither spin the loop nor hang `run_until_idle`; they fire on
+    /// the first host pump at/after the deadline. Shell pump loops
+    /// call `run_until_idle` per pump, so device fires land on time;
+    /// on-demand loops fire on the next event or frame — and an
+    /// Up-after-deadline dispatches identically either way, so the
+    /// bound is unobservable there).
+    pub fn fire_due_longpresses(&self) {
+        if self.is_lifecycle_suspended() {
+            return;
+        }
+        let now = self.inner.rt.now_secs();
+        let ids: Vec<u32> = self.inner.longpress.borrow().keys().copied().collect();
+        for id in ids {
+            self.fire_arm_if_due(id, now);
+        }
+    }
+
+    /// Ticks hover dwell for the currently hovered node (Round 17.3,
+    /// decision 319 — called from shell pumps / on-demand loops).
+    /// Suspended while the app is paused or suspended (Round 18.3, decision 322).
+    pub fn tick_dwell(&self) {
+        if self.is_lifecycle_suspended() {
+            return;
+        }
+        if let Some(h) = self.inner.input.borrow().hover {
+            self.bump_hover_move(h);
+        }
+    }
+
+    // -- M5 input routing (locked #7) -----------------------------------
+
+    /// Queues a normalized input event for the next INPUT phase (the
+    /// real-input injection path — payloads through framework
+    /// primitives, never test-driven signal writes).
+    pub fn inject_input(&self, event: InputEvent) {
+        self.inner.rt.push_input(event);
+    }
+}

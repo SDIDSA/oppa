@@ -208,7 +208,12 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    `ime.rs`/`window.rs`; `pub(crate)` submodules, test-only helpers use deep paths),
    `crates/oppa/src/reactive/mod.rs` (1,588 $\rightarrow$ 194-line hub + `runtime.rs`/`batch.rs`/
    `tasks.rs`/`input.rs`/`passes.rs`/`scheduler.rs` 453 + `signal.rs`/`memo.rs`/`effect.rs`;
-   run engine stays one cohesive module, paths preserved via re-exports).
+   run engine stays one cohesive module, paths preserved via re-exports),
+   `crates/oppa/src/component.rs` (2,208 $\rightarrow$ 640-line hub + `host_mount.rs` 317 +
+   `host_binding.rs` 386 + `host_query.rs` 275 + `host_frame.rs` 145 + `host_services.rs` 469;
+   `MountHandle` re-exported, 3 callees widened to `pub(super)`),
+   `crates/oppa-dom/src/dom.rs` (1,638 $\rightarrow$ 239-line hub + `scroll.rs` 55 + `sync.rs` 393 +
+   `patch.rs` 322 + `encode.rs` 446 + `commit.rs` 209; helpers `pub(crate)`, public paths via hub re-exports).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
@@ -226,10 +231,9 @@ value loop, reference apps).
 
 Accepted-carry: weak-GPU sustained-cost standing rule.
 
-Accepted-carry: file-size follow-ups (`oppa-controls/tests.rs`, `oppa-dom/dom.rs`,
-`reactive/mod.rs`, `vnode.rs`, `oppa-cpu/builder.rs`, `oppa-vello/backend.rs`,
-`oppa-macros/lib.rs`, `oppa-app` tests) stay over the hard 1000-line limit —
-same mechanical split pattern applies.
+Accepted-carry: file-size follow-ups (`oppa-controls/tests.rs`, `vnode.rs`,
+`oppa-cpu/builder.rs`, `oppa-vello/backend.rs`, `oppa-app` tests) stay over the
+hard 1000-line limit — same mechanical split pattern applies.
 
 ## Blocked (with blocker)
 
