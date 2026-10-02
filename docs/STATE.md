@@ -194,7 +194,10 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    `LayoutCtx` methods follow the existing per-file-impl precedent, paths preserved via re-exports),
    `crates/oppa/src/component.rs` (2,797 $\rightarrow$ 2,377-line hub + `store.rs` 136 +
    `images.rs` 97 + `host_reload.rs` 201; `component::Store`/`ImageCache` paths preserved
-   via re-exports, `SiteKey` + instance backends widened to `pub(crate)`).
+   via re-exports, `SiteKey` + instance backends widened to `pub(crate)`),
+   `crates/oppa/src/editing.rs` (1,991 $\rightarrow$ 83-line hub + `session.rs` 344 +
+   `caret.rs` 844 + `edit_ops.rs` 334 + `platform.rs` 185 + `geometry.rs` 235;
+   `editing::` paths preserved via re-exports, shared state/helpers `pub(crate)`).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
