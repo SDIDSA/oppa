@@ -1,0 +1,461 @@
+// ---------------------------------------------------------------------------
+// PlatformShell trait implementation (event pump + dispatch)
+// ---------------------------------------------------------------------------
+
+use super::*;
+
+impl PlatformShell for Win32Shell {
+    fn pump_events(&mut self) -> Vec<Event> {
+        let mut out = Vec::new();
+        loop {
+            let next = {
+                let mut shared = self.shared.borrow_mut();
+                shared.queue.pop_front()
+            };
+            let Some(ev) = next else { break };
+            match ev {
+                ShellEvent::Ime(msg) => {
+                    // THE SEAM: real OS IME message → normalized event →
+                    // dispatch_ime_event → the host's ImeCompositionHandler.
+                    let cb = self.shared.borrow().ime_callback.clone();
+                    if let Some(cb) = cb {
+                        cb(&msg);
+                    }
+                }
+                other => {
+                    let mut shared = self.shared.borrow_mut();
+                    if let Some(cmd) = cmd_of(&other, &mut shared.pending_drag) {
+                        shared.cmds.push_back(cmd);
+                    }
+                    out.push(Event {
+                        kind: kind_of(&other),
+                        handler: FIELD_EVENT,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Candidate-window anchoring, driven by the M0b contract surface:
+    /// `ImeOps::SetCaretRect` (device-px, run-relative per
+    /// `ShapedRun::caret_rect`) → `ImmSetCompositionWindow` (CFS_POINT) +
+    /// `ImmSetCandidateWindow` (CFS_CANDIDATEPOS), both in client coords
+    /// (the host glue converts run-relative → client px before calling).
+    /// Show/hide ops are the real IME's policy; logged only.
+    fn set_ime(&mut self, ops: ImeOps) {
+        match ops {
+            ImeOps::SetCaretRect {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                // Copy the HWND out first (same hazard as focus_window:
+                // IMM calls can synchronously re-enter the proc).
+                let hwnd = self.shared.borrow().hwnd;
+                let himc = unsafe { ImmGetContext(hwnd) };
+                if himc.is_invalid() {
+                    return;
+                }
+                unsafe {
+                    let comp = COMPOSITIONFORM {
+                        dwStyle: CFS_POINT,
+                        ptCurrentPos: POINT {
+                            x: x as i32,
+                            y: y as i32,
+                        },
+                        rcArea: RECT::default(),
+                    };
+                    let _ = ImmSetCompositionWindow(himc, &comp);
+                    let cand = CANDIDATEFORM {
+                        dwIndex: 0,
+                        dwStyle: CFS_CANDIDATEPOS,
+                        ptCurrentPos: POINT {
+                            x: x as i32,
+                            y: y as i32,
+                        },
+                        rcArea: RECT::default(),
+                    };
+                    let _ = ImmSetCandidateWindow(himc, &cand);
+                    let _ = ImmReleaseContext(hwnd, himc);
+                }
+                self.shared
+                    .borrow_mut()
+                    .anchored_rects
+                    .push([x, y, width, height]);
+            }
+            other => {
+                self.shared
+                    .borrow_mut()
+                    .ime_log
+                    .push(format!("set_ime op (no-op in real-IME wiring): {other:?}"));
+            }
+        }
+    }
+
+    /// Win32 clipboard backend (G3, decision 210): the shell owns one
+    /// [`Win32Clipboard`](super::clipboard::Win32Clipboard) and lends it
+    /// through the [`PlatformShell`] seam.
+    fn clipboard(&mut self) -> Option<&mut dyn oppa::Clipboard> {
+        Some(&mut self.clipboard)
+    }
+
+    /// Win32 file-open dialog (G12, decision 231): the shell owns one
+    /// [`Win32FileDialog`](super::file_dialog::Win32FileDialog) and
+    /// lends it through the [`PlatformShell`] seam.
+    fn file_dialog(&mut self) -> Option<&mut dyn oppa::FileDialog> {
+        Some(&mut self.file_dialog)
+    }
+
+    /// Pointer cursor (Round 8.3, decision 299): stores the runner's
+    /// hover resolution; the `WM_SETCURSOR` arm applies it (the OS
+    /// queries per mouse move — see the field docs).
+    fn set_cursor(&mut self, cursor: oppa::CursorIcon) {
+        self.shared.borrow_mut().current_cursor = Some(cursor);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Window proc
+// ---------------------------------------------------------------------------
+
+pub(crate) unsafe extern "system" fn shell_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let shared = SHELL_RC.with(|rc| rc.borrow().as_ref().map(Rc::clone));
+    let Some(shared) = shared else {
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    };
+
+    // Record every message that reaches the proc while recording is armed.
+    {
+        let mut s = shared.borrow_mut();
+        if s.recording {
+            s.seq += 1;
+            let seq = s.seq;
+            s.msg_log.push(MessageRecord {
+                seq,
+                msg,
+                wparam: wparam.0,
+                lparam: lparam.0,
+            });
+        }
+    }
+
+    let shift_down = key_down(VK_SHIFT.0);
+    let ctrl_down = key_down(VK_CONTROL.0);
+    let x = client_x(lparam);
+    let y = client_y(lparam);
+
+    match msg {
+        WM_IME_SETCONTEXT => {
+            log_ime(
+                &shared,
+                ImeMessage::SetContext {
+                    f_select: wparam.0 != 0,
+                    data: lparam.0 as usize,
+                },
+            );
+            // Keep the OS candidate UI; suppress the OS composition window
+            // (the host draws the composition inline). DefWindowProc sees
+            // the modified show-mask.
+            let suppressed = if shared.borrow().cfg.suppress_os_composition_window {
+                ((lparam.0 as usize) & !(ISC_SHOWUICOMPOSITIONWINDOW as usize)) as isize
+            } else {
+                lparam.0
+            };
+            DefWindowProcW(hwnd, msg, wparam, LPARAM(suppressed))
+        }
+        WM_IME_STARTCOMPOSITION => {
+            log_ime(&shared, ImeMessage::StartComposition);
+            LRESULT(0)
+        }
+        WM_IME_COMPOSITION => {
+            // Snapshot NOW (message time): composition state can move after.
+            let flags = lparam.0 as u32;
+            let snapshot = read_composition(hwnd, flags);
+            log_ime(&shared, snapshot);
+            LRESULT(0)
+        }
+        WM_IME_ENDCOMPOSITION => {
+            log_ime(&shared, ImeMessage::EndComposition);
+            LRESULT(0)
+        }
+        WM_IME_NOTIFY => {
+            log_ime(
+                &shared,
+                ImeMessage::Notify {
+                    code: wparam.0 as u32,
+                    param: lparam.0 as usize,
+                },
+            );
+            // Default handling drives the OS candidate window machinery.
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_SETCURSOR => {
+            // Round 8.3 (decision 299): the runner publishes the
+            // hovered style's cursor through `set_cursor`; the OS
+            // queries here per mouse move, so this applies the stored
+            // shape now (eager `SetCursor` calls would die at the next
+            // `DefWindowProcW` reset). Returning nonzero claims the
+            // message — the class arrow never overrides us.
+            //
+            // Fix-up (resize cursors): the claim covers the client
+            // area only (`HTCLIENT`). Border hits (sizing edges and
+            // corners) fall through to `DefWindowProcW`, which owns
+            // the resize arrows — claiming them would pin the
+            // framework cursor over the borders and hide the
+            // resize affordance while resizing still works.
+            const HTCLIENT: isize = 1;
+            if (lparam.0 & 0xFFFF) != HTCLIENT {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            let cursor = shared
+                .borrow()
+                .current_cursor
+                .unwrap_or(oppa::CursorIcon::Default);
+            if let Ok(handle) = LoadCursorW(None, cursor_idc(cursor)) {
+                let _ = SetCursor(Some(handle));
+            }
+            LRESULT(1)
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_RBUTTONDOWN | WM_RBUTTONDBLCLK | WM_MBUTTONDOWN => {
+            // Round 9.2: all three buttons classify (the `*DBLCLK`
+            // flag stays informational — multi-click chains
+            // synthesize uniformly router-side; the class never
+            // enabled `CS_DBLCLKS`, so doubles arrive as DOWN pairs
+            // anyway — stated, not silent).
+            let dbl_click = msg == WM_LBUTTONDBLCLK || msg == WM_RBUTTONDBLCLK;
+            let button = match msg {
+                WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => oppa::PointerButton::Secondary,
+                WM_MBUTTONDOWN => oppa::PointerButton::Auxiliary,
+                _ => oppa::PointerButton::Primary,
+            };
+            // Mouse capture (Round 7.19, decision 294): drags keep
+            // streaming `WM_MOUSEMOVE` even when the cursor leaves
+            // the client area (slider drags to the ends, press
+            // slop-gates) instead of dropping events at the border.
+            // Best-effort like every other HWND effect here.
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
+            shared
+                .borrow_mut()
+                .queue
+                .push_back(ShellEvent::PointerDown {
+                    button,
+                    dbl_click,
+                    shift: shift_down,
+                    x,
+                    y,
+                });
+            LRESULT(0)
+        }
+        WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP => {
+            let button = match msg {
+                WM_RBUTTONUP => oppa::PointerButton::Secondary,
+                WM_MBUTTONUP => oppa::PointerButton::Auxiliary,
+                _ => oppa::PointerButton::Primary,
+            };
+            {
+                let mut s = shared.borrow_mut();
+                s.queue.push_back(ShellEvent::PointerUp {
+                    button,
+                    x,
+                    y,
+                    shift: shift_down,
+                });
+                // Clear the in-flight flag BEFORE releasing: the
+                // release itself sends `WM_CAPTURECHANGED`, and that
+                // handler must stay quiet for our own release (it
+                // only fires on external steals while down).
+                s.pending_drag = None;
+            }
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
+            // External capture steal while a button was down (Alt+Tab,
+            // a modal loop, another window's SetCapture): the router's
+            // tripwire, so pressed flags never stick. Quiet when no
+            // drag was in flight — notably right after our own
+            // `WM_LBUTTONUP` release, which pre-cleared the flag.
+            let mut s = shared.borrow_mut();
+            if s.pending_drag.take().is_some() {
+                s.queue.push_back(ShellEvent::PointerCancel);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            let left_down = wparam.0 & (MK_LBUTTON.0 as usize) != 0;
+            shared
+                .borrow_mut()
+                .queue
+                .push_back(ShellEvent::PointerMove { x, y, left_down });
+            LRESULT(0)
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            shared.borrow_mut().queue.push_back(ShellEvent::KeyDown {
+                vk: wparam.0 as u32,
+                shift: shift_down,
+                ctrl: ctrl_down,
+            });
+            LRESULT(0)
+        }
+        WM_MOUSEWHEEL => {
+            // Delta rides the high word (signed 16-bit); the
+            // position packs screen (not client) coords — convert at
+            // message time, before anything can move the window.
+            // Shift+wheel rolls horizontally (see `wheel_event`).
+            let delta = ((wparam.0 >> 16) as u16) as i16;
+            let mut pt = POINT {
+                x: client_x(lparam),
+                y: client_y(lparam),
+            };
+            let _ = ScreenToClient(hwnd, &mut pt);
+            shared
+                .borrow_mut()
+                .queue
+                .push_back(wheel_event(pt.x, pt.y, delta, shift_down));
+            LRESULT(0)
+        }
+        WM_MOUSEHWHEEL => {
+            // Horizontal tilt wheel (Round 20.2, decision 325): same
+            // packing as WM_MOUSEWHEEL (signed high-word delta,
+            // screen-coords position converted at message time) —
+            // queued as HWheel so the Cmd layer converts scale+sign.
+            let delta = ((wparam.0 >> 16) as u16) as i16;
+            let mut pt = POINT {
+                x: client_x(lparam),
+                y: client_y(lparam),
+            };
+            let _ = ScreenToClient(hwnd, &mut pt);
+            shared.borrow_mut().queue.push_back(ShellEvent::HWheel {
+                x: pt.x,
+                y: pt.y,
+                delta,
+            });
+            LRESULT(0)
+        }
+        WM_CHAR => {
+            if let Some(ch) = char_from_wparam(wparam) {
+                shared.borrow_mut().queue.push_back(ShellEvent::Char { ch });
+            }
+            LRESULT(0)
+        }
+        WM_SETFOCUS => {
+            shared
+                .borrow_mut()
+                .queue
+                .push_back(ShellEvent::FocusChanged(true));
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_KILLFOCUS => {
+            shared
+                .borrow_mut()
+                .queue
+                .push_back(ShellEvent::FocusChanged(false));
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_DPICHANGED => {
+            // Monitor DPI change (Round 2.4, OQ-G10-2): snapshot the
+            // suggested rect (screen coords, incl. frame — the RECT
+            // dies with the call) and the x-axis DPI (monitors
+            // report square pixels; a split DPI uses x — stated).
+            // The runner applies the rect (`SetWindowPos`) and
+            // re-bases the pipeline (DPR + resize + repaint).
+            let rect = unsafe { *(lparam.0 as *const RECT) };
+            let dpi = (wparam.0 & 0xFFFF) as u32;
+            shared.borrow_mut().queue.push_back(ShellEvent::DpiChanged {
+                x: rect.left,
+                y: rect.top,
+                w: rect.right - rect.left,
+                h: rect.bottom - rect.top,
+                dpi,
+            });
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_SETTINGCHANGE => {
+            // OS theme flip (Round 16.2, decision 315): `lParam`
+            // names the changed section — only "ImmersiveColorSet"
+            // queues (every other section stays a DefWindowProcW
+            // no-op; the runner re-queries the registry on drain).
+            if unsafe { crate::theme::is_immersive_color_set(lparam) } {
+                shared
+                    .borrow_mut()
+                    .queue
+                    .push_back(ShellEvent::SystemThemeChanged);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_GETMINMAXINFO => {
+            // Runtime min/max sizes (Round 16.3, decision 316):
+            // clamp only the sides the app constrained — unset
+            // sides keep the OS defaults (never shrink an
+            // unconstrained side to zero). Returning 0 (not
+            // `DefWindowProcW`) is the documented contract here.
+            let mmi = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
+            let s = shared.borrow();
+            if let Some((w, h)) = s.min_size {
+                mmi.ptMinTrackSize.x = mmi.ptMinTrackSize.x.max(w as i32);
+                mmi.ptMinTrackSize.y = mmi.ptMinTrackSize.y.max(h as i32);
+            }
+            if let Some((w, h)) = s.max_size {
+                mmi.ptMaxTrackSize.x = mmi.ptMaxTrackSize.x.min(w as i32);
+                mmi.ptMaxTrackSize.y = mmi.ptMaxTrackSize.y.min(h as i32);
+            }
+            LRESULT(0)
+        }
+        WM_SIZE => {
+            // Live resize inside the modal sizing loop (Round 7.20,
+            // decision 295): while the border drag traps the thread
+            // in `DefWindowProcW`, the outer pump never runs — so the
+            // runner's resize hook runs HERE, synchronously, on every
+            // size step (reflow + repaint + swapchain reconfigure +
+            // present, zero DWM stretching). `lParam` packs the new
+            // client size exactly like the mouse messages (see
+            // `client_x` / `client_y`); minimized (1 =
+            // SIZE_MINIMIZED) and zero sizes never reach the hook (no
+            // surface exists for them). `DefWindowProcW` still runs
+            // so the OS sizing state updates normally.
+            let w = client_x(lparam);
+            let h = client_y(lparam);
+            let minimized = wparam.0 == 1;
+            if !minimized && w > 0 && h > 0 {
+                let cb = shared.borrow().resize_callback.clone();
+                if let Some(cb) = cb {
+                    cb(w as u32, h as u32);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_PAINT => {
+            // Debug-grade: no GDI painting (the wgpu surface covers the
+            // client area); just validate.
+            let mut ps = PAINTSTRUCT::default();
+            let _ = BeginPaint(hwnd, &mut ps);
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            // Close veto (Round 16.3, decision 316): queue instead
+            // of destroying — the runner approves through the
+            // loop's close handler (`destroy_window` below) and a
+            // vetoed close leaves the window running, so an
+            // unsaved-changes modal can mount instead of dying.
+            // (Never `DefWindowProcW` here — its default destroys.)
+            shared
+                .borrow_mut()
+                .queue
+                .push_back(ShellEvent::CloseRequested);
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
