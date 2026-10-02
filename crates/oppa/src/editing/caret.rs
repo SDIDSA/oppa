@@ -2,11 +2,13 @@
 // Caret, selection, movement, and hit-testing
 // ---------------------------------------------------------------------------
 
+use super::geometry::{
+    byte_at_x, hard_line_byte, line_containing, line_index_containing, word_class, x_in_line,
+    VisualLine, WordClass,
+};
 use super::*;
-use super::geometry::{VisualLine, WordClass, byte_at_x, hard_line_byte, line_containing, line_index_containing, word_class, x_in_line};
 
 impl EditSession {
-
     pub fn click_x(&self, x: f32) {
         self.ensure_clamped();
         let Some(byte) = self.hit_test(x) else {
@@ -671,7 +673,6 @@ impl EditSession {
         self.break_run();
         self.note_caret_activity();
     }
-
 
     /// Shapes `text` through the installed shaper. `None` with no shaper
     /// (graceful — decision 207); panics loudly when an installed shaper

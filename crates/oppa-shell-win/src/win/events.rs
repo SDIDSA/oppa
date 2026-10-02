@@ -261,7 +261,6 @@ pub struct MessageRecord {
     pub lparam: isize,
 }
 
-
 pub(crate) fn key_down(vk: u16) -> bool {
     unsafe { GetKeyState(vk as i32) as u16 & 0x8000 != 0 }
 }

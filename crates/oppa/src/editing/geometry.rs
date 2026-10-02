@@ -39,7 +39,11 @@ pub(crate) fn line_index_containing(lines: &[VisualLine], composite: &str, byte:
     idx
 }
 
-pub(crate) fn line_containing<'a>(lines: &'a [VisualLine], composite: &str, byte: usize) -> &'a VisualLine {
+pub(crate) fn line_containing<'a>(
+    lines: &'a [VisualLine],
+    composite: &str,
+    byte: usize,
+) -> &'a VisualLine {
     let idx = line_index_containing(lines, composite, byte);
     &lines[idx.min(lines.len().saturating_sub(1))]
 }

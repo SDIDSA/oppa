@@ -2,11 +2,10 @@
 // Edit operations, clipboard, and undo machinery
 // ---------------------------------------------------------------------------
 
-use super::*;
 use super::caret::{clamp_byte, ordered, trim_to_depth};
+use super::*;
 
 impl EditSession {
-
     /// Inserts `text` over the current selection. No-op while composing
     /// (the platform owns the field mid-composition — deliveries arrive
     /// as `composition_updated`) and for empty text. Contiguous collapsed
@@ -163,7 +162,6 @@ impl EditSession {
         self.note_caret_activity();
     }
 
-
     /// The current selection's text over the *committed* content: `None`
     /// when collapsed, when composing (the platform owns the field
     /// mid-composition — deliveries arrive as `composition_updated`),
@@ -247,7 +245,6 @@ impl EditSession {
         self.insert(&text);
         Ok(PasteOutcome::Pasted(text))
     }
-
 
     pub(crate) fn snapshot(&self) -> EditSnapshot {
         self.ensure_clamped();

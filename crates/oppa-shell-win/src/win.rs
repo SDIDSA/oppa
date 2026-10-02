@@ -59,10 +59,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 mod events;
 mod shell_platform;
 
-pub use events::{Cmd, HWHEEL_LINE_PX, ImeMessage, MessageRecord, ShellEvent, WHEEL_LINE_PX};
 pub(crate) use events::{
     char_from_wparam, client_x, client_y, cmd_of, key_down, kind_of, read_composition, wheel_event,
 };
+pub use events::{Cmd, ImeMessage, MessageRecord, ShellEvent, HWHEEL_LINE_PX, WHEEL_LINE_PX};
 pub(crate) use shell_platform::shell_wnd_proc;
 
 #[derive(Clone, Debug, PartialEq)]

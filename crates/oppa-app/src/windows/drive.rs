@@ -2,9 +2,9 @@
 // Command dispatch (Cmd -> framework input)
 // ---------------------------------------------------------------------------
 
-use super::*;
-use super::ime::{WinImeMapper, post_input_ime};
+use super::ime::{post_input_ime, WinImeMapper};
 use super::window::{key_down, sync_cursor};
+use super::*;
 
 /// One pumped command's outcome: exit requests unwind the loop
 /// (clean exit 0); damage re-presents.

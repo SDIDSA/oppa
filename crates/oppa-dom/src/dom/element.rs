@@ -19,9 +19,9 @@ pub enum HtmlKind {
     /// sized by geometry like every other leaf).
     Image {
         /// Escaped-at-render `src` (cache key — a URL on web).
-                 src: String,
+        src: String,
         /// Escaped-at-render `alt` (semantics label, else empty).
-                 alt: String,
+        alt: String,
     },
     /// Inline `<svg>` (decision 291 — the `Tag::Path` leaf; void,
     /// sized by geometry like `<img>`). `view` is the CSS-px box the
@@ -29,15 +29,15 @@ pub enum HtmlKind {
     /// straight through, the DPR-1 contract the rasterizers share).
     Vector {
         /// Escaped-at-render SVG path data (the retained payload).
-                 data: String,
+        data: String,
         /// `fill` hex (`#rrggbb`) or `"none"`.
-                 fill: String,
+        fill: String,
         /// `stroke` hex or `"none"`.
-                 stroke: String,
+        stroke: String,
         /// Stroke width in authoring px (present only when stroked).
-                 stroke_width: Option<f32>,
+        stroke_width: Option<f32>,
         /// CSS-px view size (`viewBox="0 0 w h"`).
-                 view: (f32, f32),
+        view: (f32, f32),
     },
     /// Inline `<svg>` with retained children (Phase 36 PR4, decision
     /// 358 — the `Tag::Canvas` leaf; void, sized by geometry like
@@ -47,9 +47,9 @@ pub enum HtmlKind {
     /// payload — `text_runs` slices empty, so spans stay empty).
     Canvas {
         /// Escaped-at-render inner SVG markup (built at derive).
-                 inner: String,
+        inner: String,
         /// CSS-px view size (`viewBox="0 0 w h"`).
-                 view: (f32, f32),
+        view: (f32, f32),
     },
     /// Marked hole (`div[data-external]`, Custom id carried).
     External(u64),

@@ -5,7 +5,6 @@
 use super::*;
 
 impl ComponentHost {
-
     /// Snapshot of every live component instance for the drain phase: the
     /// harness drains props through the *outgoing* manifest before unload.
     pub fn reload_snapshot(&self) -> Vec<InstanceSnapshot> {

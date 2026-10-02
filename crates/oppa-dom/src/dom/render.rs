@@ -249,7 +249,11 @@ impl DomBackend {
     /// origin-relative CSS-px space as the highlight divs, plus its
     /// text-ink fill. `None` unless `id` is the focused field with a
     /// visible blink phase.
-    pub(crate) fn caret_decoration(&self, id: NodeId, origin: (f32, f32)) -> Option<([f32; 4], String)> {
+    pub(crate) fn caret_decoration(
+        &self,
+        id: NodeId,
+        origin: (f32, f32),
+    ) -> Option<([f32; 4], String)> {
         let c = self.caret?;
         if c.field != id || c.h <= 0.0 {
             return None;
@@ -277,7 +281,12 @@ impl DomBackend {
     /// siblings positioned against the same ancestor as the input).
     /// Empty unless `id` is the selected field with a non-collapsed
     /// range.
-    pub(crate) fn selection_rects(&self, rec: &Reconciler, id: NodeId, origin: (f32, f32)) -> Vec<[f32; 4]> {
+    pub(crate) fn selection_rects(
+        &self,
+        rec: &Reconciler,
+        id: NodeId,
+        origin: (f32, f32),
+    ) -> Vec<[f32; 4]> {
         let Some(sel) = self.selection else {
             return Vec::new();
         };

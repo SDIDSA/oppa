@@ -2,8 +2,8 @@
 // Platform feeds, focus policy, and IME surface
 // ---------------------------------------------------------------------------
 
-use super::*;
 use super::caret::{clamp_byte, ordered};
+use super::*;
 
 impl EditSession {
     /// Applies a platform-owned full value (U8 `InputEvent::Text`

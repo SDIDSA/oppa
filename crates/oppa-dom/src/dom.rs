@@ -87,8 +87,11 @@ pub fn scroll_window_overscan(
 mod element;
 mod render;
 
-pub use element::{AttrPatch, DomElement, DomRun, HtmlKind, PagePatch, PlacePatch, SyncStats, ThemePatch, json_escape};
 pub(crate) use element::same_own;
+pub use element::{
+    json_escape, AttrPatch, DomElement, DomRun, HtmlKind, PagePatch, PlacePatch, SyncStats,
+    ThemePatch,
+};
 
 pub struct DomBackend {
     dpr: f32,
@@ -1063,7 +1066,6 @@ impl DomBackend {
         }
         self.kf_now = now;
     }
-
 }
 
 fn parent_is_scroll(rec: &Reconciler, id: NodeId) -> bool {

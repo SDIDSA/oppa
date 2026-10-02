@@ -306,7 +306,11 @@ impl<'a> LayoutCtx<'a> {
     /// Amortized ellipsis advance per style (one `shape("…")` per distinct
     /// style — family, size, weight, dpr; graceful zero when the backend
     /// cannot shape it — decoration must not crash layout).
-    pub(crate) fn ellipsis_advance(&mut self, size_px: f32, weight: crate::text::FontWeight) -> f32 {
+    pub(crate) fn ellipsis_advance(
+        &mut self,
+        size_px: f32,
+        weight: crate::text::FontWeight,
+    ) -> f32 {
         let cfg = &self.engine.config;
         let key = (
             fnv1a64(cfg.family.as_bytes()),

@@ -1313,8 +1313,8 @@ fn ime_anchor_tracks_the_composition_caret() {
 #[cfg(windows)]
 mod win_ime {
     use super::*;
-    use crate::windows::{drive_cmd, drive_ime, WinImeMapper};
     use crate::windows::ime::utf16_offset_to_byte;
+    use crate::windows::{drive_cmd, drive_ime, WinImeMapper};
     use oppa::EditSession;
     use oppa_shell_win::{ImeMessage, ShellConfig, ShellEvent, Win32Shell};
     use std::rc::Rc;

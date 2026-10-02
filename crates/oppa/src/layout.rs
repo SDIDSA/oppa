@@ -53,7 +53,6 @@ use crate::text::{
 };
 use crate::vnode::{Tag, TextClass};
 
-pub mod text;
 pub(crate) mod containers;
 pub(crate) mod engine;
 pub(crate) mod flex;
@@ -65,16 +64,17 @@ pub(crate) mod measure;
 pub(crate) mod node;
 pub(crate) mod primitives;
 pub(crate) mod scrollbar;
-pub use text::*;
+pub mod text;
+pub(crate) use engine::{LayoutCtx, Margin, Pad, Size};
 pub use engine::{LayoutEngine, LayoutLedger};
+pub(crate) use measure::{measure_key, measure_key_rich, needs_measure, FRAME_DIRT};
 pub use measure::{LayoutStats, MeasuredText};
 pub use primitives::{LaidCluster, LaidGlyph, LaidLine, LaidRun, LayoutBox, LayoutTextConfig};
 pub use scrollbar::{
     scrollbar_max_offset, scrollbar_thumb, scrollbar_thumb_x, ScrollbarThumb, ScrollbarThumbX,
     SCROLLBAR_HIT_PX, SCROLLBAR_MIN_THUMB_PX, SCROLLBAR_TRACK_PX,
 };
-pub(crate) use engine::{LayoutCtx, Margin, Pad, Size};
-pub(crate) use measure::{FRAME_DIRT, measure_key, measure_key_rich, needs_measure};
+pub use text::*;
 #[cfg(test)]
 mod tests;
 

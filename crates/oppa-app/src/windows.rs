@@ -46,9 +46,12 @@ pub(crate) mod ime;
 pub(crate) mod window;
 
 pub(crate) use drive::drive_cmd;
-use gpu::{WindowsGpu, build_gpu_windows, reconfigure_gpu};
-pub(crate) use ime::{WinImeMapper, drive_ime};
-use window::{blit_rgba, client_area_missing, ensure_dpi_awareness, fit_client_to_scene, hwnd_alive, live_client_size, move_window_to_suggested, wait_timeout_ms};
+use gpu::{build_gpu_windows, reconfigure_gpu, WindowsGpu};
+pub(crate) use ime::{drive_ime, WinImeMapper};
+use window::{
+    blit_rgba, client_area_missing, ensure_dpi_awareness, fit_client_to_scene, hwnd_alive,
+    live_client_size, move_window_to_suggested, wait_timeout_ms,
+};
 
 /// Presents one frame on the active backend (Round 7.4): GPU
 /// swapchain primary with loud GDI fallback. `Outdated`

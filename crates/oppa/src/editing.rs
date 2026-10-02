@@ -77,8 +77,10 @@ mod geometry;
 mod platform;
 mod session;
 
-pub use session::{ContentObserver, EditSession, EditState, PasteOutcome, CARET_BLINK_PERIOD_SECS, EDIT_UNDO_DEPTH};
 pub(crate) use session::{Composition, EditSnapshot, LastOp, SessionInner};
+pub use session::{
+    ContentObserver, EditSession, EditState, PasteOutcome, CARET_BLINK_PERIOD_SECS, EDIT_UNDO_DEPTH,
+};
 
 #[cfg(test)]
 mod tests;

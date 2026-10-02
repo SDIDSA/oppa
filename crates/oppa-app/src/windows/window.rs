@@ -193,7 +193,10 @@ pub(crate) fn move_window_to_suggested(
 /// BGRA + `SetDIBitsToDevice`). Loud on any failure (a present
 /// failure is never a silent blank frame). Same pattern as the
 /// fps-demo's `present_cpu` (the proven GDI path).
-pub(crate) fn blit_rgba(loop_: &DesktopLoop, hwnd: windows::Win32::Foundation::HWND) -> Result<(), String> {
+pub(crate) fn blit_rgba(
+    loop_: &DesktopLoop,
+    hwnd: windows::Win32::Foundation::HWND,
+) -> Result<(), String> {
     use windows::Win32::Graphics::Gdi::{
         GetDC, ReleaseDC, SetDIBitsToDevice, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
         RGBQUAD,
