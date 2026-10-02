@@ -205,7 +205,10 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    `crates/oppa-app/src/lib.rs` (1,436 $\rightarrow$ 315-line hub + `gpu.rs`/`wiring.rs`/
    `step.rs`/`frame.rs`/`resize.rs`/`text_input.rs`, all $<300; method groups move verbatim),
    `crates/oppa-app/src/windows.rs` (1,385 $\rightarrow$ 510-line hub + `gpu.rs`/`drive.rs`/
-   `ime.rs`/`window.rs`; `pub(crate)` submodules, test-only helpers use deep paths).
+   `ime.rs`/`window.rs`; `pub(crate)` submodules, test-only helpers use deep paths),
+   `crates/oppa/src/reactive/mod.rs` (1,588 $\rightarrow$ 194-line hub + `runtime.rs`/`batch.rs`/
+   `tasks.rs`/`input.rs`/`passes.rs`/`scheduler.rs` 453 + `signal.rs`/`memo.rs`/`effect.rs`;
+   run engine stays one cohesive module, paths preserved via re-exports).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
