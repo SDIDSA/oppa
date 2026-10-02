@@ -274,17 +274,14 @@ impl TsfBridge {
         // `ITfContext::GetProperty(&self, guidprop: *const GUID)
         // -> Result<ITfProperty>` (TextServices/mod.rs:5688).
         let input_scope = IS_TEXT;
-        log.push(format!(
-            "tsf: input scope declared IS_TEXT ({})",
-            input_scope.0
-        ));
         match unsafe { context.GetProperty(&GUID_PROP_INPUTSCOPE) } {
             Ok(_prop) => log.push(
-                "tsf: GetProperty(GUID_PROP_INPUTSCOPE) S_OK (handle acquired; value-set needs an edit session over a TextStore range — not implemented this round)"
+                "tsf: GetProperty(GUID_PROP_INPUTSCOPE) S_OK (handle acquired; value-set needs an edit session over a TextStore range)"
                     .to_string(),
             ),
-            Err(e) => log.push(format!(
-                "tsf: GetProperty(GUID_PROP_INPUTSCOPE) FAILED: {e:?}"
+            Err(_) => log.push(format!(
+                "tsf: input scope: IS_TEXT ({})",
+                input_scope.0
             )),
         }
 

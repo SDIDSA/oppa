@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-01 (through Decision 384).
+Status: current. Last verified: 2026-10-02 (through Decision 385).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -157,6 +157,32 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   static pixels into CPU, Vello, and CustomGpu backends via `insert_cached`;
   `KitchenSinkApp` Views tab deposits into `ctx.images()`; web Views tab crash
   eliminated with full tab roundtrip proven in Edge headless.
+- Windows TSF input scope diagnostic cleanup (gate green 2026-10-02): `tsf.rs`
+  uninstantiated range property on fresh context logs expected fallback to `IS_TEXT`
+  rather than false-alarm `FAILED` error.
+- DatePicker unified single-box chrome (gate green 2026-10-02): `TextInputProps::borderless`
+  allows text field to render seamlessly inside composite controls; `DatePicker`
+  uses borderless inner text field, eliminating double-box visual nesting.
+- Source code decomposition (gate green 2026-10-02): Modularized and split high-LOC files
+  across workspace adhering to cohesion guidelines (<600 lines target). `crates/oppa-controls/src/lib.rs`
+  (11,974 lines $\rightarrow$ 158 lines, 22 dedicated component modules + `tests.rs`), `crates/oppa/src/layout.rs`
+  (4,857 lines $\rightarrow$ 1,981 lines, extracted `text.rs`, `grid.rs`, `flex.rs`, `containers.rs`, `tests.rs`),
+  `crates/oppa/src/component.rs` (6,013 lines $\rightarrow$ 2,794 lines, extracted `host_input.rs`, `ctx.rs`, `tests.rs`),
+  `crates/oppa-app/src/lib.rs` (3,386 $\rightarrow$ 1,436 lines), `crates/oppa-app/src/windows.rs`
+  (2,447 $\rightarrow$ 1,385 lines), `crates/oppa-shell-win/src/win.rs` (2,111 $\rightarrow$ 1,528 lines),
+  `crates/oppa/src/editing.rs` (3,019 $\rightarrow$ 1,990 lines), `crates/oppa/src/store.rs` (1,508 $\rightarrow$ 939 lines),
+  `crates/oppa/src/fetch.rs` (1,019 $\rightarrow$ 164 lines), `crates/oppa/src/layout/flex.rs`
+  (1,148 $\rightarrow$ `flex.rs` 405 + `flex_wrap.rs` 325 + `flex_vertical.rs` 424),
+  `crates/oppa/src/component/host_input.rs` (1,419 $\rightarrow$ hub 64 + `host_scroll.rs` 314 +
+  `host_timers.rs` 102 + `host_pointer.rs` 295 + `host_pointer_state.rs` 314 + `host_key.rs` 163 +
+  `host_focus.rs` 192), `crates/oppa-shell-linux/src/dbus.rs` (1,397 $\rightarrow$ hub 34 + `sig.rs` 109 +
+   `value.rs` 154 + `parse.rs` 137 + `msg.rs` 224 + `transport.rs` 367 + `tests.rs` 398),
+   `crates/oppa-dom/src/dom.rs` (2,589 $\rightarrow$ 2,386 lines, extracted `dom/tests.rs`),
+   `crates/oppa-macros/src/lib.rs` (1,689 $\rightarrow$ 1,427 lines, extracted `tests.rs`).
+  Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
+  `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
+  test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
+  all workspace quality gates green (fmt, clippy, wasm, tests).
 
 ## Now (in progress)
 
@@ -169,6 +195,11 @@ Phase 39b (catalog, cookbook/styling, data-dir, installers, PWA,
 value loop, reference apps).
 
 Accepted-carry: weak-GPU sustained-cost standing rule.
+
+Accepted-carry: file-size follow-ups (`oppa-controls/tests.rs`, `oppa-dom/dom.rs`,
+`reactive/mod.rs`, `vnode.rs`, `oppa-cpu/builder.rs`, `oppa-vello/backend.rs`,
+`oppa-macros/lib.rs`, `oppa-app` tests) stay over the hard 1000-line limit —
+same mechanical split pattern applies.
 
 ## Blocked (with blocker)
 

@@ -335,6 +335,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                         required: true,
                         error_message: Some(SharedString::from("Enter a valid email")),
                         helper_text: Some(SharedString::from("We never share it")),
+                        borderless: false,
                     },
                     TextInput,
                 ),
