@@ -1,4 +1,5 @@
 use super::*;
+use super::window::{raw_client_size, should_skip_resize_for_client_area, window_minimized};
 use oppa::text::{TextService, TextStyle};
 use oppa::{
     Cluster, Color, Div, FontId, FontMetrics, ShapedGlyph, ShapedRun, SharedString, Signal, Style,

@@ -1,4 +1,4 @@
-use super::*;
+use super::window::{DpiAwareness, ensure_dpi_awareness};
 
 /// Round 6.2: the DPI-awareness helper reports a known status
 /// instead of panicking — first call declares (V2 preferred, v1
