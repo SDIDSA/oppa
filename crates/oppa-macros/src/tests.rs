@@ -1,4 +1,7 @@
-use super::*;
+use super::component_lint::check_component_body;
+use super::hot_crate::expand_hot_crate;
+use super::manifest::{expand_manifest, parse_manifest, ManifestEntry};
+use super::props::parse_props_struct;
 
 #[test]
 fn props_plain_struct_expansion_unchanged() {

@@ -182,7 +182,10 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    `crates/oppa/src/vnode.rs` (1,445 $\rightarrow$ 1,278 lines, extracted `vnode/tests.rs`),
    `crates/oppa/src/style.rs` (1,195 $\rightarrow$ 1,026 lines, extracted `style/tests.rs`),
    `crates/oppa-cpu/src/builder.rs` (1,569 $\rightarrow$ 1,272 lines, extracted `builder/tests.rs`),
-   `crates/oppa-shell-linux/src/file_dialog.rs` (1,815 $\rightarrow$ 1,244 lines, extracted `file_dialog/tests.rs`).
+   `crates/oppa-shell-linux/src/file_dialog.rs` (1,815 $\rightarrow$ 1,244 lines, extracted `file_dialog/tests.rs`),
+   `crates/oppa-macros/src/lib.rs` (1,427 $\rightarrow$ 151 lines, extracted `props.rs` 206 +
+   `scan.rs` 196 + `manifest.rs` 398 + `hot_crate.rs` 85 + `component_lint.rs` 399; shared
+   byte-scanners in `scan.rs`, proc-macro entries stay at the root).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
