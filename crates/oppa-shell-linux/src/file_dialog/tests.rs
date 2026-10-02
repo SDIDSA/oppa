@@ -1,4 +1,9 @@
+use super::portal::{
+    chooser_method, percent_decode, portal_options, portal_save_options, settle_response,
+    uri_to_path,
+};
 use super::*;
+use crate::dbus::DVal;
 use oppa::FileFilter;
 use std::cell::RefCell;
 use std::rc::Rc;
