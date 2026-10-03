@@ -391,7 +391,8 @@ by decision 402, `vnode.rs` by decision 404, `oppa-app` tests by decision 405,
   `60 FPS | 16.6ms | N dirty` spans — values never presented, only mounted); the benchmark flags force
   uncapped repaint at runner startup. Proven by removal: `m4_cpu` 11p/9f → 20p/0f with the four vars
   unset (`target/probe-m4cpu-clean.log`); full workspace with a clean env: 21 red targets green, 0 newly
-  red (`target/probe-cleanenv-full.log`, 99 ok + the 2 web targets below). Dirty→clean: g11_touch 8/14,
+  red (`target/probe-cleanenv-full.log`, 99 ok + the 2 web targets below — after decision 409 the same
+  clean-env run is 101/101 green, `target/round-409-cleanfull.log`). Dirty→clean: g11_touch 8/14,
   m3_layout 49/1, m5_input 9/7, m8_virtualization 8/2, oppa-app lib 44/31, task_studio_e2e 0/1, atspi_emit
   1/1, oppa-controls lib 104/33, oppa-cpu lib 12/1, m4_style_fx 6/6, m5_toggle 0/4, vector_path 4/1,
   m7_dom 32/18 (both browser rows incl.), m8_transitions 5/1, m9_reload_gate 5/1, real_dylib 0/1,
