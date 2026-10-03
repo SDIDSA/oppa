@@ -263,13 +263,23 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   on host by construction (`ndk-sys` refuses non-Android); no
   behavioral test possible on host — the on-device oracle run is the
   test (no device attached; shape verified by code review only).
+- Benchmark seam replaces the engine escape hatches (decision 400,
+  Android-target check/clippy green 2026-10-03): `frameloop.rs`
+  measures through five narrow `SceneCore` methods
+  (`ensure_benchmark_gpu_gles/vulkan`, `benchmark_gpu_pixels/noread`,
+  `benchmark_cpu_frame`) — same scene, same pieces, live surface ids
+  re-read every frame; the `parts_mut`/`gpu_backend_mut` accessors are
+  removed with no callers left. No host behavior change; on-device
+  numbers prove on device (no device attached).
 
 ## Now (in progress)
 
-- `frameloop.rs` benchmark damage loop still drives
-  `parts_mut`/`gpu_backend_mut` accessors rather than engine methods
-  (kept, oracle-owned — decision-397/398 follow-up). Workspace suite
-  red counts unchanged by the 397 and 398 rounds (31 in
+- Per-adapter diff-cursor policy still lives in code docs only
+  (`RgbPresenter` replays `diffs_from(0)` every paint for
+  fresh-surface correctness, `DomPresenter` walks a committed cursor
+  for touched-count patch semantics — decision-398 follow-up):
+  record it as a decision row naming where the invariant lives.
+  Workspace suite red counts unchanged by the 397–399 rounds (31 in
   `oppa-app --lib`, 14 in `oppa` g11_touch — all failing identically
   before these rounds' edits, mid-flight core work in the tree).
 

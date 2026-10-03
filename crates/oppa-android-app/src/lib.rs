@@ -459,7 +459,7 @@ fn run_pixel_proof(state: &mut SceneState, dir: &std::path::Path) -> Result<Stri
     // SwiftShader; a refusal still falls through to Vulkan loudly).
     // Exactly one path writes pixels; both attempts are recorded.
     let t = Instant::now();
-    let gl_err = match state.scene.gpu_backend_mut().ensure_gpu_gles() {
+    let gl_err = match state.scene.ensure_benchmark_gpu_gles() {
         Ok(a) => {
             let gpu_meta = finish_gpu_arm(
                 state,
@@ -474,17 +474,13 @@ fn run_pixel_proof(state: &mut SceneState, dir: &std::path::Path) -> Result<Stri
             )?;
             return finish_damage_arm(state, dir, gpu_meta);
         }
-        Err(e) => format!("{e:?}"),
+        Err(e) => e.to_string(),
     };
     let gl_device_ms = t.elapsed().as_secs_f64() * 1000.0;
     let t = Instant::now();
-    let adapter = state
-        .scene
-        .gpu_backend_mut()
-        .ensure_gpu_vulkan()
-        .map_err(|e| {
-            format!("gl device refused [{gl_err} ({gl_device_ms:.1}ms)]; vulkan refused [{e:?}]")
-        })?;
+    let adapter = state.scene.ensure_benchmark_gpu_vulkan().map_err(|e| {
+        format!("gl device refused [{gl_err} ({gl_device_ms:.1}ms)]; vulkan refused [{e}]")
+    })?;
     let gpu_meta = finish_gpu_arm(
         state,
         dir,
@@ -512,16 +508,12 @@ fn finish_damage_arm(
 ) -> Result<String, String> {
     let (w, h) = state.scene.viewport();
     let (vw, vh) = state.viewport_dp();
-    // The damage loop predates the unified engine (Round 20.4,
-    // decision 327) and keeps its own machinery; it measures THIS
-    // scene by borrowing the engine's own host/builder/CPU arm and
-    // CPU surface through `SceneCore::parts_mut`.
-    let (host, builder, cpu, csurf) = state.scene.parts_mut();
+    // The damage loop measures THIS scene through the engine's
+    // benchmark seam (`SceneCore::benchmark_cpu_frame` — decision
+    // 400 closed the `parts_mut` escape hatch): same host, same
+    // builder, same CPU arm, live surface re-read every frame.
     let damage_record = frameloop::run_sustained_damage_loop(
-        host,
-        builder,
-        cpu,
-        csurf,
+        &mut state.scene,
         w as usize * h as usize * 4,
         dir,
         "cpu",
@@ -551,27 +543,17 @@ fn finish_gpu_arm(
     let (w, h) = state.scene.viewport();
     // Frame-loop decomposition FIRST (its first full render is the
     // true first render — pipeline compilation included — so it
-    // runs before the oracle read below). It predates the unified
-    // engine and keeps its own machinery; it measures THIS twin by
-    // borrowing the engine's GPU backend (`SceneCore::gpu_backend_mut`)
-    // against the live GPU surface id.
-    let frameloop_record = {
-        let gsurf = state.scene.gpu_surface_id();
-        frameloop::run_frame_loop(
-            state.scene.gpu_backend_mut(),
-            gsurf,
-            dir,
-            w as usize * h as usize * 4,
-            tag,
-        )?
-    };
+    // runs before the oracle read below). It measures THIS twin
+    // through the engine's benchmark seam (decision 400) against the
+    // live GPU surface id (re-read every frame — a refit re-homing
+    // can never read a destroyed scene).
+    let frameloop_record =
+        frameloop::run_frame_loop(&mut state.scene, dir, w as usize * h as usize * 4, tag)?;
     let t = Instant::now();
-    let gsurf = state.scene.gpu_surface_id();
     let img = state
         .scene
-        .gpu_backend_mut()
-        .render_pixels(gsurf)
-        .map_err(|e| format!("{tag} readback: {e:?}"))?;
+        .benchmark_gpu_pixels()
+        .map_err(|e| format!("{tag} readback: {e}"))?;
     let gl_read_ms = t.elapsed().as_secs_f64() * 1000.0;
     if img.width != w || img.height != h {
         return Err(format!("{tag} size mismatch {}x{}", img.width, img.height));

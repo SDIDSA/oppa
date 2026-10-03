@@ -459,39 +459,83 @@ impl SceneCore {
         self.session.host.note_overlay_frame();
     }
 
-    /// Reads the retained benchmark machinery out of the engine
-    /// (Round 20.4, decision 327 — the `frameloop` damage loop
-    /// predates [`SceneCore`] and still drives
-    /// `ComponentHost` / `FramePlanBuilder` / `CpuBackend`
-    /// directly): the caller gets the SAME pieces this engine uses —
-    /// its own builder, CPU surface, diff cursor — so the benchmark
-    /// measures this exact scene, not a copy. The surface id is the
-    /// current CPU pixmap surface; refit re-homes it, so callers must
-    /// re-read it after any resize/DPR/theme change. Nothing else
-    /// should reach into the engine this way: everything above
-    /// delegates through the engine methods.
-    pub fn parts_mut(
-        &mut self,
-    ) -> (
-        &mut ComponentHost,
-        &mut FramePlanBuilder,
-        &mut CpuBackend,
-        SurfaceId,
-    ) {
-        (
-            &mut self.session.host,
-            &mut self.session.builder,
-            &mut self.rgb.cpu,
-            self.rgb.surface,
-        )
+    /// Benchmark-harness seam (oracle-owned, not product — decision
+    /// 400: the `frameloop` damage/frame loops measure through these
+    /// narrow per-op methods instead of borrowing the engine's
+    /// pieces, so no caller reaches into the engine through
+    /// accessors anymore): brings up a headless GLES context for the
+    /// offscreen proof rows (no swapchain — only `present_gpu` needs
+    /// one). Loud `Err` when no GLES device serves — never a silent
+    /// CPU substitution (the runner logs and falls through to Vulkan).
+    pub fn ensure_benchmark_gpu_gles(&mut self) -> Result<String, String> {
+        self.rgb
+            .gpu_backend
+            .ensure_gpu_gles()
+            .map_err(|e| format!("desktop loop: benchmark gpu gles: {e:?}"))
     }
 
-    /// Mutable GPU twin for offscreen render/readback benchmarking
-    /// (`render_pixels` / `render_noread` — no swapchain context).
-    /// The engine otherwise paints it; keep runs out if at all
-    /// possible.
-    pub fn gpu_backend_mut(&mut self) -> &mut GpuBackend {
-        &mut self.rgb.gpu_backend
+    /// Benchmark-harness seam (same rule): the Vulkan offscreen row.
+    pub fn ensure_benchmark_gpu_vulkan(&mut self) -> Result<String, String> {
+        self.rgb
+            .gpu_backend
+            .ensure_gpu_vulkan()
+            .map_err(|e| format!("desktop loop: benchmark gpu vulkan: {e:?}"))
+    }
+
+    /// Benchmark-harness seam (same rule): one offscreen GPU frame
+    /// with readback off the engine's LIVE GPU surface (a theme-toggle
+    /// refit re-homes it — the id is re-read every call, so callers
+    /// keep no surface id across calls to go stale).
+    pub fn benchmark_gpu_pixels(&mut self) -> Result<oppa_gpu::RgbaImage, String> {
+        let surf = self.rgb.gpu_surface;
+        self.rgb
+            .gpu_backend
+            .render_pixels(surf)
+            .map_err(|e| format!("desktop loop: benchmark gpu pixels: {e:?}"))
+    }
+
+    /// Benchmark-harness seam (same rule): one offscreen GPU frame
+    /// without readback (same GPU work + queue stall, no copy/map —
+    /// the `frameloop` bare leg). Returns its wall ms. Live surface
+    /// rule as above.
+    pub fn benchmark_gpu_noread(&mut self) -> Result<f64, String> {
+        let surf = self.rgb.gpu_surface;
+        self.rgb
+            .gpu_backend
+            .render_noread(surf)
+            .map_err(|e| format!("desktop loop: benchmark gpu noread: {e:?}"))
+    }
+
+    /// Benchmark-harness seam (same rule): one incremental CPU damage
+    /// frame through THIS engine's own pieces — `flip` against the
+    /// host, settle, one full plan build, CPU-arm paint — returning
+    /// the pixmap readback byte length (the byte-drift guard input).
+    /// No diff commit rides along (the plan paints directly — the same
+    /// settle → build → paint → readback the damage loop always
+    /// measured), no theme/image publish (steady-state frames flip one
+    /// control, never the chrome). The live CPU surface is re-read
+    /// every call for the same re-homing rule as the GPU legs above.
+    pub fn benchmark_cpu_frame(
+        &mut self,
+        flip: impl FnOnce(&mut ComponentHost),
+    ) -> Result<usize, String> {
+        flip(&mut self.session.host);
+        self.session.host.run_until_idle();
+        let plan = self
+            .session
+            .host
+            .with_retained_mut(|rec, styles| self.session.builder.build_full(rec, styles));
+        let surf = self.rgb.surface;
+        self.rgb
+            .cpu
+            .paint(surf, &plan)
+            .map_err(|e| format!("desktop loop: benchmark cpu paint: {e:?}"))?;
+        let px = self
+            .rgb
+            .cpu
+            .pixmap(surf)
+            .ok_or_else(|| "desktop loop: benchmark cpu pixmap missing".to_string())?;
+        Ok(px.pixels().len() * 4)
     }
 
     /// Mounts the root component and settles the first frame.

@@ -48,10 +48,6 @@ use oppa::{
     SurfaceDesc, SurfaceId, SystemClock, SystemThemeSource, ThemeTokens, VNode, WindowControl,
     WindowIcon,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use oppa_cpu::CpuBackend;
-#[cfg(not(target_arch = "wasm32"))]
-use oppa_gpu::GpuBackend;
 
 #[cfg(target_os = "linux")]
 mod linux;
