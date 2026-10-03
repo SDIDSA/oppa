@@ -131,5 +131,9 @@ pub fn Tabs<T: Clone + PartialEq + 'static>(ctx: &Ctx, props: &TabsProps<T>) -> 
             .map(|tab| (tab.content)(ctx))
             .unwrap_or_else(|| Div("tab-empty").build()),
     );
-    Div("tabs-container").child(Column::new().gap(16).children([bar, panel]))
+    Div("tabs-container").child(
+        Column::new()
+            .style(Style::new().align_items(AlignItems::Center).gap(16))
+            .children([bar, panel]),
+    )
 }

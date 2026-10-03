@@ -102,6 +102,27 @@ function applyPatch(root, json) {
   if (patch.theme) {
     document.body.style.background = patch.theme.bg;
     document.body.style.color = patch.theme.ink;
+    // Decision 392 follow-up: the scene root carries the page
+    // chrome too (its static stylesheet keeps a light background
+    // that would otherwise blanket a dark scene), and the root
+    // color-scheme follows the app theme so native controls,
+    // field text, and scrollbars stop tracking the OS default.
+    root.style.background = patch.theme.bg;
+    document.documentElement.style.colorScheme = patch.theme.dark ? 'dark' : 'light';
+  }
+  // Decision 392: stylesheet delta — rules the sheet added since
+  // the last patch append to a persistent style element, so
+  // post-boot classes (theme flips, hover states, validation
+  // marks) arrive with their rules. Change-only on the wire;
+  // duplicate-free by the shipped revision.
+  if (patch.sheet) {
+    let st = root.querySelector("style[data-oppa-sheet]");
+    if (!st) {
+      st = document.createElement("style");
+      st.setAttribute("data-oppa-sheet", "1");
+      root.prepend(st);
+    }
+    st.appendChild(document.createTextNode(patch.sheet));
   }
   if (patch.reload) {
     const focal = focalState();

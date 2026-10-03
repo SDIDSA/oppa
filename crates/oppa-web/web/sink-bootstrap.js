@@ -65,6 +65,34 @@ function applyPatch(root, json) {
     return;
   }
   const q = (pid) => root.querySelector(`[data-pid="${pid}"]`);
+  // Theme stanza (same contract as bootstrap.js — the sink applier
+  // dropped it, so in-app theme flips never reached the page;
+  // decision 392 restores it): body background + default ink.
+  // Follow-up: the scene root carries the page chrome too (its
+  // static stylesheet keeps a light background that would
+  // otherwise blanket a dark scene), and the root color-scheme
+  // follows the app theme so native controls, field text, and
+  // scrollbars stop tracking the OS default.
+  if (patch.theme) {
+    document.body.style.background = patch.theme.bg;
+    document.body.style.color = patch.theme.ink;
+    root.style.background = patch.theme.bg;
+    document.documentElement.style.colorScheme = patch.theme.dark ? 'dark' : 'light';
+  }
+  // Decision 392: stylesheet delta — rules the sheet added since
+  // the last patch append to a persistent style element, so
+  // post-boot classes (theme flips, hover states, validation
+  // marks) arrive with their rules. Change-only on the wire;
+  // duplicate-free by the shipped revision.
+  if (patch.sheet) {
+    let st = root.querySelector("style[data-oppa-sheet]");
+    if (!st) {
+      st = document.createElement("style");
+      st.setAttribute("data-oppa-sheet", "1");
+      root.prepend(st);
+    }
+    st.appendChild(document.createTextNode(patch.sheet));
+  }
   if (patch.reload) {
     const focal = focalState();
     root.innerHTML = patch.reload;

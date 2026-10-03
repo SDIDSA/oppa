@@ -32,6 +32,20 @@ public final class OppaUi {
                             window.addFlags(0x200); // FLAG_LAYOUT_NO_LIMITS
                             android.view.WindowManager.LayoutParams params =
                                     window.getAttributes();
+                            // Draw into the display cutout strip
+                            // (decision 396): the default cutout mode
+                            // letterboxes the window below the status
+                            // strip to dodge the camera, so the
+                            // containing frame stays 2290 tall even
+                            // with the bars hidden and an explicit
+                            // 1080x2400 ask. A fullscreen immersive
+                            // scene owns the strip (short edges only —
+                            // the camera dot stays clear of the
+                            // top-left badge). Field exists since API
+                            // 28, minSdk is 29 — no version guard.
+                            params.layoutInDisplayCutoutMode =
+                                    android.view.WindowManager.LayoutParams
+                                            .LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
                             // Force full-display size with EXPLICIT pixels:
                             // hiding the bars does not re-lay-out an
                             // already-created native window (observed

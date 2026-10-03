@@ -28,9 +28,9 @@ contract test suite — not prose — defines sameness.
 
 - Backends receive `TreeDiff` + per-frame `FramePlan` (dirty subtrees only) with `DrawOp::{Rect,RImg,RRect,Text,Path,PushClip,PushLayer,Pop}` plus damage. `Canvas` lowers to those ops (never a new one).
 - `Text(ShapedRun)` arrives pre-shaped with `baseline`, `em_size`, per-run `fonts`. `Color` stays alpha-less.
-- Shadows blur natively per backend (Vello gaussian, CPU box-blur, CSS `box-shadow`, Custom GPU separable erf approximation); blur 0 stays the offset solid, pixel-exact everywhere.
-- Static images serve one cache deposit on all backends (CPU/Vello/Custom GPU pixels, DOM data-URI PNG); bare URL keys unchanged on DOM; host owns shared ImageCache via ComponentHost/Ctx (decision 385).
-- Oracle exactness: CPU incremental == full render, pixel 0; CPU-vs-Vello sharp 0, curves tol-16 ≤ 60; CPU-vs-CustomGPU sharp 0, blurred shadows tol-16 < 5% pixels, curves tol-16 ≤ 60; blurred shadows tol-16 < 10% pixels (hardware-calibrated); static GPU frames 0; scroll produces 0 structural ops with ≤ 1 frame trail.
+- Shadows blur natively per backend (Custom GPU separable erf approximation, CPU box-blur, CSS `box-shadow`); blur 0 stays the offset solid, pixel-exact everywhere.
+- Static images serve one cache deposit on all backends (CPU/Custom GPU pixels, DOM data-URI PNG); bare URL keys unchanged on DOM; host owns shared ImageCache via ComponentHost/Ctx (decision 385).
+- Oracle exactness: CPU incremental == full render, pixel 0; CPU-vs-CustomGPU sharp 0, blurred shadows tol-16 < 5% pixels, curves tol-16 ≤ 60; blurred shadows tol-16 < 10% pixels (hardware-calibrated); static GPU frames 0; scroll produces 0 structural ops with ≤ 1 frame trail.
 
 ## Input
 
@@ -59,6 +59,24 @@ contract test suite — not prose — defines sameness.
 - Style-delta animation over `bg`+`opacity`: single A→B tweens (`.transition(duration + easing)`; CSS subset on DOM, rest jumps) and multi-stop keyframe tracks (`.keyframes(stops + mode)`; per-segment easing; once/loop/ping-pong; keyframes win over tweens; the committed target closes the final leg).
 - Keyframe tracks run on every backend (GPU resolvers; DOM stepped inline re-declarations per frame) and settle exact at the target (once); loop/ping-pong run until a new delta restarts or a stamp snaps.
 - Binding-edge (`ctx.binding`) re-runs stamp the commit `suppress_transitions` for exactly one commit (per-commit, not per-cause) — live tracks cancel and snap, never restart.
+
+## Diagnostics & Debug Overlay
+
+- Optional `DebugOverlayConfig` operates at the `ComponentHost` root level, rendering uniform performance diagnostics across every backend and presenter (Custom GPU, CPU, DOM).
+- Metrics tracked: FPS (rolling exponential moving average), frame duration (Δt ms), commit dirty node count, and active presenter badge (`[Gpu/Vulkan]`, `[Gpu/DX12]`, `[Gpu/GL]`, `[CPU]`, `[DOM]`).
+- Overlay is disabled by default (zero overhead, no DOM/tree modification); enabled via `WindowOptions::with_debug_overlay()`, `WindowOptions::with_fps_counter()`, or environment flag `OPPA_DEBUG_FPS=1`. On Android the env flag is unsettable (NativeActivity inherits the zygote env), so `oppa-android-app` arms `DebugOverlayConfig::all()` programmatically before mount (decision 393).
+- Overlay is layout-transparent: the app subtree lays out identically with the overlay on or off (block wrapper preserves the viewport width constraint; the badge floats in an intrinsic layer hugging its text).
+- The presenter badge derives from the loop's active renderer plus the recorded wgpu backend after bring-up (`Gpu*→[Gpu/API]`, `Cpu→[CPU]`) — never a hardcoded per-outcome string.
+
+## Runner (desktop)
+
+- The app loop's platform-free engine is `oppa-app::SceneCore` (decision 397): one implementation of the pixel pipeline — host + plan builder, both paint arms + surfaces, diff replay, selection/caret overlay publish, theme/page-bg contract with surface refit, resize/DPR rebase, GPU bring-up state + present-mode negotiation, image-deposit sync — drives the desktop runners AND the Android runner. `DesktopLoop` composes it behind the same public API.
+- `DesktopLoop` is event-driven by default: settled loops block until input (near-0% idle CPU); wake horizons cover background work, caret blink, and component timers.
+- Uncapped continuous repaint (benchmark mode) is opt-in and default-off: `WindowOptions::with_continuous_repaint(bool)` / `DesktopLoop::set_continuous_repaint(bool)`; `OPPA_CONTINUOUS_REPAINT=1` or `OPPA_BENCHMARK=1` forces it on at runner startup.
+- While armed, the pump wait horizon resolves to `Some(0)` (immediate poll, never sleeps); after each presented frame the scene is marked dirty and the next frame requested (`request_frame` demand), so the settle path repaints + presents every iteration on every backend (Custom GPU, CPU) with the overlay on or off.
+- The overlay FPS clock ticks on presents, never on reconciles (an interaction after a long idle gap must not divide by the gap and print 0 FPS); reconciles record commit dirt only. The badge text refreshes through a throttled (4Hz) root re-run — rapid presents only advance the clock.
+- Android/Web loops stay display-paced (fixed poll / browser rAF) — continuous repaint is a desktop-runner setting only, with one exception (decision 393): `oppa-android-app`'s bounded present phase runs an uncapped benchmark loop (non-blocking poll, settle → repaint → present every frame, negotiated Immediate→Mailbox→Fifo mode, badge clock ticked per present); its unbounded interactive phase stays event-paced Fifo.
+- Renderer selection is `OPPA_RENDERER=cpu|gpu|gpu-auto|gpu-vulkan|gpu-dx12|gpu-gl` (case-insensitive, hyphen/underscore; unrecognized values — including retired `vello*`/`custom*` spellings — log loudly and resolve to auto GPU-first with loud CPU fallback). The `-vulkan` / `-dx12` / `-gl` pins select exactly one `wgpu` row (Windows DX12 pin skips the Vulkan probe; explicit off-platform pins attempt once and fall back loudly, never substitute); the automatic orders stay Vulkan-first (Windows appends GL after DX12, Linux appends GL after Vulkan, for GL-only boxes) and explicit pins select exactly one row. Every variant paints the GPU twin and badges `Gpu/API` naming the recorded winner (`[Gpu]` only with no recording, e.g. headless).
 
 ## Reload freeze gate
 

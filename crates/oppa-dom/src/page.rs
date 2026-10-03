@@ -2,12 +2,26 @@
 //!
 //! One deterministic HTML document: the backend's element tree under a
 //! `<body>` with the [`StyleSheet`](crate::css::StyleSheet) inlined,
-//! plus the two framework-level rules the backend never puts on
+//! plus the framework-level rules the backend never puts on
 //! elements: `[data-slot]{overflow-anchor:none}` (§9.3 — browser
-//! anchoring fights our own spacer repositioning) and
+//! anchoring fights our own spacer repositioning),
 //! `.spacer{width:100%}` (the spacer fills the container width; its
-//! height rides inline per commit). `data-pid` hooks on every element
-//! are the parity script's measurement points.
+//! height rides inline per commit), and
+//! `input,textarea{outline:none}` (decision 392 — the browser's
+//! default focus outline would double the framework's own
+//! `focus_ring`, which renders the focus visuals on every backend;
+//! suppression is safe exactly because the ring replaces it, gated
+//! on the same keyboard-modality `focus_visible` as `:focus-visible`).
+//! `input,textarea{border:0}` (decision 392 follow-up — the 2px
+//! UA inset border is not the framework's edge (its borders ride
+//! the inset box-shadow ring, never the `border` property), and
+//! being layout-affecting it desyncs committed geometry; kill it
+//! once, globally). `:root{color-scheme:light}` (the Light boot
+//! baseline — the theme stanza flips it per mode so native
+//! controls, field text, and scrollbars follow the app theme
+//! instead of the OS default).
+//! `data-pid` hooks on every element are the parity script's
+//! measurement points.
 
 use crate::css::StyleSheet;
 use crate::dom::{dom_hex, DomBackend};
@@ -47,6 +61,30 @@ fn backend_roots(backend: &DomBackend) -> Vec<oppa::NodeId> {
 
 fn base_css() -> &'static str {
     "html,body{margin:0;padding:0;}\n\
+     :root{color-scheme:light;}\n\
      [data-slot]{overflow-anchor:none;}\n\
-     .spacer{width:100%;}\n"
+     .spacer{width:100%;}\n\
+     input,textarea{outline:none;border:0;}\n"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_css_suppresses_native_focus_outlines() {
+        // Decision 392: the browser's default `:focus` outline on
+        // verdict-(b) fields would double the framework's own
+        // `focus_ring` — suppress it once, globally, in base CSS.
+        assert!(
+            base_css().contains("input,textarea{outline:none;border:0;}"),
+            "base CSS owns field outlines+borders: {}",
+            base_css()
+        );
+        assert!(
+            base_css().contains(":root{color-scheme:light;}"),
+            "base CSS declares the Light boot scheme: {}",
+            base_css()
+        );
+    }
 }

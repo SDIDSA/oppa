@@ -5,9 +5,15 @@ arm64, text slice, touch + IME closed (v1 remainder, Gaps 1–3).
 Sources: `12-archive/DESIGN.md` §§5.2, 6.1; locked #16–#17;
 `12-archive/BUILD-ORDER.md` (M10); [`STATE.md`](../../STATE.md).
 
-- **Framework behavior:** pipeline ownership via wgpu/GLES; Vello
-  on GLES 3.1-class drivers with tiny-skia CPU fallback
-  (Caps-negotiated).
+- **Framework behavior:** pipeline ownership via wgpu/GLES; GPU
+  rasterizer on GLES 3.1-class drivers with tiny-skia CPU fallback
+  (Caps-negotiated). Decisions 388–389 removed Vello and the
+  `custom` qualifier: prior on-device numbers below were
+  Vello-measured and stand as history; re-proof needs a phone (see
+  [`STATE.md`](../../STATE.md) Blocked). The proof app drives the
+  unified loop engine `oppa-app::SceneCore` (decision 397) — no
+  private re-implementation of the presentation pipeline remains
+  in `oppa-android-app`.
 - **Packaging:** blessed paths are cargo-apk (dev/test) + Gradle
   assembly (release), manual aapt2 flow as fallback — see
   [packaging](../packaging.md) (G4, decision 215).
@@ -41,9 +47,10 @@ Sources: `12-archive/DESIGN.md` §§5.2, 6.1; locked #16–#17;
   aapt2/zipalign/apksigner, no Gradle):** NativeActivity cdylib
   renders the m10 mobile scene offscreen and writes raw pixels +
   timings; SwiftShader rows refuse with precise capability
-  reasons (GLES3.0-no-compute;
+  reasons (GLES3.0-no-compute — Vello-measured;
   Vulkan-16KB-uniform-binding vs Vello's 64KB — Vello
-  unservable there, not a perf question). Under `-gpu host`
+  unservable there, not a perf question; the GPU backend has no
+  compute shaders so both rows need re-proof). Under `-gpu host`
   (GLES 3.1, NVIDIA): Vello serves through the Android stack —
   on-device GL pixels **byte-equal** to on-device CPU pixels
   (exact 0 at 1080×2400), CPU arm byte-equal to host CPU pixels
@@ -54,7 +61,7 @@ Sources: `12-archive/DESIGN.md` §§5.2, 6.1; locked #16–#17;
   jniLibs): `assembleDebug` green, installed, full evidence set
   reproduced on the emulator.
 - **Android accessibility service: OPEN (justified).** Populating
-  a node tree for custom-rendered content needs a Java-side
+  a node tree for GPU-rendered content needs a Java-side
   `AccessibilityNodeProvider` + JNI bridge plus a reader
   service; without TalkBack on the image the only possible
   reader is our own logger — self-serving, proving less than
@@ -75,7 +82,7 @@ Sources: `12-archive/DESIGN.md` §§5.2, 6.1; locked #16–#17;
   targets `x86_64-linux-android` / `aarch64-linux-android`
   (linker: `x86_64-linux-android35-clang.cmd`, minSdk 35 ≤
   emulator API 36); Gradle APK with both ABIs.
-- **Swapchain present CLOSED (Gap 1):** `VelloBackend` gained the
+- **Swapchain present CLOSED (Gap 1):** the GPU backend gained the
   surface path (`ensure_gpu_for_surface` — always binds the
   surface's own instance, never reuses cross-instance adapters —
   plus `configure_surface` + `present_surface`: scene →
@@ -104,13 +111,21 @@ Sources: `12-archive/DESIGN.md` §§5.2, 6.1; locked #16–#17;
   was required (the status bar eats y<63 taps — finding). Bounds:
   multi-touch drain is shell-tested only; the full
   `EditingSession` stays Windows-bound (M1 shapes run on-device).
+- **Benchmark loop + FPS badge (decision 393):** `oppa-android-app`
+  arms `DebugOverlayConfig::all()` before mount (env unsettable
+  under NativeActivity) and publishes `Gpu/GL` / `Gpu/Vulkan` at
+  swapchain bring-up; the bounded present phase runs uncapped
+  (non-blocking poll, settle → repaint → present every frame,
+  negotiated Immediate→Mailbox→Fifo, badge clock per present) so
+  the overlay reads live present FPS — the unbounded interactive
+  phase stays event-paced Fifo.
 - **Phone round CLOSED (Snapdragon 870 / Adreno 650 / API 31):**
   `device-out-phone/`. arm64 executes (API-35 `.so` on API 31);
   Vulkan oracle exact-0, SHAs intact across three ISAs;
   `surface=1080x2400 format=Rgba8Unorm` via Adreno Vulkan with
   both flips visible on-screen; text 8/9 (emoji drift isolated
   to phone font bytes); Adreno GLES refuses Vello
-  (`max_storage_buffers_per_shader_stage` 8 > 4); feeds 3/3x2,
+  (`max_storage_buffers_per_shader_stage` 8 > 4 — Vello-specific, GPU re-proof pending); feeds 3/3x2,
   IMM show/hide true, 228 faces / 407 JNI fonts. Window needed
   a Java UI-thread hop (`OppaUi.hideBars` + explicit
    display-size params) — direct View calls are SIGABRT-fatal

@@ -43,7 +43,7 @@ impl DesktopLoop {
                 && !modifiers.meta
                 && self.step_session_nav(*code, modifiers.shift, modifiers.ctrl)?
             {
-                self.host.run_until_idle();
+                self.scene.host().run_until_idle();
                 return self.repaint();
             }
             // Round 22.2 (decision 332): vertical keys drive the
@@ -55,12 +55,12 @@ impl DesktopLoop {
                 && !modifiers.ctrl
                 && self.step_session_vline(*code, modifiers.shift)?
             {
-                self.host.run_until_idle();
+                self.scene.host().run_until_idle();
                 return self.repaint();
             }
         }
-        self.host.inject_input(ev);
-        self.host.run_until_idle();
+        self.scene.host().inject_input(ev);
+        self.scene.host().run_until_idle();
         self.repaint()
     }
 
@@ -77,7 +77,7 @@ impl DesktopLoop {
     /// the app over it would punish the user for another app's lock
     /// — stated, not silent.
     pub fn run_edit_shortcut(&mut self, code: u32) -> Result<usize, String> {
-        let Some(session) = self.host.focused_field_session() else {
+        let Some(session) = self.scene.host().focused_field_session() else {
             return Ok(0);
         };
         let changed = match code {
@@ -120,7 +120,7 @@ impl DesktopLoop {
         if !changed {
             return Ok(0);
         }
-        self.host.run_until_idle();
+        self.scene.host().run_until_idle();
         self.repaint()
     }
 
@@ -153,7 +153,7 @@ impl DesktopLoop {
             (END, true, _) => EditSession::extend_to_end,
             _ => return Ok(false),
         };
-        let Some(session) = self.host.focused_field_session() else {
+        let Some(session) = self.scene.host().focused_field_session() else {
             return Ok(false);
         };
         op(&session);
@@ -177,7 +177,7 @@ impl DesktopLoop {
             (DOWN, true) => EditSession::extend_line_down,
             _ => return Ok(false),
         };
-        let Some(session) = self.host.focused_field_session() else {
+        let Some(session) = self.scene.host().focused_field_session() else {
             return Ok(false);
         };
         if !session.is_multiline() {

@@ -472,6 +472,13 @@ struct HostInner {
     /// Host-level image cache (Phase 36 PR4 / Phase 38c, decision 359):
     /// shared image registry holding loaded URLs and pre-decoded static pixels.
     images: RefCell<ImageCache>,
+    /// Host-level debug performance overlay state.
+    debug_overlay: RefCell<crate::debug_overlay::OverlayMeter>,
+    /// Mounted root component instances (mount order): the overlay
+    /// badge refresh dirties these effects (throttled) so the badge
+    /// text re-renders without touching child effects. Stale
+    /// (unmounted) ids are pruned on each refresh.
+    root_instances: RefCell<Vec<u64>>,
 }
 
 /// One host-tracked component timer (Round 21.1, decision 328):

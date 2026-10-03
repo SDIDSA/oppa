@@ -7,44 +7,18 @@ use super::*;
 impl DesktopLoop {
     /// Current output scale (device px per CSS px).
     pub fn dpr(&self) -> f32 {
-        self.dpr
+        self.scene.dpr()
     }
 
     /// Re-bases the loop on a new device pixel ratio keeping the CSS
-    /// viewport stable (Round 2.4, OQ-G10-2 — the Desktops call this
-    /// on DPI/scale changes): layout config + builder follow, the
-    /// host viewport rescales to CSS, the surface refits to device
-    /// px, and layout re-runs (measure keys carry the DPR, so text
-    /// re-shapes; the `set_viewport` dirt from decision 248 reflows
-    /// boxes — nothing stale survives at the new scale). Same-value
-    /// calls are a no-op. Non-finite or non-positive scales panic
-    /// loudly (a scale is never zero/NaN — shells map raw OS values
-    /// through `dpr_from_dpi`/`dpr_from_scale_factor` first).
+    /// viewport stable (Round 2.4, OQ-G10-2 — the runners call this
+    /// on DPI/scale changes). The full rebase rule (layout config +
+    /// builder + host viewport + surface refit + layout re-run, the
+    /// loud zero/NaN refusal, the same-value no-op) lives on
+    /// [`SceneCore::set_device_pixel_ratio`] — one path for desktop
+    /// and Android density rebases alike.
     pub fn set_device_pixel_ratio(&mut self, dpr: f32) -> Result<(), String> {
-        if !dpr.is_finite() || dpr <= 0.0 {
-            panic!(
-                "desktop loop: device pixel ratio {dpr} refused — scales are finite and positive"
-            );
-        }
-        if dpr == self.dpr {
-            return Ok(());
-        }
-        // CSS size is viewport_px / old_dpr (exact at 1.0, the only
-        // previously reachable state — no drift by construction).
-        let css_w = self.viewport.0 as f32 / self.dpr;
-        let css_h = self.viewport.1 as f32 / self.dpr;
-        self.dpr = dpr;
-        let mut config = self.host.layout_config();
-        config.device_pixel_ratio = dpr;
-        self.host.set_layout_config(config);
-        self.builder.set_dpr(dpr);
-        self.host.set_viewport(css_w, css_h);
-        let w = (css_w * dpr).round().max(1.0) as u32;
-        let h = (css_h * dpr).round().max(1.0) as u32;
-        self.viewport = (w, h);
-        self.refit_surface()?;
-        self.host.run_until_idle();
-        Ok(())
+        self.scene.set_device_pixel_ratio(dpr)
     }
 
     /// Mounts the root component and settles the first frame.
@@ -54,8 +28,8 @@ impl DesktopLoop {
         props: P,
         render: fn(&Ctx, &P) -> VNode,
     ) -> MountHandle<P> {
-        let handle = self.host.mount(name, props, render);
-        self.host.run_until_idle();
+        let handle = self.scene.host().mount(name, props, render);
+        self.scene.host().run_until_idle();
         handle
     }
 
@@ -145,11 +119,11 @@ impl DesktopLoop {
         let Some(mode) = mode else {
             return Ok(false);
         };
-        if self.host.theme().mode() == mode {
+        if self.scene.host().theme().mode() == mode {
             return Ok(false);
         }
-        self.host.set_theme(mode);
-        self.host.run_until_idle();
+        self.scene.host().set_theme(mode);
+        self.scene.host().run_until_idle();
         self.repaint()?;
         Ok(true)
     }
@@ -243,5 +217,20 @@ impl DesktopLoop {
             hook(self);
             self.poll_hook = Some(hook);
         }
+    }
+
+    /// Whether the loop repaints continuously (benchmark mode):
+    /// uncapped polling with a repaint + present every iteration
+    /// instead of sleeping until input. Default `false`.
+    pub fn continuous_repaint(&self) -> bool {
+        self.continuous_repaint
+    }
+
+    /// Arms or disarms continuous repaint at runtime (the
+    /// `WindowOptions::with_continuous_repaint` value lands here at
+    /// runner startup; the `run_desktop_with` configure closure may
+    /// override it before the pump starts).
+    pub fn set_continuous_repaint(&mut self, enabled: bool) {
+        self.continuous_repaint = enabled;
     }
 }

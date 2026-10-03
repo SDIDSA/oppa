@@ -19,6 +19,7 @@ pub mod arena;
 pub mod clipboard;
 pub mod clock;
 pub mod component;
+pub mod debug_overlay;
 pub mod diag;
 pub mod dialog;
 pub mod editing;
@@ -55,6 +56,7 @@ pub use component::{
     MountHandle, OpaqueProps, Props, RenderFn, ScrollOffset, ScrollOffset2D, ScrollXY, Store,
     Theme, TimerId,
 };
+pub use debug_overlay::DebugOverlayConfig;
 pub use diag::{LogEntry, LogLevel, RingLog};
 pub use dialog::{
     FileDialog, FileDialogOptions, FileFilter, FilePickerOptions, FolderDialog,

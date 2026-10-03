@@ -81,7 +81,7 @@ pub enum Ease {
 /// Box shadow, data only (Round 1.3, decision 254: `blur` is a
 /// quantized stepped soft shadow — the FramePlan builder expands a
 /// blurred shadow into offset solid rects with a linear alpha falloff,
-/// so CPU/Vello/DOM agree by construction; a true Gaussian stays a
+/// so CPU/GPU/DOM agree by construction; a true Gaussian stays a
 /// follow-up). Painted under the node's box, never affects layout
 /// (excluded from `style_layout_bits` like every paint-only field).
 /// `Color::TRANSPARENT` paints nothing.

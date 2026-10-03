@@ -1,4 +1,4 @@
-//! Custom GPU backend: universal wgpu render pipelines without compute shaders.
+//! GPU backend: universal wgpu render pipelines without compute shaders.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -50,7 +50,7 @@ pub struct GpuCtx {
     pub adapter_info: String,
 }
 
-pub struct CustomGpuBackend {
+pub struct GpuBackend {
     next_surface: u64,
     surfaces: HashMap<SurfaceId, Surface>,
     live_nodes: HashSet<NodeId>,
@@ -63,7 +63,7 @@ pub struct CustomGpuBackend {
     collector: BatchCollector,
 }
 
-impl CustomGpuBackend {
+impl GpuBackend {
     pub fn new() -> Self {
         Self {
             next_surface: 1,
@@ -197,6 +197,49 @@ impl CustomGpuBackend {
         }
         let (device, queue, adapter, info) =
             pollster::block_on(init_headless_gpu()).map_err(BackendError::UnsupportedOp)?;
+        self.install_headless(device, queue, adapter, info)
+    }
+
+    /// Ensures a GLES device (decision 388: the Android on-device
+    /// proof keeps its GL-first row on the GPU rasterizer —
+    /// SwiftShader's GLES translator has no compute, so on the
+    /// emulator that refusal is expected and the Vulkan row is
+    /// attempted next). Same loud contract as [`ensure_gpu`](Self::ensure_gpu).
+    pub fn ensure_gpu_gles(&mut self) -> Result<String, BackendError> {
+        if let Some(gpu) = &self.gpu {
+            return Ok(gpu.adapter_info.clone());
+        }
+        let (device, queue, adapter, info) = pollster::block_on(init_headless_gpu_on(
+            wgpu::Backends::GL,
+            wgpu::PowerPreference::LowPower,
+        ))
+        .map_err(BackendError::UnsupportedOp)?;
+        self.install_headless(device, queue, adapter, info)
+    }
+
+    /// Ensures a Vulkan device (decision 388: the second Android
+    /// on-device row, same loud contract as [`ensure_gpu`](Self::ensure_gpu)).
+    pub fn ensure_gpu_vulkan(&mut self) -> Result<String, BackendError> {
+        if let Some(gpu) = &self.gpu {
+            return Ok(gpu.adapter_info.clone());
+        }
+        let (device, queue, adapter, info) = pollster::block_on(init_headless_gpu_on(
+            wgpu::Backends::VULKAN,
+            wgpu::PowerPreference::HighPerformance,
+        ))
+        .map_err(BackendError::UnsupportedOp)?;
+        self.install_headless(device, queue, adapter, info)
+    }
+
+    /// Installs a headless device context (pipelines + atlas +
+    /// re-uploaded static images), shared by every `ensure_*` arm.
+    fn install_headless(
+        &mut self,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        adapter: wgpu::Adapter,
+        info: String,
+    ) -> Result<String, BackendError> {
         let pipelines_rgba = Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         let atlas = GlyphAtlas::new(&device, &pipelines_rgba.texture_bind_group_layout);
 
@@ -382,6 +425,81 @@ impl CustomGpuBackend {
         readback_texture(&gpu.device, &gpu.queue, &texture, w, h)
     }
 
+    /// Renders one frame without readback and returns its wall ms
+    /// (decision 388: the frame-loop rig's bare leg, ported from the
+    /// retired Vello `render_noread` — same GPU work + queue stall,
+    /// no copy/map; the first call includes pipeline compilation,
+    /// steady calls do not).
+    pub fn render_noread(&mut self, surface: SurfaceId) -> Result<f64, BackendError> {
+        let t = web_time::Instant::now();
+        let _guard = GPU_LOCK
+            .lock()
+            .map_err(|e| BackendError::UnsupportedOp(format!("GPU lock poisoned: {e}")))?;
+
+        let desc = self
+            .surfaces
+            .get(&surface)
+            .ok_or(BackendError::UnknownSurface(surface))?
+            .desc;
+
+        if desc.width_px == 0 || desc.height_px == 0 {
+            return Err(BackendError::BadSurface("zero-size surface".to_string()));
+        }
+
+        self.ensure_gpu()?;
+        let gpu = self.gpu.as_mut().expect("ensured above");
+        let s = self.surfaces.get(&surface).expect("checked above");
+
+        // Collect batches
+        collect_batches(
+            &s.retained,
+            desc.width_px,
+            desc.height_px,
+            &self.faces,
+            &mut gpu.atlas,
+            &gpu.queue,
+            &self.gpu_images,
+            &mut self.collector,
+        )
+        .map_err(BackendError::UnsupportedOp)?;
+
+        // Transient target (never copied back).
+        let (w, h) = (desc.width_px, desc.height_px);
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("oppa_gpu_noread_tex"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        execute_render(
+            &gpu.device,
+            &gpu.queue,
+            &gpu.pipelines_rgba,
+            &target_view,
+            &gpu.atlas,
+            &self.gpu_images,
+            &self.collector,
+            w,
+            h,
+            desc.background,
+        );
+
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| BackendError::UnsupportedOp(format!("GPU stall poll failed: {e:?}")))?;
+        Ok(t.elapsed().as_secs_f64() * 1000.0)
+    }
+
     pub fn present_surface(
         &mut self,
         surface_id: SurfaceId,
@@ -472,13 +590,13 @@ impl CustomGpuBackend {
     }
 }
 
-impl Default for CustomGpuBackend {
+impl Default for GpuBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RendererBackend for CustomGpuBackend {
+impl RendererBackend for GpuBackend {
     fn kind(&self) -> PresenterKind {
         PresenterKind::GpuDrawList
     }
@@ -597,10 +715,23 @@ fn wgpu_color(c: oppa::Color) -> wgpu::Color {
 }
 
 async fn init_headless_gpu() -> Result<(wgpu::Device, wgpu::Queue, wgpu::Adapter, String), String> {
-    let instance = wgpu::Instance::default();
+    init_headless_gpu_on(
+        wgpu::Backends::all(),
+        wgpu::PowerPreference::HighPerformance,
+    )
+    .await
+}
+
+async fn init_headless_gpu_on(
+    backends: wgpu::Backends,
+    power: wgpu::PowerPreference,
+) -> Result<(wgpu::Device, wgpu::Queue, wgpu::Adapter, String), String> {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = backends;
+    let instance = wgpu::Instance::new(desc);
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference: power,
             compatible_surface: None,
             force_fallback_adapter: false,
         })

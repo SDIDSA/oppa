@@ -429,7 +429,7 @@ fn area_arrows_travel_hard_lines_and_single_line_ignores() {
 }
 
 /// Round 22.2 (decision 332): a multi-line selection commits
-/// one highlight rect per covered line (CPU plan + Vello twin
+/// one highlight rect per covered line (CPU plan + GPU twin
 /// retain both), and collapsing paints the line-aware caret
 /// bar on the caret's own line.
 #[test]
@@ -461,10 +461,10 @@ fn area_multiline_selection_paints_per_line_rects() {
         sels[1].1 > sels[0].1,
         "rects stack in line order, got {sels:?}"
     );
-    // The CPU backend retains the multiline paint (the Vello
+    // The CPU backend retains the multiline paint (the GPU
     // twin consumes the identical plan — CPU-only loops leave
-    // it untouched by design, and the 7.4 GPU tests prove twin
-    // encoding on text-free scenes; Vello refuses uninjected
+    // it untouched by design, and the GPU tests prove twin
+    // encoding on text-free scenes; gpu refuses uninjected
     // faces loudly at paint, so no text paint runs headless).
     assert!(
         loop_.cpu_retained_op_count().unwrap_or(0) > 0,
@@ -1659,9 +1659,13 @@ fn nan_dpr_refuses_loudly() {
     let _ = loop_.set_device_pixel_ratio(f32::NAN);
 }
 
-/// Round 7.4 (decision 279): `OPPA_RENDERER` parsing is pure and
-/// case-insensitive; anything unrecognized resolves to auto
-/// (GPU-first with loud CPU fallback — the wrapper logs).
+/// Decision 389: `OPPA_RENDERER` parsing is pure and
+/// case-insensitive; anything unrecognized (including the retired
+/// `vello*` and `custom*` spellings) resolves to auto (GPU-first
+/// with loud CPU fallback — the wrapper logs). Explicit backend
+/// pins (`gpu-vulkan` / `gpu-dx12` / `gpu-gl`, hyphen or
+/// underscore) parse to their variants; bare `vulkan` stays auto
+/// (never an implicit pin).
 #[test]
 fn renderer_override_parses_cpu_gpu_auto() {
     assert_eq!(parse_renderer_override(None), None);
@@ -1682,15 +1686,347 @@ fn renderer_override_parses_cpu_gpu_auto() {
         Some(RendererKind::Gpu)
     );
     assert_eq!(
-        parse_renderer_override(Some("custom_gpu")),
-        Some(RendererKind::CustomGpu)
+        parse_renderer_override(Some("gpu-auto")),
+        Some(RendererKind::GpuAuto)
     );
     assert_eq!(
-        parse_renderer_override(Some("custom-gpu")),
-        Some(RendererKind::CustomGpu)
+        parse_renderer_override(Some("gpu_auto")),
+        Some(RendererKind::GpuAuto)
+    );
+    assert_eq!(
+        parse_renderer_override(Some("gpu-vulkan")),
+        Some(RendererKind::GpuVulkan)
+    );
+    assert_eq!(
+        parse_renderer_override(Some("GPU-VULKAN")),
+        Some(RendererKind::GpuVulkan)
+    );
+    assert_eq!(
+        parse_renderer_override(Some("gpu-dx12")),
+        Some(RendererKind::GpuDx12)
+    );
+    assert_eq!(
+        parse_renderer_override(Some("gpu_dx12")),
+        Some(RendererKind::GpuDx12)
+    );
+    assert_eq!(
+        parse_renderer_override(Some("  Gpu-GL  ")),
+        Some(RendererKind::GpuGl)
     );
     assert_eq!(parse_renderer_override(Some("")), None);
     assert_eq!(parse_renderer_override(Some("vulkan")), None);
+    // Retired spellings never parse (decisions 388–389 — no silent
+    // substitution).
+    assert_eq!(parse_renderer_override(Some("vello")), None);
+    assert_eq!(parse_renderer_override(Some("vello-vulkan")), None);
+    assert_eq!(parse_renderer_override(Some("vello-dx12")), None);
+    assert_eq!(parse_renderer_override(Some("custom_gpu")), None);
+    assert_eq!(parse_renderer_override(Some("custom-auto")), None);
+    assert_eq!(parse_renderer_override(Some("custom-dx12")), None);
+}
+
+#[test]
+fn presenter_badge_name_follows_the_active_renderer() {
+    // The overlay badge must name the pixels. The name derives from
+    // the active renderer instead of a hardcoded per-outcome string.
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    assert_eq!(loop_.renderer_kind(), RendererKind::Cpu);
+    assert_eq!(loop_.presenter_badge_name(), "CPU");
+    loop_.enable_gpu(wgpu::PresentMode::Fifo);
+    assert_eq!(loop_.renderer_kind(), RendererKind::GpuAuto);
+    assert_eq!(loop_.presenter_badge_name(), "Gpu");
+    loop_.disable_gpu();
+    assert_eq!(loop_.presenter_badge_name(), "CPU");
+    // The derived name is what the badge renders.
+    loop_.enable_gpu(wgpu::PresentMode::Fifo);
+    loop_.host().set_debug_overlay(DebugOverlayConfig::all());
+    loop_
+        .host()
+        .set_presenter_name(loop_.presenter_badge_name());
+    let badge = loop_
+        .host()
+        .debug_overlay_badge()
+        .expect("badge renders when enabled");
+    assert!(
+        badge.contains("[Gpu]"),
+        "badge names the active renderer, got {badge:?}"
+    );
+}
+
+#[test]
+fn gpu_backend_pins_share_the_gpu_twin_and_badge() {
+    // Decision 389: every GPU variant paints the same twin with
+    // the bare `Gpu` badge until bring-up records a winner.
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    for kind in [
+        RendererKind::Gpu,
+        RendererKind::GpuAuto,
+        RendererKind::GpuVulkan,
+        RendererKind::GpuDx12,
+        RendererKind::GpuGl,
+    ] {
+        loop_.scene_mut().active = kind;
+        assert!(loop_.is_gpu(), "is_gpu for {kind:?}");
+        assert_eq!(loop_.presenter_badge_name(), "Gpu");
+    }
+    loop_.scene_mut().active = RendererKind::GpuDx12;
+    assert_eq!(loop_.renderer_name(), "gpu-dx12");
+    loop_.scene_mut().active = RendererKind::GpuVulkan;
+    assert_eq!(loop_.renderer_name(), "gpu-vulkan");
+    loop_.scene_mut().active = RendererKind::GpuGl;
+    assert_eq!(loop_.renderer_name(), "gpu-gl");
+    loop_.scene_mut().active = RendererKind::Cpu;
+    assert!(!loop_.is_gpu());
+}
+
+#[test]
+fn gpu_badge_names_the_recorded_wgpu_backend() {
+    // Decision 389: the badge names the actual API
+    // (`[Gpu/DX12]`), never a bare `Gpu` once bring-up recorded
+    // a winner; headless loops with no recording stay `Gpu`.
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    assert_eq!(loop_.gpu_api(), None);
+    loop_.scene_mut().active = RendererKind::GpuAuto;
+    assert_eq!(loop_.presenter_badge_name(), "Gpu");
+    loop_.set_gpu_api(GpuApi::Dx12);
+    assert_eq!(loop_.gpu_api(), Some(GpuApi::Dx12));
+    assert_eq!(loop_.presenter_badge_name(), "Gpu/DX12");
+    loop_.set_gpu_api(GpuApi::Vulkan);
+    assert_eq!(loop_.presenter_badge_name(), "Gpu/Vulkan");
+    loop_.set_gpu_api(GpuApi::Gl);
+    assert_eq!(loop_.presenter_badge_name(), "Gpu/GL");
+    assert_eq!(GpuApi::from_row_name("dx12"), Some(GpuApi::Dx12));
+    assert_eq!(GpuApi::from_row_name("vulkan"), Some(GpuApi::Vulkan));
+    assert_eq!(GpuApi::from_row_name("gl"), Some(GpuApi::Gl));
+    assert_eq!(GpuApi::from_row_name("metal"), None);
+    loop_.disable_gpu();
+    assert_eq!(loop_.gpu_api(), None);
+    assert_eq!(loop_.presenter_badge_name(), "CPU");
+}
+
+#[test]
+fn gpu_family_parses_pins_and_badges_the_recorded_api() {
+    // Decision 389: `gpu` / `gpu-auto` request the automatic
+    // rasterizer; the backend pins select one wgpu row; every
+    // variant paints the GPU twin and badges the recorded API.
+    assert_eq!(
+        parse_renderer_override(Some("gpu")),
+        Some(RendererKind::Gpu)
+    );
+    assert_eq!(
+        parse_renderer_override(Some("gpu-auto")),
+        Some(RendererKind::GpuAuto)
+    );
+    assert_eq!(
+        parse_renderer_override(Some("gpu_vulkan")),
+        Some(RendererKind::GpuVulkan)
+    );
+    assert_eq!(
+        parse_renderer_override(Some("GPU-DX12")),
+        Some(RendererKind::GpuDx12)
+    );
+    assert_eq!(
+        parse_renderer_override(Some("  gpu-gl  ")),
+        Some(RendererKind::GpuGl)
+    );
+    for kind in [
+        RendererKind::Gpu,
+        RendererKind::GpuAuto,
+        RendererKind::GpuVulkan,
+        RendererKind::GpuDx12,
+        RendererKind::GpuGl,
+    ] {
+        assert!(kind.is_gpu(), "is_gpu for {kind:?}");
+    }
+    assert!(!RendererKind::Cpu.is_gpu());
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    loop_.scene_mut().active = RendererKind::GpuDx12;
+    assert_eq!(loop_.renderer_name(), "gpu-dx12");
+    assert!(loop_.is_gpu());
+    assert_eq!(loop_.presenter_badge_name(), "Gpu");
+    loop_.set_gpu_api(GpuApi::Dx12);
+    assert_eq!(loop_.presenter_badge_name(), "Gpu/DX12");
+    loop_.set_gpu_api(GpuApi::Gl);
+    assert_eq!(loop_.presenter_badge_name(), "Gpu/GL");
+}
+
+#[test]
+fn continuous_repaint_override_parses_flag_values() {
+    assert!(!parse_continuous_repaint_override(None));
+    assert!(!parse_continuous_repaint_override(Some("")));
+    assert!(!parse_continuous_repaint_override(Some("0")));
+    assert!(!parse_continuous_repaint_override(Some("no")));
+    assert!(!parse_continuous_repaint_override(Some("yes")));
+    assert!(parse_continuous_repaint_override(Some("1")));
+    assert!(parse_continuous_repaint_override(Some("true")));
+    assert!(parse_continuous_repaint_override(Some("TRUE")));
+    assert!(parse_continuous_repaint_override(Some("  True  ")));
+}
+
+#[test]
+fn window_options_continuous_repaint_defaults_off_and_builder_sets() {
+    let opts = WindowOptions::new("Bench", 400, 300);
+    assert!(!opts.continuous_repaint, "event-driven by default");
+    let opts = opts.with_continuous_repaint(true);
+    assert!(opts.continuous_repaint, "builder arms benchmark mode");
+    let opts = opts.with_continuous_repaint(false);
+    assert!(!opts.continuous_repaint, "builder disarms again");
+}
+
+#[test]
+fn desktop_loop_continuous_repaint_horizon_and_rearm() {
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    loop_.mount("Plain", PlainProps, plain_app);
+    assert!(!loop_.continuous_repaint(), "event-driven by default");
+    assert_eq!(
+        loop_.pump_wait_timeout_ms(None),
+        None,
+        "idle loop blocks until input"
+    );
+    assert_eq!(
+        loop_.pump_wait_timeout_ms(Some(8)),
+        Some(8),
+        "busy horizon passes through"
+    );
+    // Rearm is a quiet no-op unless armed (the event-driven path is
+    // exactly as before).
+    assert!(!loop_.host().has_demand(), "settled mount holds no demand");
+    loop_.rearm_continuous_frame();
+    assert!(
+        !loop_.host().has_demand(),
+        "disarmed rearm requests nothing"
+    );
+    // Armed: 0ms horizon preempts every idle/busy wait, and every
+    // rearm marks demand the settle path turns back into frames.
+    loop_.set_continuous_repaint(true);
+    assert!(loop_.continuous_repaint(), "setter arms benchmark mode");
+    assert_eq!(
+        loop_.pump_wait_timeout_ms(None),
+        Some(0),
+        "armed horizon polls immediately"
+    );
+    assert_eq!(
+        loop_.pump_wait_timeout_ms(Some(8)),
+        Some(0),
+        "armed horizon preempts busy waits"
+    );
+    loop_.rearm_continuous_frame();
+    assert!(loop_.host().has_demand(), "rearm marks the scene dirty");
+    assert!(
+        loop_.host().run_until_idle() > 0,
+        "demand settles into frames the pump repaints"
+    );
+    // Disarm restores the event-driven horizon.
+    loop_.set_continuous_repaint(false);
+    assert_eq!(
+        loop_.pump_wait_timeout_ms(None),
+        None,
+        "disarmed loop blocks again"
+    );
+}
+
+#[test]
+fn continuous_repaint_runs_with_debug_overlay_enabled() {
+    // Benchmark mode is orthogonal to the debug overlay (decision
+    // 385 wrap): horizon, demand, and repaint behave identically
+    // with the badge mounted.
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    loop_.host().set_debug_overlay(DebugOverlayConfig::all());
+    loop_.host().set_presenter_name("Test");
+    loop_.mount("Plain", PlainProps, plain_app);
+    loop_.set_continuous_repaint(true);
+    assert_eq!(
+        loop_.pump_wait_timeout_ms(None),
+        Some(0),
+        "armed horizon polls immediately under the overlay"
+    );
+    loop_.repaint().expect("paints with overlay mounted");
+    loop_.rearm_continuous_frame();
+    assert!(loop_.host().has_demand(), "rearm marks demand");
+    assert!(
+        loop_.host().run_until_idle() > 0,
+        "demand settles into frames"
+    );
+    loop_.repaint().expect("repaints the next frame");
+}
+
+#[test]
+fn note_frame_presented_ticks_meter_and_refreshes_badge_throttled() {
+    // The benchmark-idle artifact end to end: presents drive the FPS
+    // clock (never reconciles), and the badge text refreshes through
+    // a throttled root re-run — no 0 FPS after idle gaps.
+    let clock = Rc::new(oppa::MockClock::new());
+    let loop_ = DesktopLoop::with_clock(200, 150, Box::new(FakeText), "Test", clock.clone())
+        .expect("headless loop builds");
+    loop_.host().set_debug_overlay(DebugOverlayConfig::all());
+    loop_.host().set_presenter_name("Test");
+    loop_.mount("Plain", PlainProps, plain_app);
+    loop_.host().run_until_idle();
+    // Disabled guard first: a loop without the overlay notes nothing.
+    loop_
+        .host()
+        .set_debug_overlay(DebugOverlayConfig::disabled());
+    loop_.note_frame_presented();
+    assert_eq!(
+        loop_.host().run_until_idle(),
+        0,
+        "disabled overlay schedules no refresh"
+    );
+    loop_.host().set_debug_overlay(DebugOverlayConfig::all());
+    // Rapid presents tick the clock but stay inside the throttle.
+    loop_.note_frame_presented();
+    clock.advance(0.1);
+    loop_.note_frame_presented();
+    assert_eq!(
+        loop_.host().run_until_idle(),
+        0,
+        "no root re-run inside the throttle window"
+    );
+    // Past the throttle the next present schedules the refresh, and
+    // the rebuilt badge names the present cadence + presenter.
+    clock.advance(0.3);
+    loop_.note_frame_presented();
+    assert!(
+        loop_.host().run_until_idle() > 0,
+        "throttled present schedules the badge refresh"
+    );
+    let badge = loop_
+        .host()
+        .debug_overlay_badge()
+        .expect("badge renders when enabled");
+    assert!(badge.contains("FPS"), "badge carries fps, got {badge:?}");
+    assert!(
+        badge.contains("[Test]"),
+        "badge rebuilt after presenter set, got {badge:?}"
+    );
+    // The regression itself: a 13s idle gap with no presents, then an
+    // interaction reconcile, must not move the FPS needle.
+    let fps_before = badge
+        .split(" FPS")
+        .next()
+        .expect("fps prefix")
+        .rsplit(' ')
+        .next()
+        .expect("fps number")
+        .parse::<f64>()
+        .expect("fps parses");
+    clock.advance(13.0);
+    loop_.host().mark_all_component_effects_dirty();
+    loop_.host().run_until_idle();
+    let badge_after = loop_
+        .host()
+        .debug_overlay_badge()
+        .expect("badge still renders");
+    assert!(
+        badge_after.starts_with(&format!("{fps_before:.0} FPS")),
+        "idle-gap reconcile leaves FPS alone, got {badge_after:?}"
+    );
 }
 
 #[test]
@@ -1751,10 +2087,10 @@ fn close_flag_drains_through_veto_consult() {
     assert!(loop_.close_requested(), "clean exits");
 }
 
-/// Round 7.4: headless loops start CPU-only with both scene
-/// surfaces live (Vello twin untouched until a runner enables
-/// GPU — a faceless shaper must never trip the Vello loud-no-face
-/// rule on the CPU path).
+/// Headless loops start CPU-only with both scene surfaces live
+/// (GPU twin untouched until a runner enables GPU — a faceless
+/// shaper must never trip the GPU loud-no-face rule on the CPU
+/// path).
 #[test]
 fn loop_starts_cpu_only_with_both_surfaces() {
     let (mut loop_, _) = harness();
@@ -1766,15 +2102,15 @@ fn loop_starts_cpu_only_with_both_surfaces() {
     assert!(damage > 0);
     assert!(loop_.cpu_retained_op_count().unwrap_or(0) > 0);
     assert_eq!(
-        loop_.vello_retained_op_count(),
+        loop_.gpu_retained_op_count(),
         Some(0),
-        "CPU-only repaints leave the Vello twin untouched"
+        "CPU-only repaints leave the GPU twin untouched"
     );
     assert_eq!(loop_.rgba8().expect("pixels").len(), 200 * 150 * 4);
 }
 
 /// Text-free scene for GPU paint tests (a Text run without an
-/// injected face would refuse loudly on Vello by contract, while
+/// injected face would refuse loudly on GPU by contract, while
 /// the CPU path still draws bars — so the dual test stays
 /// faceless by having no text at all).
 #[derive(Clone)]
@@ -1791,9 +2127,10 @@ fn plain_app(_ctx: &Ctx, _props: &PlainProps) -> VNode {
         )
 }
 
-/// Round 7.4: enabling GPU paints the same frame plan into both
-/// backends (CPU pixmap stays the fallback source); disabling
-/// returns to CPU-only without losing the viewport.
+/// Enabling GPU paints the same frame plan into both backends
+/// (CPU pixmap stays the fallback source); disabling returns to
+/// CPU-only without losing the viewport. A bare `enable_gpu` with
+/// no override resolves to the GPU automatic default.
 #[test]
 fn enable_gpu_paints_both_backends_then_disables() {
     let mut loop_ =
@@ -1801,14 +2138,15 @@ fn enable_gpu_paints_both_backends_then_disables() {
     loop_.mount("Plain", PlainProps, plain_app);
     loop_.enable_gpu(wgpu::PresentMode::Fifo);
     assert!(loop_.is_gpu());
-    assert_eq!(loop_.renderer_name(), "gpu");
+    assert_eq!(loop_.renderer_kind(), RendererKind::GpuAuto);
+    assert_eq!(loop_.renderer_name(), "gpu-auto");
     assert_eq!(loop_.gpu_present_mode(), Some(wgpu::PresentMode::Fifo));
     let damage = loop_.repaint().expect("gpu repaint works");
     assert!(damage > 0);
     assert!(loop_.cpu_retained_op_count().unwrap_or(0) > 0);
     assert!(
-        loop_.vello_retained_op_count().unwrap_or(0) > 0,
-        "Vello twin encodes the same plan"
+        loop_.gpu_retained_op_count().unwrap_or(0) > 0,
+        "GPU twin encodes the same plan"
     );
     assert_eq!(loop_.rgba8().expect("pixels").len(), 200 * 150 * 4);
     loop_.disable_gpu();
@@ -1818,28 +2156,28 @@ fn enable_gpu_paints_both_backends_then_disables() {
 }
 
 #[test]
-fn enable_custom_gpu_paints_and_retains() {
+fn enable_gpu_paints_and_retains() {
     let mut loop_ =
         DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
     loop_.mount("Plain", PlainProps, plain_app);
-    loop_.enable_custom_gpu(wgpu::PresentMode::Fifo);
+    loop_.enable_gpu(wgpu::PresentMode::Fifo);
     assert!(loop_.is_gpu());
-    assert_eq!(loop_.renderer_name(), "custom_gpu");
-    assert_eq!(loop_.renderer_kind(), RendererKind::CustomGpu);
-    let damage = loop_.repaint().expect("custom_gpu repaint works");
+    assert_eq!(loop_.renderer_name(), "gpu-auto");
+    assert_eq!(loop_.renderer_kind(), RendererKind::GpuAuto);
+    let damage = loop_.repaint().expect("gpu repaint works");
     assert!(damage > 0);
     assert!(loop_.cpu_retained_op_count().unwrap_or(0) > 0);
     assert!(
-        loop_.custom_gpu_retained_op_count().unwrap_or(0) > 0,
-        "Custom GPU backend encodes and retains ops"
+        loop_.gpu_retained_op_count().unwrap_or(0) > 0,
+        "GPU backend encodes and retains ops"
     );
     loop_.disable_gpu();
     assert!(!loop_.is_gpu());
     assert_eq!(loop_.renderer_name(), "cpu");
 }
 
-/// Round 7.4: refit keeps both surfaces in lockstep (a later
-/// `enable_gpu` never presents a stale size).
+/// Refit keeps both surfaces in lockstep (a later `enable_gpu`
+/// never presents a stale size).
 #[test]
 fn resize_refits_both_surfaces_in_lockstep() {
     let mut loop_ =
@@ -1851,7 +2189,7 @@ fn resize_refits_both_surfaces_in_lockstep() {
     assert_eq!(loop_.viewport(), (400, 300));
     loop_.repaint().expect("paints at the new size");
     assert_eq!(loop_.rgba8().expect("pixels").len(), 400 * 300 * 4);
-    assert!(loop_.vello_retained_op_count().unwrap_or(0) > 0);
+    assert!(loop_.gpu_retained_op_count().unwrap_or(0) > 0);
 }
 
 /// Round 2.4 Windows half (decision 259): a real

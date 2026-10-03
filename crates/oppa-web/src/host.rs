@@ -75,14 +75,17 @@ fn sync_and_render(
     if touched == 0 {
         return (String::new(), 0);
     }
-    let patch = dom.take_patch();
+    let patch = dom.take_patch(sheet);
     if !patch.full && !patch.is_empty() {
         return (patch.to_json(), touched);
     }
     // Loud fallback (unprimed snapshot or remount-class root change --
     // today's full swap inside a reload op, focus net in the applier;
     // proved unreachable in the settled suite, kept for completeness).
+    // The full page embeds tree + sheet alike, so prime the snapshot
+    // and the shipped revision together (decision 392).
     let html = render_page("oppa web", dom, sheet);
+    dom.mark_rendered(sheet);
     let reload = format!(
         "{{\"v\":1,\"full\":true,\"reload\":{},\"swaps\":[],\"attrs\":[],\"sels\":[],\"spacers\":[],\"removes\":[],\"places\":[]}}",
         oppa_dom::json_escape(&html)
@@ -116,6 +119,7 @@ fn boot_host() -> (Rc<MockClock>, ComponentHost) {
         family: oppa_fonts::DEJAVU_SANS_FAMILY.to_string(),
         ..Default::default()
     });
+    host.set_presenter_name("DOM");
     (clock, host)
 }
 
@@ -245,7 +249,7 @@ impl WasmHost {
     }
 
     /// Full-page render (the initial mount; also primes the patch
-    /// snapshot).
+    /// snapshot and the shipped sheet revision).
     pub fn html(&mut self) -> String {
         commit_and_sync(
             &self.host,
@@ -256,7 +260,7 @@ impl WasmHost {
             &mut self.cursor,
         );
         let html = render_page("oppa web", &self.dom, &self.sheet);
-        self.dom.mark_rendered();
+        self.dom.mark_rendered(&self.sheet);
         html
     }
 

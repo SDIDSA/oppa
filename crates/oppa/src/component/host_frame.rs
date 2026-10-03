@@ -148,12 +148,65 @@ impl ComponentHost {
         }
     }
 
-    // -- M5 input routing (locked #7) -----------------------------------
-
-    /// Queues a normalized input event for the next INPUT phase (the
-    /// real-input injection path — payloads through framework
-    /// primitives, never test-driven signal writes).
     pub fn inject_input(&self, event: InputEvent) {
         self.inner.rt.push_input(event);
+    }
+
+    // -- Debug Performance Overlay -------------------------------------
+
+    /// Configures the debug performance overlay (FPS, frame time, dirty nodes, presenter).
+    pub fn set_debug_overlay(&self, config: crate::debug_overlay::DebugOverlayConfig) {
+        let mut meter = self.inner.debug_overlay.borrow_mut();
+        meter.config = config;
+    }
+
+    /// Current debug performance overlay configuration.
+    pub fn debug_overlay(&self) -> crate::debug_overlay::DebugOverlayConfig {
+        self.inner.debug_overlay.borrow().config
+    }
+
+    /// Sets the presenter badge name (e.g. "Gpu", "CPU", "DOM") for the debug overlay.
+    pub fn set_presenter_name(&self, name: impl Into<String>) {
+        self.inner.debug_overlay.borrow_mut().presenter_name = Some(name.into());
+    }
+
+    /// Formatted debug overlay badge text, if enabled and non-empty.
+    pub fn debug_overlay_badge(&self) -> Option<String> {
+        let meter = self.inner.debug_overlay.borrow();
+        if meter.config.enabled {
+            let badge = meter.format_badge();
+            if !badge.is_empty() {
+                return Some(badge);
+            }
+        }
+        None
+    }
+
+    /// Notes one presented frame for the debug overlay (runners call
+    /// this after every present, both modes): advances the meter
+    /// clock on present cadence, then — throttled to
+    /// [`OVERLAY_BADGE_REFRESH_SECS`](crate::debug_overlay::OVERLAY_BADGE_REFRESH_SECS)
+    /// — dirties the live root effects so the next settle re-runs
+    /// the root and the badge text re-renders (child effects are
+    /// never touched). Quiet no-op unless the overlay is enabled
+    /// (one RefCell check on the present path).
+    pub fn note_overlay_frame(&self) {
+        if !self.inner.debug_overlay.borrow().config.enabled {
+            return;
+        }
+        let now = self.inner.rt.now_secs();
+        let mut meter = self.inner.debug_overlay.borrow_mut();
+        meter.note_frame(now);
+        if now - meter.last_refresh_secs >= crate::debug_overlay::OVERLAY_BADGE_REFRESH_SECS {
+            meter.last_refresh_secs = now;
+            let effects = self.inner.effects.borrow();
+            let mut roots = self.inner.root_instances.borrow_mut();
+            roots.retain(|inst| effects.contains_key(inst));
+            for inst in roots.iter() {
+                if let Some(effect) = effects.get(inst) {
+                    self.inner.rt.mark_effect_dirty(effect.id());
+                }
+            }
+        }
     }
 }

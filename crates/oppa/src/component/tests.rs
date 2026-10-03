@@ -884,3 +884,177 @@ fn child_auto_instances_survive_reruns() {
         .collect();
     assert_eq!(before, after, "stable bodies re-key identically");
 }
+
+#[derive(Clone)]
+struct PlainProps;
+impl Props for PlainProps {}
+
+fn simple_app(_ctx: &Ctx, _props: &PlainProps) -> VNode {
+    crate::vnode::Div("main_content").build()
+}
+
+#[test]
+fn debug_overlay_wraps_root_when_enabled() {
+    let host = ComponentHost::new();
+    host.set_presenter_name("TestPresenter");
+    host.set_debug_overlay(crate::debug_overlay::DebugOverlayConfig::all());
+    let _handle = host.mount("Simple", PlainProps, simple_app);
+    host.run_until_idle();
+
+    // Verify both the user root and the overlay stack are mounted
+    let debug_root = crate::find_retained_by_debug(&host, "oppa_debug_root");
+    let overlay = crate::find_retained_by_debug(&host, "oppa_debug_overlay");
+    let main_content = crate::find_retained_by_debug(&host, "main_content");
+
+    assert!(!debug_root.is_empty(), "debug root is inserted");
+    assert!(!overlay.is_empty(), "Debug overlay badge is rendered");
+    assert!(!main_content.is_empty(), "User root content is preserved");
+}
+
+#[test]
+fn debug_overlay_does_not_wrap_root_when_disabled() {
+    let host = ComponentHost::new();
+    host.set_debug_overlay(crate::debug_overlay::DebugOverlayConfig::disabled());
+    let _handle = host.mount("Simple", PlainProps, simple_app);
+    host.run_until_idle();
+
+    let debug_root = crate::find_retained_by_debug(&host, "oppa_debug_root");
+    let overlay = crate::find_retained_by_debug(&host, "oppa_debug_overlay");
+    let main_content = crate::find_retained_by_debug(&host, "main_content");
+
+    assert!(
+        debug_root.is_empty(),
+        "No stack root inserted when disabled"
+    );
+    assert!(
+        overlay.is_empty(),
+        "No overlay badge rendered when disabled"
+    );
+    assert!(
+        !main_content.is_empty(),
+        "User root content is rendered bare"
+    );
+}
+
+fn centered_app(_ctx: &Ctx, _props: &PlainProps) -> VNode {
+    crate::vnode::Column::new()
+        .style(crate::style::Style::new().align_items(crate::style::AlignItems::Center))
+        .child(
+            crate::vnode::Div("centered_plate")
+                .style(crate::style::Style::new().size(100, 20))
+                .build(),
+        )
+}
+
+/// The overlay wrapper is layout-transparent: a centered app keeps its
+/// centered boxes with the overlay on (a `Stack` wrapper would measure
+/// the app intrinsically and left-align it), and the badge hugs its
+/// text at the top-left instead of stretching full-width.
+#[test]
+fn debug_overlay_preserves_centered_app_layout() {
+    fn plate_and_badge(overlay_on: bool) -> (f32, Option<(f32, f32, f32)>) {
+        let host = ComponentHost::new();
+        host.set_viewport(600.0, 400.0);
+        if overlay_on {
+            host.set_presenter_name("TestPresenter");
+            host.set_debug_overlay(crate::debug_overlay::DebugOverlayConfig::all());
+        } else {
+            host.set_debug_overlay(crate::debug_overlay::DebugOverlayConfig::disabled());
+        }
+        let _handle = host.mount("Centered", PlainProps, centered_app);
+        host.run_until_idle();
+        let plate = crate::find_retained_by_debug(&host, "centered_plate")
+            .into_iter()
+            .next()
+            .expect("plate retained");
+        let plate_box = host.committed_box(plate).expect("plate laid out");
+        let badge = crate::find_retained_by_debug(&host, "oppa_debug_overlay")
+            .into_iter()
+            .next()
+            .and_then(|id| host.committed_box(id))
+            .map(|b| (b.x, b.y, b.w));
+        (plate_box.x, badge)
+    }
+
+    let (bare_x, bare_badge) = plate_and_badge(false);
+    assert_eq!(bare_x, 250.0, "bare root centers the 100px plate");
+    assert!(bare_badge.is_none(), "no badge when disabled");
+    let (overlay_x, overlay_badge) = plate_and_badge(true);
+    assert_eq!(
+        overlay_x, bare_x,
+        "overlay on keeps the plate centered (got {overlay_x}, bare {bare_x})"
+    );
+    let (bx, by, bw) = overlay_badge.expect("badge rendered when enabled");
+    assert_eq!((bx, by), (8.0, 8.0), "badge floats top-left");
+    assert!(bw < 100.0, "badge hugs its text, got w={bw}");
+}
+
+/// The FPS clock ticks on presents, never on reconciles: an
+/// interaction after a long idle gap must not divide by the gap and
+/// print 0 FPS (the benchmark-idle artifact). Reconciles record
+/// commit dirt only.
+#[test]
+fn overlay_meter_clock_ignores_reconcile_gaps() {
+    let clock = std::rc::Rc::new(crate::MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_debug_overlay(crate::debug_overlay::DebugOverlayConfig::all());
+    let _handle = host.mount("Simple", PlainProps, simple_app);
+    host.run_until_idle();
+    // Two presents 100ms apart: a ~10 FPS present cadence.
+    host.note_overlay_frame();
+    clock.advance(0.1);
+    host.note_overlay_frame();
+    let fps = host.inner.debug_overlay.borrow().fps;
+    assert!(
+        fps > 5.0 && fps < 40.0,
+        "present cadence reads sane, got {fps}"
+    );
+    // A reconcile after a 13s idle gap (no presents in between)
+    // records dirt but leaves the clock alone.
+    clock.advance(13.0);
+    host.mark_all_component_effects_dirty();
+    host.run_until_idle();
+    assert_eq!(
+        host.inner.debug_overlay.borrow().fps,
+        fps,
+        "idle-gap reconcile leaves FPS alone"
+    );
+    assert!(
+        host.inner.debug_overlay.borrow().dirty_nodes >= 1,
+        "the refresh commit carries the badge text update itself"
+    );
+}
+
+/// The badge text refreshes through a throttled root re-run (4Hz):
+/// rapid presents only tick the clock, while a present past the
+/// throttle rebuilds the badge from the live meter.
+#[test]
+fn overlay_badge_refresh_reruns_root_throttled() {
+    let clock = std::rc::Rc::new(crate::MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_presenter_name("TestPresenter");
+    host.set_debug_overlay(crate::debug_overlay::DebugOverlayConfig::all());
+    let _handle = host.mount("Simple", PlainProps, simple_app);
+    host.run_until_idle();
+    host.note_overlay_frame();
+    assert_eq!(
+        host.run_until_idle(),
+        0,
+        "no root re-run inside the throttle window"
+    );
+    clock.advance(0.3);
+    host.note_overlay_frame();
+    assert!(
+        host.run_until_idle() > 0,
+        "throttled present schedules the badge refresh"
+    );
+    let badge = host.debug_overlay_badge().expect("badge renders");
+    assert!(
+        badge.contains("17 FPS"),
+        "badge rebuilt from present cadence (0.3s dt), got {badge:?}"
+    );
+    assert!(
+        badge.contains("[TestPresenter]"),
+        "presenter rides the refresh, got {badge:?}"
+    );
+}

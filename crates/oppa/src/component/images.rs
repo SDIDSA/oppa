@@ -52,7 +52,7 @@ impl ImageCache {
 
     /// Deposits pre-decoded static pixels under `key` (Phase 36 PR4,
     /// decision 359 — the `oppa-image` RGBA8 shape): returns the
-    /// content-addressed id every backend serves from (CPU/Vello
+    /// content-addressed id every backend serves from (CPU/GPU
     /// `insert_image` twins pull via [`ImageCache::pixels_of`], the
     /// DOM backend renders a data URI). Length must equal
     /// `width × height × 4` (refuses loudly — a short buffer is a

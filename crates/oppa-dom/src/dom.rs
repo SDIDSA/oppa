@@ -115,6 +115,14 @@ pub struct DomBackend {
     /// empty, exactly like pre-contract; the first take on a Dark
     /// tree still emits its stanza).
     last_patched_theme: Option<ThemeMode>,
+    /// Stylesheet rules the patch channel already shipped (decision
+    /// 392): `take_patch` drains `sheet.render_from(shipped_rules)`
+    /// into the patch and advances this to the current count, so
+    /// post-boot classes always arrive with their rules and settled
+    /// frames carry no duplicate. Full pages (`html()` / reload
+    /// fallback) embed the whole sheet — `mark_rendered` primes this
+    /// alongside the snapshot after rendering one.
+    shipped_rules: usize,
     /// Touched count awaiting the next `paint` (the work meter).
     pending_touched: usize,
     paints: u64,
@@ -163,6 +171,7 @@ impl DomBackend {
             theme: ThemeMode::Light,
             theme_dirty: false,
             last_patched_theme: Some(ThemeMode::Light),
+            shipped_rules: 0,
             snap: HashMap::new(),
             snap_roots: Vec::new(),
             fonts: Vec::new(),

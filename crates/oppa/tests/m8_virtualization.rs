@@ -24,7 +24,7 @@
 //! attribution, TIME-vs-INPUT feed equivalence, TIME evaluator
 //! end-to-end off the injected clock, stamped zero-interpolator counts).
 //! Pixels live in `oppa-cpu` (`m8_sweep`: oracle frame-by-frame exact +
-//! repaint bound) and `oppa-vello` (`m8_sweep`: tol-banded rows); the DOM
+//! repaint bound) and `oppa-gpu` (`gpu_backend`: tol-banded rows); the DOM
 //! mapping lives in `oppa-dom` (`m8_transitions`).
 
 #![allow(non_snake_case)]

@@ -1,10 +1,10 @@
-//! Round 24.1 (decision 335): Task Studio end-to-end. One
-//! headless [`DesktopLoop`](oppa_app::DesktopLoop) drives the full
-//! workflow — create task → search/sort → edit title + multi-line
-//! notes → right-click Duplicate/Delete → close attempt with
-//! unsaved changes → modal veto → save via the mock dialog → file
-//! write — asserting CPU paint, Vello retention, and DOM parity
-//! along the way with 0 errors.
+//! Task Studio end-to-end. One headless
+//! [`DesktopLoop`](oppa_app::DesktopLoop) drives the full workflow —
+//! create task → search/sort → edit title + multi-line notes →
+//! right-click Duplicate/Delete → close attempt with unsaved changes
+//! → modal veto → save via the mock dialog → file write — asserting
+//! CPU paint, GPU-twin retention, and DOM parity along the way
+//! with 0 errors.
 
 use std::rc::Rc;
 
@@ -309,21 +309,21 @@ fn task_studio_end_to_end() {
         "full-viewport pixmap"
     );
 
-    // -- Vello leg ------------------------------------------------------
+    // -- GPU leg -----------------------------------------------------
     // Headless honesty: GPU paint needs a device + injected faces
-    // (the 7.4 suite proves paint on text-free scenes); what runs
+    // (the GPU suite proves paint on text-free scenes); what runs
     // here is twin acceptance — every studio diff commits into a
-    // fresh Vello backend with 0 errors (the loop's own twin
+    // fresh GPU backend with 0 errors (the loop's own twin
     // commits the same way on every repaint above).
     {
         use oppa::RendererBackend;
-        let mut twin = oppa_vello::VelloBackend::new();
+        let mut twin = oppa_gpu::GpuBackend::new();
         let mut n = 0usize;
         for d in rig.loop_.host().diffs_from(0) {
-            twin.commit(&d).expect("vello accepts studio diffs");
+            twin.commit(&d).expect("gpu accepts studio diffs");
             n += 1;
         }
-        assert!(n > 0, "scene committed to the Vello twin");
+        assert!(n > 0, "scene committed to the GPU twin");
     }
 
     // -- close veto + save modal ---------------------------------------

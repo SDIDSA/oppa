@@ -73,8 +73,7 @@ pub(crate) fn sync_cursor(loop_: &DesktopLoop, shell: &mut Win32Shell) {
 
 /// Grows the frame so the client area is exactly the scene size
 /// (`CreateWindowExW` takes outer dims — without this the client is
-/// smaller than the pixmap and every present clips; decision 202 in
-/// the fps-demo, demo-side policy copied here).
+/// smaller than the pixmap and every present clips).
 pub(crate) fn fit_client_to_scene(hwnd: windows::Win32::Foundation::HWND, w: u32, h: u32) {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -191,8 +190,7 @@ pub(crate) fn move_window_to_suggested(
 
 /// Blits the loop's latest paint to the window client DC (RGBA →
 /// BGRA + `SetDIBitsToDevice`). Loud on any failure (a present
-/// failure is never a silent blank frame). Same pattern as the
-/// fps-demo's `present_cpu` (the proven GDI path).
+/// failure is never a silent blank frame).
 pub(crate) fn blit_rgba(
     loop_: &DesktopLoop,
     hwnd: windows::Win32::Foundation::HWND,

@@ -215,7 +215,7 @@ impl LayoutBox {
     /// one box-space `[x0, y0, x1, y1]` rect per laid line overlapping
     /// the ordered byte range (edges via [`LaidLine::caret_x`], so RTL
     /// and wrap affinity match the caret). Empty overlap and collapsed
-    /// ranges yield no rects. Shared by the FramePlan builder (CPU/Vello
+    /// ranges yield no rects. Shared by the FramePlan builder (CPU/GPU
     /// `Rect` emission) and the DOM backend (highlight divs) — one rule,
     /// every presenter agrees by construction.
     pub fn selection_rects(&self, range: (usize, usize)) -> Vec<[f32; 4]> {

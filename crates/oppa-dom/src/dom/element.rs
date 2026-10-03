@@ -181,13 +181,18 @@ pub struct PlacePatch {
 /// `document.body` — CSS inheritance carries both to every
 /// non-inked node, so no per-node patch is needed and explicit
 /// `color:` still wins. Hex strings (`#rrggbb`), same encoding as
-/// every other color on the wire.
+/// every other color on the wire. `dark` tells the applier which
+/// `color-scheme` the page implements (decision 392 follow-up —
+/// native controls, input text, and scrollbars follow the app
+/// theme instead of the OS default).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ThemePatch {
     /// Page background (`tokens.background`).
     pub bg: String,
     /// Default text ink (`tokens.text_primary`).
     pub ink: String,
+    /// True in dark mode.
+    pub dark: bool,
 }
 
 /// One keyed DOM patch (Round 12.1, decision 307): the minimal op
@@ -215,6 +220,13 @@ pub struct PagePatch {
     /// when the mode moved since the last patch — the applier's
     /// body-style write. Change-only, never per-frame noise.
     pub theme: Option<ThemePatch>,
+    /// Stylesheet delta (decision 392): rules the sheet added since
+    /// the last patch shipped them — `Some` exactly when non-empty.
+    /// The applier appends it to the page's persistent style
+    /// element, so post-boot classes (theme flips, hover states,
+    /// validation marks) arrive with their rules. Never per-frame
+    /// noise: settled frames carry `None`.
+    pub sheet: Option<String>,
     /// Root identity changed (remount-class event): the patch cannot
     /// describe it — the caller falls back to a full swap.
     pub full: bool,
@@ -222,7 +234,8 @@ pub struct PagePatch {
 
 impl PagePatch {
     /// True when no op describes anything (settled frames — a
-    /// pending theme stanza counts as work, so bare toggles emit).
+    /// pending theme stanza or stylesheet delta counts as work, so
+    /// bare toggles emit).
     pub fn is_empty(&self) -> bool {
         !self.full
             && self.swaps.is_empty()
@@ -232,6 +245,7 @@ impl PagePatch {
             && self.removes.is_empty()
             && self.places.is_empty()
             && self.theme.is_none()
+            && self.sheet.is_none()
     }
 
     /// Serializes the patch for the bootstrap applier (hand-rolled —
@@ -346,10 +360,16 @@ impl PagePatch {
         out.push_str("],\"theme\":");
         match &self.theme {
             Some(t) => out.push_str(&format!(
-                "{{\"bg\":{},\"ink\":{}}}",
+                "{{\"bg\":{},\"ink\":{},\"dark\":{}}}",
                 json_escape(&t.bg),
-                json_escape(&t.ink)
+                json_escape(&t.ink),
+                t.dark
             )),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"sheet\":");
+        match &self.sheet {
+            Some(css) => out.push_str(&json_escape(css)),
             None => out.push_str("null"),
         }
         out.push('}');

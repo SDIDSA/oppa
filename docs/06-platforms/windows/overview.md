@@ -5,8 +5,7 @@ closed, Phase 36 PR1 Invoke/RangeValue).
 Sources: [`STATE.md`](../../STATE.md) (Done); code: `crates/oppa-shell-win/`,
 `crates/oppa-text-dwrite/`.
 
-- **Framework behavior:** full pipeline ownership; Vello GPU backend
-  (M6) + tiny-skia CPU backend (M4).
+- **Framework behavior:** full pipeline ownership; GPU rasterizer (`oppa-gpu`: `gpu`/`gpu-auto` Vulkan-first, `gpu-vulkan` / `gpu-dx12` / `gpu-gl` pins) + tiny-skia CPU backend (M4, GDI fallback). Decisions 388–389 removed Vello entirely and dropped the `custom` qualifier.
 - **Platform behavior (current):** real Win32 window
   (`WNDCLASSEXW`/`CreateWindowExW`/proc) on `PlatformShell`
   (`pump_events` + `set_ime`); real `WM_IME_*` handling with

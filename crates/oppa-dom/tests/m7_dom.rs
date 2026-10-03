@@ -1609,35 +1609,47 @@ fn dom_text_spans_carry_measured_family_and_size() {
 }
 
 #[test]
-fn vello_atlas_holds_per_id_faces_with_default_fallback() {
-    // Headless atlas discipline (no draw — selection only): explicit id
-    // wins, unmapped ids fall back to the default, empty atlas reports
-    // no font (the loud-refusal precondition stays).
+fn gpu_face_table_holds_per_id_faces_with_default_fallback() {
+    // Headless face-table discipline (no draw — selection only):
+    // explicit id wins, unmapped ids fall back to the default,
+    // empty table reports no font (the loud-refusal precondition
+    // stays). Decision 388: the surviving table is the custom
+    // rasterizer's (`oppa_gpu::atlas::FaceTable`).
     use oppa::FontId;
-    let mut atlas = oppa_vello::GlyphAtlas::new();
-    assert!(!atlas.has_font());
-    atlas.set_font_bytes(vec![1, 2, 3], 0);
-    assert!(atlas.has_font());
-    assert!(atlas.face_for(FontId(0)).is_some(), "default serves id 0");
+    use oppa_gpu::atlas::{FaceBytes, FaceTable};
+    use std::sync::Arc;
+    let mut table = FaceTable::default();
+    assert!(table.face_for(FontId(0)).is_none());
+    table.default = Some(FaceBytes {
+        bytes: Arc::new(vec![1, 2, 3]),
+        index: 0,
+    });
+    assert!(table.face_for(FontId(0)).is_some(), "default serves id 0");
     assert!(
-        atlas.face_for(FontId(7)).is_some(),
+        table.face_for(FontId(7)).is_some(),
         "default covers unmapped ids"
     );
-    atlas.set_font_for(FontId(7), vec![4, 5, 6, 7], 1);
-    assert_eq!(atlas.face_ids(), vec![FontId(7)]);
-    assert!(atlas.face_for(FontId(7)).is_some());
+    table.explicit.insert(
+        FontId(7),
+        FaceBytes {
+            bytes: Arc::new(vec![4, 5, 6, 7]),
+            index: 1,
+        },
+    );
+    assert_eq!(table.explicit.len(), 1, "one explicit face registered");
+    assert!(table.face_for(FontId(7)).is_some());
     assert!(
-        atlas.face_for(FontId(9)).is_some(),
+        table.face_for(FontId(9)).is_some(),
         "default still covers the rest"
     );
 }
 
 // ---------------------------------------------------------------------------
-// 7. Three-backend box compare (CPU == Vello == DOM rounded boxes)
+// 7. Two-rasterizer box compare (CPU == GPU == DOM rounded boxes)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn three_backends_commit_one_tree_and_agree_on_boxes() {
+fn two_rasterizers_and_dom_commit_one_tree_and_agree_on_boxes() {
     let host = ComponentHost::new();
     host.set_viewport(200.0, 120.0);
     host.set_text_service(Box::new(FakeText));
@@ -1646,26 +1658,25 @@ fn three_backends_commit_one_tree_and_agree_on_boxes() {
     let builder = FramePlanBuilder::new(1.0);
     let plan = host.with_retained_mut(|rec, styles| builder.build_incremental(rec, styles));
 
-    // Same tree committed to all three presenters.
+    // Same tree committed to both rasterizers plus DOM.
     let mut cpu = oppa_cpu::CpuBackend::new();
-    let mut vello = oppa_vello::VelloBackend::new();
+    let mut gpu_backend = oppa_gpu::GpuBackend::new();
     let mut dom = DomBackend::new(1.0);
     let mut sheet = StyleSheet::new(1.0);
     {
         use oppa::RendererBackend;
         for d in host.diffs_from(0) {
             cpu.commit(&d).expect("cpu commit");
-            vello.commit(&d).expect("vello commit");
+            gpu_backend.commit(&d).expect("gpu commit");
             dom.commit(&d).expect("dom commit");
         }
     }
     assert!(cpu.live_node_count() > 0);
-    assert_eq!(vello.live_node_count(), cpu.live_node_count());
+    assert_eq!(gpu_backend.live_node_count(), cpu.live_node_count());
     dom.with_sync(&host, &mut sheet).expect("sync");
 
     // CPU DrawOp boxes == DOM element geometry, serialized exactly
-    // (both derive from the same committed LayoutBox — the M6
-    // two-backend assert joins its third row).
+    // (both derive from the same committed LayoutBox).
     let html = render_page("t", &dom, &sheet);
     let mut compared = 0;
     for op in &plan.ops {
@@ -1721,11 +1732,12 @@ fn caps_negotiation_joins_its_third_row() {
     assert!(!caps.blur_backdrop, "same offset-solid degradation");
     assert!(caps.msaa, "browser coverage is always on");
     assert!(caps.text_as_paths, "the browser shapes real outlines");
-    // Beside the two rasterizer rows (M6's negotiation, third row joined).
+    // Beside the rasterizer rows: neither rasterizer shapes text as
+    // paths (decision 388 — custom is the only GPU row left).
     let cpu = oppa_cpu::CpuBackend::new();
-    let vello = oppa_vello::VelloBackend::new();
+    let gpu_backend = oppa_gpu::GpuBackend::new();
     assert!(!cpu.caps().text_as_paths);
-    assert!(vello.caps().text_as_paths);
+    assert!(!gpu_backend.caps().text_as_paths);
 }
 
 #[test]
@@ -1972,14 +1984,18 @@ mod browser {
     }
 
     #[test]
-    fn vello_per_run_encode_with_real_faces() {
+    fn gpu_per_run_faces_resolve_with_real_faces() {
+        use oppa_gpu::atlas::{FaceBytes, FaceTable};
         let probe = oppa_text_dwrite::DWriteTextService::new().expect("dwrite");
         let shaped = mixed_shape(&probe);
         // Deterministic ids (decision 16): the host-side shaping lands
         // on the same ids, so the probe instance resolves every face.
-        let mut atlas = oppa_vello::GlyphAtlas::new();
-        let (_ok, before) = (true, atlas.has_font());
-        assert!(!before);
+        // Decision 388: faces resolve through the GPU rasterizer's
+        // face table (real bytes validate headless — garbage panics
+        // loudly in `FaceBytes::checked`); scene encoding coverage
+        // lives in the GPU backend's own hardware suite.
+        let mut table = FaceTable::default();
+        assert!(table.face_for(oppa::FontId(0)).is_none());
         let mut seen_ids: Vec<oppa::FontId> = Vec::new();
         for run in &shaped.runs {
             if seen_ids.contains(&run.font_id) {
@@ -1991,14 +2007,15 @@ mod browser {
                 .unwrap_or_else(|| panic!("font file for {:?}", run.font_id));
             let bytes = std::fs::read(&face_path).expect("read font file");
             assert!(!bytes.is_empty());
+            let face = FaceBytes::checked(bytes, index, "m7 real face");
             if seen_ids.len() == 1 {
-                atlas.set_font_bytes(bytes, index);
+                table.default = Some(face);
             } else {
-                atlas.set_font_for(run.font_id, bytes, index);
+                table.explicit.insert(run.font_id, face);
             }
         }
-        assert!(atlas.has_font());
-        assert_eq!(atlas.face_ids().len(), seen_ids.len() - 1);
+        assert!(table.face_for(oppa::FontId(0)).is_some());
+        assert_eq!(table.explicit.len(), seen_ids.len() - 1);
 
         // Same string through the real pipeline: layout → plan → encode.
         let host = ComponentHost::new();
@@ -2032,33 +2049,21 @@ mod browser {
         };
         assert_eq!(em_size, 16.0, "exact em, not line_height");
         assert!(fonts.len() >= 2, "segmentation survived: {fonts:?}");
-
-        let mut scene = vello::Scene::new();
-        let desc = oppa::SurfaceDesc {
-            width_px: 200,
-            height_px: 120,
-            background: SURFACE_BG,
-        };
-        oppa_vello::encode_plan(&mut scene, &plan, &desc, &mut atlas, &Default::default())
-            .expect("per-run encode");
-        let placed = atlas.placements();
-        assert_eq!(placed.len(), glyphs.len(), "every cell placed");
-        // Per-run face selection + subpixel pen exactness, run by run.
+        // Every shaped run resolved a validated face above; the
+        // plan carries the same runs the shaper produced.
         for font in &fonts {
             let lo = font.glyph_range.0;
             let hi = font.glyph_range.1;
-            assert!(hi <= placed.len() && hi <= glyphs.len());
-            for (p, g) in placed[lo..hi].iter().zip(glyphs[lo..hi].iter()) {
-                assert_eq!(p.glyph_id, g.glyph_id);
-                assert_eq!(p.advance, g.advance, "never re-shaped");
-                assert_eq!(p.font, font.font_id, "run face selected");
-            }
-            for w in placed[lo..hi].windows(2) {
-                assert_eq!(w[1].x - w[0].x, w[0].advance);
-            }
+            assert!(hi <= glyphs.len());
+            assert!(
+                seen_ids.contains(&font.font_id),
+                "run face resolved: {:?}",
+                font.font_id
+            );
+            let _ = &glyphs[lo..hi];
         }
         println!(
-            "M7 vello: em={em_size} faces={} glyphs={} runs={}",
+            "M7 GPU faces: em={em_size} faces={} glyphs={} runs={}",
             seen_ids.len(),
             glyphs.len(),
             fonts.len()
@@ -2302,7 +2307,7 @@ impl PatchRig {
             cursor: 0,
         };
         rig.sync();
-        rig.backend.mark_rendered();
+        rig.backend.mark_rendered(&rig.sheet);
         (rig, vs, ns)
     }
 
@@ -2322,18 +2327,95 @@ impl PatchRig {
     }
 }
 
+/// Decision 392: an unprimed backend drains the whole sheet on
+/// the first take (the browser holds no rules yet) — exactly once.
+#[test]
+fn sheet_delta_drains_exactly_once_and_rides_theme_flips() {
+    let host = ComponentHost::new();
+    host.set_viewport(200.0, 120.0);
+    host.mount("Card", CardProps { title: "Hi".into() }, render_card);
+    host.run_until_idle();
+    let mut backend = DomBackend::new(1.0);
+    let mut sheet = StyleSheet::new(1.0);
+    for d in host.diffs_from(0) {
+        backend.commit(&d).expect("commit");
+    }
+    backend.with_sync(&host, &mut sheet).expect("sync");
+    assert!(sheet.rule_count() > 0, "sync interned rules");
+    // Unprimed: the whole sheet rides the first take.
+    let patch = backend.take_patch(&sheet);
+    let shipped = patch.sheet.as_ref().expect("first take ships rules");
+    assert_eq!(
+        shipped.matches(".s").count(),
+        sheet.rule_count(),
+        "every rule ships once: {shipped:?}"
+    );
+    // Second take: settled and duplicate-free.
+    backend.with_sync(&host, &mut sheet).expect("sync");
+    let patch = backend.take_patch(&sheet);
+    assert!(patch.sheet.is_none(), "no duplicate rules: {patch:?}");
+}
+
+/// Decision 392: a theme flip mints dark-token rules that ride the
+/// same take as the stanza (this is the reported kitchen-sink bug —
+/// dark classes without rules).
+#[test]
+fn sheet_delta_carries_theme_flip_rules_with_the_stanza() {
+    #[derive(Clone, Default)]
+    struct ThemedProps;
+    impl oppa::Props for ThemedProps {}
+    fn render_themed(ctx: &oppa::Ctx, _: &ThemedProps) -> oppa::VNode {
+        oppa::Div("themed")
+            .style(
+                oppa::Style::new()
+                    .size(50.0, 20.0)
+                    .bg(ctx.theme().tokens().background),
+            )
+            .build()
+    }
+    let host = ComponentHost::new();
+    host.set_viewport(200.0, 120.0);
+    host.mount("Themed", ThemedProps, render_themed);
+    host.run_until_idle();
+    let mut backend = DomBackend::new(1.0);
+    let mut sheet = StyleSheet::new(1.0);
+    for d in host.diffs_from(0) {
+        backend.commit(&d).expect("commit");
+    }
+    backend.with_sync(&host, &mut sheet).expect("sync");
+    backend.mark_rendered(&sheet);
+    // Flip host + backend themes together (production
+    // `commit_and_sync` publishes both every frame).
+    host.set_theme(ThemeMode::Dark);
+    host.run_until_idle();
+    backend.set_theme_mode(ThemeMode::Dark);
+    backend.with_sync(&host, &mut sheet).expect("sync");
+    let patch = backend.take_patch(&sheet);
+    assert!(patch.theme.is_some(), "stanza rides");
+    let delta = patch.sheet.as_ref().expect("dark rules ride along");
+    assert!(
+        delta.contains("#121212"),
+        "dark page token in the delta: {delta:?}"
+    );
+    let patch = backend.take_patch(&sheet);
+    assert!(patch.is_empty(), "settled again: {patch:?}");
+}
+
 /// Settled frames patch nothing (the applier stays idle — no focus
-/// disturbance possible).
+/// disturbance possible). Decision 392: a primed rig (full page
+/// rendered via `mark_rendered`) owes no stylesheet delta either.
 #[test]
 fn patch_empty_when_settled() {
     let (mut rig, _, _) = PatchRig::form("ab", "v1");
-    let patch = rig.backend.take_patch();
+    let patch = rig.backend.take_patch(&rig.sheet);
     assert!(patch.is_empty(), "settled take is empty: {patch:?}");
     assert!(patch.theme.is_none(), "settled Light take owes no stanza");
+    assert!(patch.sheet.is_none(), "primed rig owes no rules");
     let json = patch.to_json();
     assert!(json.starts_with("{\"v\":1"), "{json}");
     assert!(json.contains("\"swaps\":[]"), "{json}");
-    assert!(json.ends_with("\"theme\":null}"), "{json}");
+    assert!(json.contains("\"sheet\":null"), "{json}");
+    assert!(json.ends_with("\"theme\":null,\"sheet\":null}"), "{json}");
 }
 
 /// The brief's verification, headless: a background state update
@@ -2348,7 +2430,7 @@ fn patch_background_update_never_touches_the_focused_field() {
     note.set(oppa::SharedString::from("v2"));
     rig.host.run_until_idle();
     rig.sync();
-    let patch = rig.backend.take_patch();
+    let patch = rig.backend.take_patch(&rig.sheet);
     assert!(!patch.full, "content change is incremental");
     assert!(patch.removes.is_empty() && patch.places.is_empty());
     assert!(patch.attrs.is_empty() && patch.sels.is_empty() && patch.spacers.is_empty());
@@ -2370,7 +2452,7 @@ fn patch_framework_value_set_syncs_the_value_property() {
     value.set(oppa::SharedString::from("abc"));
     rig.host.run_until_idle();
     rig.sync();
-    let patch = rig.backend.take_patch();
+    let patch = rig.backend.take_patch(&rig.sheet);
     assert!(patch.swaps.is_empty(), "fields never swap: {patch:?}");
     assert_eq!(patch.attrs.len(), 1, "{patch:?}");
     assert_eq!(patch.attrs[0].pid, field);
@@ -2397,14 +2479,14 @@ fn patch_reorder_places_final_order_without_blobs() {
         backend.commit(&d).expect("commit");
     }
     backend.with_sync(&host, &mut sheet).expect("sync");
-    backend.mark_rendered();
+    backend.mark_rendered(&sheet);
     handle.set_props(OrderProps { reversed: true });
     host.run_until_idle();
     for d in host.diffs_from(host.diff_count() - 1) {
         backend.commit(&d).expect("commit");
     }
     backend.with_sync(&host, &mut sheet).expect("sync");
-    let patch = backend.take_patch();
+    let patch = backend.take_patch(&sheet);
     assert!(!patch.full);
     assert!(patch.removes.is_empty(), "moves, never removals: {patch:?}");
     assert_eq!(patch.places.len(), 1, "{patch:?}");
@@ -2441,14 +2523,14 @@ fn patch_added_cells_carry_blobs() {
         backend.commit(&d).expect("commit");
     }
     backend.with_sync(&host, &mut sheet).expect("sync");
-    backend.mark_rendered();
+    backend.mark_rendered(&sheet);
     handle.set_props(CountProps { n: 3, tint: false });
     host.run_until_idle();
     for d in host.diffs_from(host.diff_count() - 1) {
         backend.commit(&d).expect("commit");
     }
     backend.with_sync(&host, &mut sheet).expect("sync");
-    let patch = backend.take_patch();
+    let patch = backend.take_patch(&sheet);
     assert_eq!(patch.places.len(), 1, "{patch:?}");
     assert_eq!(patch.places[0].kids.len(), 3, "final order");
     assert_eq!(patch.places[0].blobs.len(), 2, "two new cells ride blobs");
@@ -2471,14 +2553,14 @@ fn patch_removed_cells_topmost_only() {
         backend.commit(&d).expect("commit");
     }
     backend.with_sync(&host, &mut sheet).expect("sync");
-    backend.mark_rendered();
+    backend.mark_rendered(&sheet);
     handle.set_props(CountProps { n: 1, tint: false });
     host.run_until_idle();
     for d in host.diffs_from(host.diff_count() - 1) {
         backend.commit(&d).expect("commit");
     }
     backend.with_sync(&host, &mut sheet).expect("sync");
-    let patch = backend.take_patch();
+    let patch = backend.take_patch(&sheet);
     assert_eq!(patch.removes.len(), 2, "two cells gone, topmost: {patch:?}");
     // The survivor's parent still places (child list changed).
     assert_eq!(patch.places.len(), 1, "{patch:?}");
@@ -2495,7 +2577,7 @@ fn patch_json_escapes_embedded_quotes() {
     note.set(oppa::SharedString::from("say \"hi\""));
     rig.host.run_until_idle();
     rig.sync();
-    let patch = rig.backend.take_patch();
+    let patch = rig.backend.take_patch(&rig.sheet);
     assert_eq!(patch.swaps.len(), 1);
     let json = patch.to_json();
     assert!(
@@ -2529,9 +2611,9 @@ fn page_chrome_rides_change_only_stanza_and_body_style() {
         backend.commit(&d).expect("commit");
     }
     backend.with_sync(&host, &mut sheet).expect("sync");
-    backend.mark_rendered();
+    backend.mark_rendered(&sheet);
     // Settled Light: empty, no stanza owed.
-    let patch = backend.take_patch();
+    let patch = backend.take_patch(&sheet);
     assert!(patch.is_empty(), "settled Light take is empty");
     assert!(patch.theme.is_none(), "no stanza on repeats");
     // Flip to Dark: the sync counts the page chrome as touched
@@ -2540,21 +2622,22 @@ fn page_chrome_rides_change_only_stanza_and_body_style() {
     backend.set_theme_mode(ThemeMode::Dark);
     let touched = backend.with_sync(&host, &mut sheet).expect("sync").touched;
     assert!(touched > 0, "the flip is sync work");
-    let patch = backend.take_patch();
+    let patch = backend.take_patch(&sheet);
     assert!(!patch.is_empty(), "the stanza is patch work");
     let stanza = patch.theme.as_ref().expect("one stanza");
     let dark = ThemeTokens::dark();
     assert_eq!(stanza.bg, "#121212", "tokens drive the wire");
     assert_eq!(stanza.ink, "#f5f5f5", "tokens drive the wire");
+    assert!(stanza.dark, "stanza names the dark scheme");
     assert_eq!(dark.background, Color(0x12_12_12));
     assert_eq!(dark.text_primary, Color(0xF5_F5_F5));
     let json = patch.to_json();
     assert!(
-        json.contains("\"theme\":{\"bg\":\"#121212\",\"ink\":\"#f5f5f5\"}"),
+        json.contains("\"theme\":{\"bg\":\"#121212\",\"ink\":\"#f5f5f5\",\"dark\":true}"),
         "stanza serializes, {json}"
     );
     // Repeat take: quiet again.
-    let patch = backend.take_patch();
+    let patch = backend.take_patch(&sheet);
     assert!(patch.theme.is_none(), "change-only, never per-frame");
     assert!(patch.is_empty(), "settled again");
     // Full pages style their own body (the boot path needs no

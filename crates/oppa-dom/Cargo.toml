@@ -18,8 +18,7 @@ oppa-image = { path = "../oppa-image" }
 [dev-dependencies]
 oppa-macros = { path = "../oppa-macros" }
 oppa-controls = { path = "../oppa-controls" }
-oppa-vello = { path = "../oppa-vello" }
-vello = "0.10"
+oppa-gpu = { path = "../oppa-gpu" }
 
 [target.'cfg(windows)'.dev-dependencies]
 oppa-text-dwrite = { path = "../oppa-text-dwrite" }

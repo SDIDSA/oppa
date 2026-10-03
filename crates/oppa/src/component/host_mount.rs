@@ -42,6 +42,8 @@ impl ComponentHost {
             timers: RefCell::new(Vec::new()),
             next_timer: Cell::new(1),
             images: RefCell::new(ImageCache::new()),
+            debug_overlay: RefCell::new(crate::debug_overlay::OverlayMeter::default()),
+            root_instances: RefCell::new(Vec::new()),
         });
         // Framework-owned INPUT router (M5): hit-test + capture/focus +
         // dispatch over each queued InputEvent, inside INPUT's BatchGuard.
@@ -110,6 +112,7 @@ impl ComponentHost {
         }
         let effect = self.spawn_root_effect(inst);
         self.inner.effects.borrow_mut().insert(inst, effect.clone());
+        self.inner.root_instances.borrow_mut().push(inst);
         MountHandle {
             host: self.clone(),
             instance: inst,
@@ -134,6 +137,7 @@ impl ComponentHost {
         let effect = self.spawn_root_effect(inst);
         let id = effect.id();
         self.inner.effects.borrow_mut().insert(inst, effect);
+        self.inner.root_instances.borrow_mut().push(inst);
         self.inner.rt.mark_effect_dirty(id);
         inst
     }
@@ -199,12 +203,46 @@ impl ComponentHost {
         let _guard = OwnerGuard {
             rt: host.inner.rt.clone(),
         };
-        let vnode = render_fn(&ctx, &owned);
+        let mut vnode = render_fn(&ctx, &owned);
         // M8 (finding F6): stamp the creating instance on the run's
         // handler attachments while the child context still exists —
         // the reconciler drains closures in the root effect, where the
         // running owner is always the root.
         crate::vnode::stamp_handler_owner(&vnode, inst);
+
+        // When debug performance overlay is enabled, wrap the root so the
+        // app subtree lays out exactly as the bare root: a block `Div`
+        // passes the viewport width constraint through (a `Stack` would
+        // measure the app intrinsically and left-align centered content),
+        // while the badge floats in an intrinsic `Stack` layer so it hugs
+        // its text instead of stretching into a full-width strip.
+        if let Some(badge) = host.debug_overlay_badge() {
+            let overlay = crate::vnode::Div("oppa_debug_overlay")
+                .style(
+                    crate::style::Style::new()
+                        .bg(crate::style::Color(0x1E_1E_1E))
+                        .ink(crate::style::Color(0x00_FF_66))
+                        .pad_x(8)
+                        .pad_y(4)
+                        .radius(4.0)
+                        .opacity(Some(0.88)),
+                )
+                .child(
+                    crate::vnode::Text {
+                        text: crate::vnode::SharedString::from(badge),
+                        style: crate::vnode::TextClass::Custom {
+                            size_px: 12,
+                            weight: crate::text::FontWeight::BOLD,
+                        },
+                    }
+                    .into(),
+                );
+            let layer = crate::vnode::Stack("oppa_debug_layer")
+                .style(crate::style::Style::new().x(8.0).absolute_y(8.0))
+                .child(overlay);
+            vnode = crate::vnode::Div("oppa_debug_root").children(vec![vnode, layer]);
+        }
+
         host.reconcile_root(vnode);
     }
 
@@ -285,6 +323,18 @@ impl ComponentHost {
         // on-demand loop still idles when commits are empty.
         if !diff.is_empty() {
             self.inner.rt.request_frame();
+        }
+
+        // Debug performance overlay dirt readout: the commit size
+        // rides the badge. The FPS clock is deliberately untouched
+        // here — it ticks on presents (`note_overlay_frame`), never
+        // on reconciles, so an interaction after a long idle gap can
+        // never divide by the gap and print 0 FPS.
+        {
+            let mut meter = self.inner.debug_overlay.borrow_mut();
+            if meter.config.enabled {
+                meter.note_commit_dirty(diff.ops.len());
+            }
         }
     }
 }

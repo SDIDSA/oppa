@@ -41,6 +41,27 @@ fn center_of(app: &WebApp, id: NodeId) -> (f32, f32) {
     (b.x + b.w / 2.0, b.y + b.h / 2.0)
 }
 
+/// Decision 392: the Dark-mode toggle emits a theme stanza plus
+/// the dark rules on the same patch (the reported sink bug was
+/// dark classes without rules, and a sink applier that dropped
+/// the stanza).
+#[test]
+fn sink_dark_toggle_emits_theme_stanza_and_dark_rules() {
+    let mut app = WebApp::new_sink();
+    let _ = app.html();
+    let json = press_labeled(&mut app, "Dark mode");
+    assert_eq!(
+        app.host().theme().mode(),
+        oppa::ThemeMode::Dark,
+        "toggle flips the host theme"
+    );
+    assert!(
+        json.contains("\"theme\":{\"bg\":\"#121212\",\"ink\":\"#f5f5f5\",\"dark\":true}"),
+        "stanza rides the toggle patch: {json}"
+    );
+    assert!(json.contains("#121212"), "dark rules ride the same patch");
+}
+
 /// Presses the tab-order button carrying `label` (semantics never go
 /// stale across in-place diffs). Returns the patch JSON — a press
 /// that touches nothing fails loudly (a dead button is a wiring

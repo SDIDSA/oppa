@@ -6,11 +6,11 @@ use oppa::{
     Color, DiffOp, DrawOp, FramePlan, NodeId, PresenterKind, RendererBackend, SurfaceDesc, TreeDiff,
 };
 use oppa_cpu::CpuBackend;
-use oppa_gpu::{diff_count_tol, gpu_caps, CustomGpuBackend, RgbaImage};
+use oppa_gpu::{diff_count_tol, gpu_caps, GpuBackend, RgbaImage};
 
 #[test]
 fn test_caps_and_kind() {
-    let backend = CustomGpuBackend::new();
+    let backend = GpuBackend::new();
     assert_eq!(backend.kind(), PresenterKind::GpuDrawList);
     let caps = backend.caps();
     assert_eq!(caps, gpu_caps());
@@ -22,7 +22,7 @@ fn test_caps_and_kind() {
 
 #[test]
 fn test_surface_lifecycle() {
-    let mut backend = CustomGpuBackend::new();
+    let mut backend = GpuBackend::new();
     let desc = SurfaceDesc {
         width_px: 200,
         height_px: 100,
@@ -45,7 +45,7 @@ fn test_surface_lifecycle() {
 
 #[test]
 fn test_empty_plan_skip() {
-    let mut backend = CustomGpuBackend::new();
+    let mut backend = GpuBackend::new();
     let desc = SurfaceDesc {
         width_px: 100,
         height_px: 100,
@@ -67,7 +67,7 @@ fn test_empty_plan_skip() {
 
 #[test]
 fn test_refuse_unregistered_image() {
-    let mut backend = CustomGpuBackend::new();
+    let mut backend = GpuBackend::new();
     let desc = SurfaceDesc {
         width_px: 100,
         height_px: 100,
@@ -95,7 +95,7 @@ fn test_refuse_unregistered_image() {
 
 #[test]
 fn test_refuse_invalid_svg_path() {
-    let mut backend = CustomGpuBackend::new();
+    let mut backend = GpuBackend::new();
     let desc = SurfaceDesc {
         width_px: 100,
         height_px: 100,
@@ -126,7 +126,7 @@ fn test_refuse_invalid_svg_path() {
 
 #[test]
 fn test_retained_splice_and_commit() {
-    let mut backend = CustomGpuBackend::new();
+    let mut backend = GpuBackend::new();
     let desc = SurfaceDesc {
         width_px: 100,
         height_px: 100,
@@ -179,7 +179,7 @@ fn test_retained_splice_and_commit() {
 #[test]
 fn test_oracle_compare_geometry() {
     let mut cpu = CpuBackend::new();
-    let mut gpu = CustomGpuBackend::new();
+    let mut gpu = GpuBackend::new();
 
     let desc = SurfaceDesc {
         width_px: 120,
@@ -286,7 +286,7 @@ fn test_oracle_compare_geometry() {
 #[test]
 fn test_oracle_image_rendering() {
     let mut cpu = CpuBackend::new();
-    let mut gpu = CustomGpuBackend::new();
+    let mut gpu = GpuBackend::new();
 
     let desc = SurfaceDesc {
         width_px: 60,
@@ -354,7 +354,7 @@ fn test_oracle_image_rendering() {
 #[test]
 fn test_oracle_blurred_shadow() {
     let mut cpu = CpuBackend::new();
-    let mut gpu = CustomGpuBackend::new();
+    let mut gpu = GpuBackend::new();
 
     let desc = SurfaceDesc {
         width_px: 100,
@@ -417,7 +417,7 @@ fn test_oracle_text_rendering() {
     let font_bytes = std::fs::read(&font_path).expect("read font bytes");
 
     let mut cpu = CpuBackend::new();
-    let mut gpu = CustomGpuBackend::new();
+    let mut gpu = GpuBackend::new();
 
     cpu.set_font_bytes(font_bytes.clone(), font_index);
     gpu.set_font_bytes(font_bytes, font_index);

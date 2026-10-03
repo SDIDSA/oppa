@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-02 (through Decision 385).
+Status: current. Last verified: 2026-10-03 (through Decision 397).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -150,11 +150,11 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   clipping, layer opacity, direct swapchain render passes (`present_surface`),
   pixel-oracle tested (<5% shadow tolerance, exact geometry/images) against
   `oppa-cpu`; integrated into `DesktopLoop` in `oppa-app` with CLI/env
-  override (`OPPA_RENDERER=custom_gpu`).
+  override (`OPPA_RENDERER=gpu*`).
 - Phase 41b (decision 385, gate green 2026-10-01): Host-level ImageCache & runner
   image sync — `ComponentHost` and `Ctx` own shared `ImageCache`; `DomBackend`
   syncs host images per commit; `DesktopLoop` (and testkit harnesses) upload
-  static pixels into CPU, Vello, and CustomGpu backends via `insert_cached`;
+  static pixels into CPU and GPU backends via `insert_cached`;
   `KitchenSinkApp` Views tab deposits into `ctx.images()`; web Views tab crash
   eliminated with full tab roundtrip proven in Edge headless.
 - Windows TSF input scope diagnostic cleanup (gate green 2026-10-02): `tsf.rs`
@@ -218,10 +218,31 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
   all workspace quality gates green (fmt, clippy, wasm, tests).
+- Cross-backend debug performance overlay (gate green 2026-10-02): `DebugOverlayConfig` and
+  `OverlayMeter` implemented at `ComponentHost` root level in `crates/oppa/src/debug_overlay.rs`;
+  tracks rolling EMA FPS, frame delta ms, dirty node count, and presenter badge (`[CustomGpu/API]`, `[CPU]`, `[DOM]`);
+  flags individual boolean toggles, disabled by default (zero-cost);
+  configured via `WindowOptions::with_debug_overlay` / `with_fps_counter` or `OPPA_DEBUG_FPS=1` env var;
+  works across every presenter backend uniformly; all quality gates verified green.
+- Uncapped continuous repaint (decision 386, gate green 2026-10-02):
+  `WindowOptions::with_continuous_repaint(bool)` (default `false`) +
+  `DesktopLoop` getter/setter, `OPPA_CONTINUOUS_REPAINT=1` / `OPPA_BENCHMARK=1`
+  env override; armed pump horizon `Some(0)` (Windows wait + Linux Poll) with
+  repaint + `request_frame` re-arm after every present on all desktop backends
+  (Custom GPU, CPU), overlay on or off; Android/Web stay display-paced.
+  Overlay FPS clock ticks on presents (never reconciles — no 0 FPS after idle
+  gaps); badge text refreshes through a throttled 4Hz root re-run.
+- Vello removed, single GPU backend (decision 388, supersedes ADR-0009 buy-the-rasterizer): `oppa-vello` + `oppa-fps`/`oppa-fps-demo` deleted; single GPU twin selected by `OPPA_RENDERER=cpu|gpu|gpu-auto|gpu-vulkan|gpu-dx12|gpu-gl` (retired `vello*` spellings refuse loudly into auto); badge `Gpu/API` names the recorded winner; `oppa-dom` oracle tests + Android harness ported (`ensure_gpu_gles`/`ensure_gpu_vulkan`/`render_noread` added to the backend); SPEC oracle + ARCHITECTURE + platform pages updated in the same change. Decision 389 drops the `custom` qualifier (`CustomGpuBackend`→`GpuBackend`, flags `gpu-*`, retired `custom*` spellings refuse loudly into auto).
+
+- Android proof-app benchmark mode + FPS badge (decision 393, gate green 2026-10-03): `DEBUG_BADGE` / `BENCHMARK_PHASE` flags both on — overlay armed before mount (env unsettable under NativeActivity), `Gpu/GL` / `Gpu/Vulkan` published at swapchain bring-up, bounded present phase uncapped (non-blocking poll, step + present + badge tick every frame, negotiated Immediate→Mailbox→Fifo with loud Fifo fallback — the emulator translator offers Fifo only); interactive phase stays event-paced Fifo. Release packaging: `cargo --release` both ABIs (~12 MB .so), Gradle stages `release/` + `assembleRelease` signed with the dev debug key (8.1 MB APK), manifest `debuggable` unhardcoded (Gradle debug auto-assigns; aapt2 path takes the link-time debug-mode flag). Proven live on Medium_Phone_API_36.1 (`29 FPS | 38.9ms | 1 dirty | [Gpu/GL]` badge on screen). Gates: fmt + Android-target clippy green (`cargo test` unbuildable on host by construction — `ndk-sys` refuses non-Android; the on-device oracle run is the test).
+- Full-bleed window (decision 396, gate green 2026-10-03): `OppaUi.hideBars` sets `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES` (default mode letterboxed below the camera strip) + `wait_for_window` polls to size-settle instead of freezing the first sighting. Proven live on the RMX3370: scene renders full-bleed 1080x2400 (only the debug badge's own dark pill remains at top-left).
+- Overlay idle-gap skip (decision 395, gate green 2026-10-03): `note_frame` resyncs past 1s gaps instead of dividing by them (event-driven taps printed `0 FPS` after idle, against the stated doctrine). Proven live on the RMX3370: tap → 30s idle → tap shows a held live rate (`35 FPS | 4.0ms`) instead of gap-poisoned `0 FPS`. Unit: new hold-rate test; all 9 overlay tests + fmt + clippy green.
+- Android tap-path theme sync (decision 394, gate green 2026-10-03): `apply_tap_batch` syncs the builder theme every build + refits the page-background surfaces on toggle (desktop `frame.rs` rule via a shared `rebase_surfaces` core; blank-guard compares the live bg); the step returns the live GPU scene id (a rebase re-homes surfaces mid-loop — presenting the call-time id aborted the loop and froze the app). A dp-passthrough coordinate experiment was tried and reverted (taps regressed); corrected diagnosis: the router hit-tests device px (`LayoutBox` commits device px), so the px→dp→px round trip is correct spacing — proven by on-device event-vs-track-box comparison with accurate flips. Proven live on the RMX3370 phone (Vulkan row): uniform dark scene after toggle (near-black page bg, themed controls + text), loop alive after (`66 FPS [Gpu/Vulkan]`), taps keep processing.
+- Unified app-loop engine (decision 397, gates green 2026-10-03): the platform-free pixel pipeline now lives once in `oppa-app::SceneCore` (host + `FramePlanBuilder` + both paint arms + surfaces, diff replay, selection/caret overlay publish, theme/page-bg contract with surface refit, resize/DPR rebase, GPU bring-up state + present-mode negotiation, static-image deposit sync, plan/caret telemetry). `DesktopLoop` composes it behind the unchanged public API (moved bodies are verbatim, error wording preserved — tests grep it) and `oppa-android-app` drives it: `SceneState` collapsed to one `SceneCore` (its private re-implementations — the plan-build/paint ladder, `rebase_surfaces`, `sync_page_bg`, `straight_rgba`, `pick_uncapped_mode`, density rebase — deleted; presents address the engine's live GPU surface id, eliminating the stale-id threading; `enable_gpu_pinned` keeps zygote-inherited env out of the arm decision). The merge also fixes the Android pipeline's missing static-image `insert_cached` sync (decision 385 rode desktop only). Web stays presenter-owned (locked #1). Gates: host `cargo check --workspace --all-targets` + clippy + fmt --all --check green; `cargo test -p oppa-app --lib` 44/31 — identical to the refactoring baseline (the 31 reds pre-date this change, see Now); Android target `cargo +stable check/clippy --target aarch64-linux-android --all-targets` green (host compile impossible — `ndk-sys` refuses non-Android; on-device oracle run remains the test, still blocked on hardware).
 
 ## Now (in progress)
 
-- Phase 41 complete (decisions 384–385 green). Awaiting user selection of next deferred item (Items #2–#9).
+- Loop-consolidation round (decision 397) done 2026-10-03: `SceneCore` is the one engine (see Done); remaining follow-up from the same doctrine — the `frameloop.rs` benchmark damage loop still drives `parts_mut`/`gpu_backend_mut` accessors rather than engine methods (kept, oracle-owned); workspace suite red counts unchanged by this change (31 in `oppa-app --lib`, 14 in `oppa` g11_touch — all failing identically before this round's edits, mid-flight core work in the tree).
 
 ## Next (accepted, not started)
 
@@ -232,14 +253,14 @@ value loop, reference apps).
 Accepted-carry: weak-GPU sustained-cost standing rule.
 
 Accepted-carry: file-size follow-ups (`oppa-controls/tests.rs`, `vnode.rs`,
-`oppa-cpu/builder.rs`, `oppa-vello/backend.rs`, `oppa-app` tests) stay over the
+`oppa-cpu/builder.rs`, `oppa-app` tests) stay over the
 hard 1000-line limit — same mechanical split pattern applies.
 
 ## Blocked (with blocker)
 
 | Item | Blocked by |
 |---|---|
-| Android on-device sustained/thermal numbers | No phone attached; emulator walls mapped |
+| Android on-device sustained/thermal numbers + GPU re-proof (prior numbers Vello-measured) | No phone attached; emulator walls mapped |
 | Live human passes (IME composition manual, theme flips, menu/tooltip eyeball, close-veto app) | Needs a person at the keyboard |
 | macOS/iOS shells | No Apple hardware; excluded by design |
 | Weak-tier silicon validation (Mali-G52/Adreno-610 class) | Needs hardware wall |
@@ -254,5 +275,5 @@ hard 1000-line limit — same mechanical split pattern applies.
 
 - Environmental flakes: `oppa-shell-win` live-Shift sampling; sandboxed clipboard returns NULL handle with `ERROR_SUCCESS` (loud skip); transient clipboard box contention in full-suite runs.
 - Stated edges: ZWJ-inside-regional-indicator double-click selects the joiner alone (pathological); right-held single-gesture drag-select stays out (tap-to-open).
-- Standing debt: hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question); headless TaskStudio quiescence resolved (decision 383 — gated unshaped text re-measure); full studio tests remain bounded-frame by doctrine.
+- Standing debt: hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question); headless TaskStudio quiescence resolved (decision 383 — gated unshaped text re-measure); full studio tests remain bounded-frame by doctrine; Dark-OS web boot shows the static light body until the first patch carries the theme stanza (settled pages take nothing — body heals on first interaction).
 - Deliberate non-goals (not debt): fixed decorative literals, `SELECTION_FILL`, OS title-bar theming; right-held menu drag-select; color-emoji rendering.

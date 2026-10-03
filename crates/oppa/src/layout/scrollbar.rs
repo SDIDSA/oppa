@@ -23,7 +23,7 @@ pub const SCROLLBAR_MIN_THUMB_PX: f32 = 24.0;
 /// Thumb geometry, viewport-relative (Round 17.2, decision 318):
 /// `y` is the thumb-top offset from the track top, `h` the thumb
 /// extent. Shared by every presenter (and the hit-test rule), so
-/// CPU, Vello, and DOM agree by construction.
+/// CPU, GPU, and DOM agree by construction.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ScrollbarThumb {
     pub y: f32,

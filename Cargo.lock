@@ -1462,7 +1462,6 @@ dependencies = [
  "oppa-shell-win",
  "oppa-text-dwrite",
  "oppa-text-linux",
- "oppa-vello",
  "raw-window-handle",
  "tiny-skia",
  "wgpu",
@@ -1505,52 +1504,15 @@ dependencies = [
  "oppa",
  "oppa-controls",
  "oppa-cpu",
+ "oppa-gpu",
  "oppa-image",
  "oppa-macros",
  "oppa-text-dwrite",
- "oppa-vello",
- "vello",
 ]
 
 [[package]]
 name = "oppa-fonts"
 version = "0.1.0"
-
-[[package]]
-name = "oppa-fps"
-version = "0.1.0"
-dependencies = [
- "android-activity",
- "js-sys",
- "oppa",
- "oppa-cpu",
- "oppa-fonts",
- "oppa-macros",
- "oppa-text-rustybuzz",
- "oppa-vello",
- "raw-window-handle",
- "softbuffer",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "oppa-fps-demo"
-version = "0.1.0"
-dependencies = [
- "oppa",
- "oppa-cpu",
- "oppa-macros",
- "oppa-shell-win",
- "oppa-text-dwrite",
- "oppa-vello",
- "raw-window-handle",
- "wgpu",
- "windows",
-]
 
 [[package]]
 name = "oppa-gpu"
@@ -1687,20 +1649,6 @@ dependencies = [
  "oppa-macros",
  "windows",
  "windows-core",
-]
-
-[[package]]
-name = "oppa-vello"
-version = "0.1.0"
-dependencies = [
- "oppa",
- "oppa-cpu",
- "oppa-text-dwrite",
- "pollster",
- "tiny-skia",
- "vello",
- "web-time",
- "wgpu",
 ]
 
 [[package]]

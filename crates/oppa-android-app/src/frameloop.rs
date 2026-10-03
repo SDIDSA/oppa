@@ -21,7 +21,7 @@ use std::time::Instant;
 use oppa::ComponentHost;
 use oppa::RendererBackend;
 use oppa_cpu::{CpuBackend, FramePlanBuilder};
-use oppa_vello::VelloBackend;
+use oppa_gpu::GpuBackend;
 
 const FRAMES: usize = 20;
 
@@ -39,7 +39,7 @@ fn stats(name: &str, samples: &[f64]) -> String {
 /// included — so call this before any other GPU render).
 /// Writes `frameloop.txt`; returns the meta record line.
 pub fn run_frame_loop(
-    backend: &mut VelloBackend,
+    backend: &mut GpuBackend,
     vsurf: oppa::SurfaceId,
     dir: &Path,
     expected_bytes: usize,

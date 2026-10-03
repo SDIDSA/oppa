@@ -10,7 +10,7 @@ impl DesktopLoop {
     /// flows to the router (which clears focus). Pure over the host
     /// — headless-tested below.
     pub fn escape_exits(&self, code: u32, pressed: bool) -> bool {
-        pressed && code == oppa::input::keys::ESCAPE && self.host.focused_node().is_none()
+        pressed && code == oppa::input::keys::ESCAPE && self.scene.host().focused_node().is_none()
     }
 
     /// Types `text` into the focused text field's session, if any
@@ -25,11 +25,11 @@ impl DesktopLoop {
         if printable.is_empty() {
             return Ok(0);
         }
-        let Some(session) = self.host.focused_field_session() else {
+        let Some(session) = self.scene.host().focused_field_session() else {
             return Ok(0);
         };
         session.insert(&printable);
-        self.host.run_until_idle();
+        self.scene.host().run_until_idle();
         self.repaint()
     }
 
@@ -39,11 +39,11 @@ impl DesktopLoop {
     /// also injected — a future field `Key` handler must not see it
     /// twice).
     pub fn backspace(&mut self) -> Result<usize, String> {
-        let Some(session) = self.host.focused_field_session() else {
+        let Some(session) = self.scene.host().focused_field_session() else {
             return Ok(0);
         };
         session.backspace();
-        self.host.run_until_idle();
+        self.scene.host().run_until_idle();
         self.repaint()
     }
 
@@ -51,11 +51,11 @@ impl DesktopLoop {
     /// else char after caret). Same quiet-miss and consume rules as
     /// [`DesktopLoop::backspace`].
     pub fn delete_forward(&mut self) -> Result<usize, String> {
-        let Some(session) = self.host.focused_field_session() else {
+        let Some(session) = self.scene.host().focused_field_session() else {
             return Ok(0);
         };
         session.delete_forward();
-        self.host.run_until_idle();
+        self.scene.host().run_until_idle();
         self.repaint()
     }
 
@@ -71,13 +71,13 @@ impl DesktopLoop {
     /// bug). Runners pump the candidate anchor
     /// ([`DesktopLoop::ime_anchor`]) after every call.
     pub fn feed_ime(&mut self, events: &[ImeCompositionEvent]) -> Result<usize, String> {
-        let Some(mut session) = self.host.focused_field_session() else {
+        let Some(mut session) = self.scene.host().focused_field_session() else {
             return Ok(0);
         };
         for ev in events {
             dispatch_ime_event(&mut session, ev);
         }
-        self.host.run_until_idle();
+        self.scene.host().run_until_idle();
         self.repaint()
     }
 
@@ -98,7 +98,7 @@ impl DesktopLoop {
         if text.is_empty() {
             return Ok(0);
         }
-        let Some(session) = self.host.focused_field_session() else {
+        let Some(session) = self.scene.host().focused_field_session() else {
             return Ok(0);
         };
         let sel = session.selection();
@@ -132,7 +132,7 @@ impl DesktopLoop {
     /// Cancel feed: drops the open composition, caret back to anchor.
     /// Quiet `Ok(0)` when nothing composes or nothing is focused.
     pub fn feed_ime_cancel(&mut self) -> Result<usize, String> {
-        let Some(session) = self.host.focused_field_session() else {
+        let Some(session) = self.scene.host().focused_field_session() else {
             return Ok(0);
         };
         if !session.is_composing() {
@@ -147,7 +147,7 @@ impl DesktopLoop {
     /// follows the composition caret dynamically. `None` when
     /// unfocused or unshaped (quiet — anchoring is advisory).
     pub fn ime_anchor(&self) -> Option<[f32; 4]> {
-        self.host.focused_ime_anchor()
+        self.scene.host().focused_ime_anchor()
     }
 
     /// Routes one wheel tick at device-px `(x, y)` to the scrollable
@@ -161,24 +161,23 @@ impl DesktopLoop {
     /// `dy` the vertical feed as before (explicit feeds win; otherwise
     /// the target's handler owner self-wires, Round 24.2).
     pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> Result<usize, String> {
-        let Some(target) = self.host.scroll_target_at(x, y) else {
+        let Some(target) = self.scene.host().scroll_target_at(x, y) else {
             return Ok(0);
         };
-        self.host
+        self.scene
+            .host()
             .inject_input(InputEvent::Scroll { target, dx, dy });
-        self.host.run_until_idle();
+        self.scene.host().run_until_idle();
         self.repaint()
     }
 
     /// Injects a raster face for one shaper font id (decision 200):
     /// without it the CPU backend draws advance-cell bars and the
-    /// Vello twin refuses loudly at paint; with it, real outlines on
-    /// both. Best-effort by contract (callers warn, never die, when
-    /// the face is unreadable). Always lands in both backends so a
-    /// later `enable_gpu` never paints tofu.
+    /// GPU twin refuses loudly at paint; with it, real outlines
+    /// on both. Best-effort by contract (callers warn, never die,
+    /// when the face is unreadable). Always lands in both backends
+    /// so a later `enable_gpu` never paints tofu.
     pub fn set_font_for(&mut self, id: oppa::text::FontId, bytes: Vec<u8>, index: u32) {
-        self.cpu.set_font_for(id, bytes.clone(), index);
-        self.vello.set_font_for(id, bytes.clone(), index);
-        self.custom_gpu.set_font_for(id, bytes, index);
+        self.scene.set_font_for(id, bytes, index);
     }
 }

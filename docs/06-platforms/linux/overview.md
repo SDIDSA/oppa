@@ -5,8 +5,9 @@ emitter layer current, live-bus closed (M10/v1-closure). Sources:
 `12-archive/DESIGN.md` §§6, 8; `12-archive/BUILD-ORDER.md`
 (M4/M10); [`STATE.md`](../../STATE.md).
 
-- **Framework behavior:** full pipeline ownership; Vello GPU backend
-  + CPU fallback, same as Windows.
+- **Framework behavior:** full pipeline ownership; GPU
+  rasterizer backend + CPU fallback, same as Windows (auto
+  Vulkan-first with GL after Vulkan; decisions 390–391).
 - **M10 built (`crates/oppa-atspi`, std + `oppa` only):** total
   `Semantics`→role/state table (at-spi2 canonical names) +
   incremental `AtspiTree` mirror (value changes emit state events,

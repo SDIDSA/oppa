@@ -1,11 +1,11 @@
-//! Linux event/present glue (decision 242, Round 7.4 decision 279):
-//! winit window + `LinuxShell` intake + system text service + GPU-first
-//! paint (Vello hardware swapchains primary, softbuffer CPU fallback).
+//! Linux event/present glue: winit window + `LinuxShell` intake +
+//! system text service + GPU-first paint (custom-rasterizer
+//! hardware swapchains primary, softbuffer CPU fallback).
 //! Structure mirrors the proven `linux_demo` example
 //! (translate → shell → `take_cmds` → `to_input_event` → inject →
 //! repaint → redraw) minus its diagnostics/bounded-run harness, with
-//! the swapchain bring-up mirrored from `oppa-fps::driver` (Vulkan
-//! attempt, pipeline-cache round-trip, Immediate/Mailbox/Fifo pick).
+//! Vulkan-attempt swapchain bring-up (pipeline-cache round-trip,
+//! Immediate/Mailbox/Fifo pick).
 //! Under Wayland the GPU path creates hardware swapchains
 //! (`zwp_linux_dmabuf_v1`) running natively on the compositor
 //! (including WSLg) without touching Weston's software SHM
@@ -28,40 +28,46 @@ use oppa_shell_linux::{
 };
 use oppa_text_linux::LinuxTextService;
 
-use crate::{gpu_disabled_by_env, is_edit_shortcut_modifier, DesktopLoop, WindowOptions};
+use crate::{
+    continuous_repaint_override, gpu_disabled_by_env, is_edit_shortcut_modifier, DesktopLoop,
+    WindowOptions,
+};
 
-/// Live hardware present target (Round 7.4): the `wgpu` swapchain
-/// surface for the runner's window plus the negotiated mode and the
-/// backend name for logs. The scene itself lives in
-/// [`DesktopLoop`]'s Vello twin; this is only the swapchain half
-/// (mirrors `oppa-fps::driver::GpuState` minus the scene, which the
-/// loop owns). The `ShellWindow` softbuffer stays alive beside it as
-/// the loud CPU fallback.
+/// Live hardware present target: the `wgpu` swapchain surface for
+/// the runner's window plus the negotiated mode and the backend
+/// name for logs. The scene itself lives in [`DesktopLoop`]'s
+/// GPU twin; this is only the swapchain half. The `ShellWindow`
+/// softbuffer stays alive beside it as the loud CPU fallback.
 struct LinuxGpu {
     surface: wgpu::Surface<'static>,
     mode: wgpu::PresentMode,
     name: String,
 }
 
-/// Ordered GPU backend attempts (mirrors the fps driver: desktop
-/// probes Vulkan first — measured Vello bring-up ~2s vs ~6-16s Dx12
-/// on Windows, and only Vulkan persists pipeline-cache data in
-/// wgpu-hal 29; Linux tries the single Vulkan row).
+/// Ordered GPU backend attempts: Linux probes Vulkan first, then
+/// GL (decision 391 — same argument as Windows decision 390, and
+/// stronger here: GL is native Mesa, with llvmpipe as the software
+/// backstop; pre-Vulkan hardware and bare VMs still get
+/// acceleration). An explicit backend pin still attempts exactly
+/// that backend once so the refusal falls back loudly to CPU
+/// (never a silent substitution when the user named one —
+/// including the meaningless-on-Linux `gpu-dx12`, which fails
+/// loudly rather than substituting).
 fn backend_attempts() -> Vec<(&'static str, wgpu::Backends)> {
-    vec![("vulkan", wgpu::Backends::VULKAN)]
-}
-
-fn cache_dir() -> Option<std::path::PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|b| std::path::PathBuf::from(b).join(".cache/oppa-app"))
+    match crate::renderer_override() {
+        Some(crate::RendererKind::GpuDx12) => vec![("dx12", wgpu::Backends::DX12)],
+        Some(crate::RendererKind::GpuVulkan) => vec![("vulkan", wgpu::Backends::VULKAN)],
+        Some(crate::RendererKind::GpuGl) => vec![("gl", wgpu::Backends::GL)],
+        _ => vec![
+            ("vulkan", wgpu::Backends::VULKAN),
+            ("gl", wgpu::Backends::GL),
+        ],
+    }
 }
 
 /// Builds the GPU swapchain against `window`, or returns the loud
-/// reason to fall back to CPU (mirrors
-/// `oppa-fps::driver::FpsDriver::build_gpu`: one leaked instance per
-/// attempt, pipeline-cache round-trip, present-mode pick, surface
-/// configure, loop enable).
+/// reason to fall back to CPU: one leaked instance per attempt,
+/// present-mode pick, surface configure, loop enable.
 fn build_gpu(
     window: &winit::window::Window,
     display: raw_window_handle::RawDisplayHandle,
@@ -75,7 +81,7 @@ fn build_gpu(
             .map_err(|e| format!("window handle: {e:?}"))?
             .as_raw();
         // One leaked instance per attempt (the surface borrows it;
-        // the winner lives for the process — the fps rule).
+        // the winner lives for the process).
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = backends;
         let instance: &'static wgpu::Instance = Box::leak(Box::new(wgpu::Instance::new(desc)));
@@ -90,34 +96,23 @@ fn build_gpu(
                 continue;
             }
         };
-        let cache_path = cache_dir().map(|d| d.join(format!("vello-pipeline-cache-{name}.bin")));
-        let cache_data = cache_path.as_ref().and_then(|p| std::fs::read(p).ok());
-        eprintln!(
-            "oppa-app: {name} pipeline cache {}",
-            cache_data
-                .as_ref()
-                .map(|d| format!("{} bytes loaded (warm)", d.len()))
-                .unwrap_or_else(|| "absent (cold)".to_string())
-        );
-        match loop_.ensure_gpu_for_surface_with_cache(instance, &surface, cache_data) {
-            Ok((adapter, saved)) => {
+        match loop_.ensure_gpu_for_surface(instance, &surface) {
+            Ok(adapter) => {
                 eprintln!("oppa-app: {name} {adapter}");
-                if let (Some(path), Some(data)) = (cache_path, saved) {
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    match std::fs::write(&path, &data) {
-                        Ok(()) => {
-                            eprintln!("oppa-app: pipeline cache {} bytes saved", data.len())
-                        }
-                        Err(e) => eprintln!("oppa-app: pipeline cache save failed: {e}"),
-                    }
-                }
                 let mode = loop_.pick_gpu_mode(&surface);
                 loop_
                     .configure_gpu_surface(&surface, w, h, mode)
                     .map_err(|e| format!("configure surface: {e}"))?;
                 loop_.enable_gpu(mode);
+                // Record the winning backend for the debug badge
+                // (decision 387): a closed row vocabulary, so an
+                // unknown name refuses loudly instead of guessing.
+                match crate::GpuApi::from_row_name(name) {
+                    Some(api) => loop_.set_gpu_api(api),
+                    None => {
+                        return Err(format!("winning gpu backend {name:?} is not a known row"));
+                    }
+                }
                 return Ok(LinuxGpu {
                     surface,
                     mode,
@@ -150,12 +145,12 @@ fn cpu_present_to_window(loop_: &DesktopLoop, window: &mut ShellWindow) {
     }
 }
 
-/// Presents through the GPU swapchain with loud CPU fallback (Round
-/// 7.4): `Outdated` reconfigures and retries once (the fps storm
-/// rule, single-shot here — sustained storms reconfigure per frame
-/// rather than sleeping the event loop); any other failure logs the
-/// exact error and falls back to softbuffer for this frame (the next
-/// frame retries GPU — no silent permanent downgrade).
+/// Presents through the GPU swapchain with loud CPU fallback:
+/// `Outdated` reconfigures and retries once (single-shot here —
+/// sustained storms reconfigure per frame rather than sleeping the
+/// event loop); any other failure logs the exact error and falls
+/// back to softbuffer for this frame (the next frame retries GPU —
+/// no silent permanent downgrade).
 fn gpu_present_or_cpu(
     loop_: &mut DesktopLoop,
     gpu: &LinuxGpu,
@@ -428,7 +423,7 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                         Ok(gpu) => {
                             eprintln!("oppa-app: GPU path ({} / {:?})", gpu.name, gpu.mode);
                             self.gpu = Some(gpu);
-                            // Sync the Vello twin before the first
+                            // Sync the GPU twin before the first
                             // present (creation-time scene is stale
                             // once GPU enables both-backend paints).
                             if let Err(e) = self.loop_.repaint() {
@@ -455,6 +450,12 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                 }
             }
         }
+        // Presenter badge for the debug overlay: derived from the
+        // active renderer after bring-up (never a hardcoded path
+        // label).
+        self.loop_
+            .host()
+            .set_presenter_name(self.loop_.presenter_badge_name());
     }
 
     fn window_event(
@@ -529,6 +530,16 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                 }
                 // Present on the active backend (Round 7.4): GPU
                 // swapchain primary with loud softbuffer fallback.
+                // Continuous repaint (benchmark mode): repaint first so
+                // every present carries a fresh frame (the event-driven
+                // path only presents here — its repaints happen at the
+                // input/resize arms above, which request the redraw).
+                if self.loop_.continuous_repaint() {
+                    if let Err(e) = self.loop_.repaint() {
+                        eprintln!("oppa-app: FATAL continuous repaint: {e}");
+                        std::process::exit(1);
+                    }
+                }
                 if self.loop_.is_gpu() {
                     let size = self.loop_.viewport();
                     // Disjoint field borrows (loop + gpu + window)
@@ -549,6 +560,15 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                 } else if let Some(window) = self.window.as_mut() {
                     cpu_present_to_window(&self.loop_, window);
                 }
+                // After each presented frame the scene is marked dirty
+                // and the next frame requested (quiet no-op unless
+                // continuous repaint is armed — the event-driven path
+                // is unchanged).
+                self.loop_.rearm_continuous_frame();
+                // Overlay meter tick (both modes): present cadence
+                // drives the FPS clock, throttled badge refresh
+                // included.
+                self.loop_.note_frame_presented();
             }
             ev => {
                 if self.window.is_none() {
@@ -762,6 +782,16 @@ impl winit::application::ApplicationHandler for LinuxRunner {
             let tick = now + std::time::Duration::from_secs_f64(delta_ms / 1000.0);
             wake = Some(wake.map_or(tick, |w| w.min(tick)));
         }
+        if self.loop_.continuous_repaint() {
+            // Uncapped loop: a redraw every iteration with an
+            // immediate poll — vsync modes pace themselves at present.
+            // The horizon above is skipped, never slept.
+            if let Some(window) = self.window.as_ref() {
+                window.window().request_redraw();
+            }
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+            return;
+        }
         match wake {
             Some(t) => event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(t)),
             None => {
@@ -841,11 +871,11 @@ pub fn run_linux<P: Props>(
         window_control: LinuxWindowControl::new(),
     };
 
-    // Inject raster faces for all system font ids (decision 278, closes
-    // the decision-277 Linux follow-up; Round 7.4 lands them in BOTH
-    // backends via `DesktopLoop::set_font_for`): bold text and chevrons
-    // rasterize real glyph outlines on the CPU pixmap and on the Vello
-    // twin instead of advance-cell bars / loud-no-face refusals.
+    // Inject raster faces for all system font ids (decision 278 —
+    // both backends via `DesktopLoop::set_font_for`): bold text and
+    // chevrons rasterize real glyph outlines on the CPU pixmap and
+    // on the GPU twin instead of advance-cell bars /
+    // loud-no-face refusals.
     for (id, bytes, index) in font_pairs {
         runner.loop_.set_font_for(id, bytes, index);
     }
@@ -886,6 +916,9 @@ pub fn run_linux<P: Props>(
     runner
         .loop_
         .set_window_control(Box::new(runner.window_control.clone()));
+    runner
+        .loop_
+        .set_continuous_repaint(options.continuous_repaint || continuous_repaint_override());
     runner.loop_.mount("App", props, component);
     // App ownership (Round 25.3, decision 338): after mount (host
     // signals exist) and after the platform backend installs above

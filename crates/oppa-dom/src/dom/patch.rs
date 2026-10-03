@@ -4,15 +4,22 @@ impl DomBackend {
     /// Primes the emitted-page snapshot after a full-page render
     /// (Round 12.1): the browser holds exactly this tree, so the
     /// next [`take_patch`](Self::take_patch) diffs against it.
-    pub fn mark_rendered(&mut self) {
+    /// Decision 392: the browser also holds the whole sheet after
+    /// a full page, so the shipped-rules revision primes here too —
+    /// the next take carries no duplicate rules.
+    pub fn mark_rendered(&mut self, sheet: &StyleSheet) {
         self.snap = self.elements.clone();
         self.snap_roots.clone_from(&self.roots);
+        self.shipped_rules = sheet.rule_count();
     }
 
     /// Diffs the live tree against the last emitted page and returns
     /// the minimal patch (Round 12.1, decision 307) — then re-primes
     /// the snapshot, so consecutive takes describe consecutive
-    /// transitions. Rules (each proven by the focus-preservation
+    /// transitions. The stylesheet delta drains here too (decision
+    /// 392): rules the sheet added since the last shipped revision
+    /// ride `patch.sheet`, so post-boot classes always arrive with
+    /// their rules. Rules (each proven by the focus-preservation
     /// suite):
     /// - removals/additions emit topmost only (descendants ride the
     ///   ancestor op);
@@ -28,7 +35,11 @@ impl DomBackend {
     ///   inside, by retained-kind walk);
     /// - `.sel` highlights and `.spacer` heights sync through their
     ///   marker classes (unkeyed decorations, never element swaps).
-    pub fn take_patch(&mut self) -> PagePatch {
+    ///
+    /// `sheet` carries the stylesheet the browser diff cursor holds:
+    /// callers pass the live [`StyleSheet`](crate::css::StyleSheet)
+    /// so the delta drains against [`shipped_rules`](Self::shipped_rules).
+    pub fn take_patch(&mut self, sheet: &StyleSheet) -> PagePatch {
         let mut patch = PagePatch::default();
         if self.snap_roots != self.roots && !(self.snap_roots.is_empty() && self.snap.is_empty()) {
             // Root identity changed mid-session (remount-class):
@@ -39,14 +50,16 @@ impl DomBackend {
             // touching the real `<body>`), so the stanza rides here
             // too — never a duplicate on the next incremental take.
             patch.theme = self.theme_stanza();
-            self.mark_rendered();
+            self.drain_sheet_delta(sheet, &mut patch);
+            self.mark_rendered(sheet);
             return patch;
         }
         if self.snap.is_empty() && !self.elements.is_empty() {
             // Never emitted (no full page yet): same fallback.
             patch.full = true;
             patch.theme = self.theme_stanza();
-            self.mark_rendered();
+            self.drain_sheet_delta(sheet, &mut patch);
+            self.mark_rendered(sheet);
             return patch;
         }
         // Parent maps (child → parent) for both trees.
@@ -209,8 +222,21 @@ impl DomBackend {
         // still move the body style (sync() already counted the
         // flip as touched work, so the caller takes this patch).
         patch.theme = self.theme_stanza();
-        self.mark_rendered();
+        self.drain_sheet_delta(sheet, &mut patch);
+        self.mark_rendered(sheet);
         patch
+    }
+
+    /// Drains the stylesheet delta into `patch.sheet` (decision 392):
+    /// `Some` exactly when the sheet added rules since the last
+    /// shipped revision — then advances the revision, so settled
+    /// takes carry `None` and rules never duplicate.
+    fn drain_sheet_delta(&mut self, sheet: &StyleSheet, patch: &mut PagePatch) {
+        let delta = sheet.render_from(self.shipped_rules);
+        if !delta.is_empty() {
+            patch.sheet = Some(delta);
+        }
+        self.shipped_rules = sheet.rule_count();
     }
 
     /// Change-only page-chrome stanza (theme contract round): returns
@@ -223,6 +249,7 @@ impl DomBackend {
             Some(ThemePatch {
                 bg: dom_hex(t.background),
                 ink: dom_hex(t.text_primary),
+                dark: self.theme == ThemeMode::Dark,
             })
         } else {
             None

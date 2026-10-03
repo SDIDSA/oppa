@@ -8,5 +8,5 @@ pub mod path;
 pub mod pipeline;
 pub mod vertex;
 
-pub use backend::{gpu_caps, CustomGpuBackend, PresentReport};
+pub use backend::{gpu_caps, GpuBackend, PresentReport};
 pub use oracle::{diff_count_exact, diff_count_tol, max_channel_diff, RgbaImage};

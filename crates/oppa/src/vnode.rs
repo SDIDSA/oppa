@@ -924,7 +924,7 @@ impl From<Img> for VNode {
 /// Stroke paint for a [`PathSpec`] (decision 291): solid color at a
 /// CSS-px width. Caps/joins are fixed round on every backend (icons
 /// and checkmarks need soft ends; parameterizing them is a
-/// follow-up) — one rule, so CPU/Vello/DOM agree by construction.
+/// follow-up) — one rule, so CPU/GPU/DOM agree by construction.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct StrokeDesc {
     pub color: Color,

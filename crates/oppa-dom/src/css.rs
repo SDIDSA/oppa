@@ -310,8 +310,16 @@ impl StyleSheet {
 
     /// Deterministic stylesheet text (insertion order).
     pub fn render(&self) -> String {
+        self.render_from(0)
+    }
+
+    /// Rules added at or after `rev` (a `rule_count` snapshot —
+    /// decision 392: the patch channel ships exactly this delta so
+    /// post-boot classes arrive with their rules; empty when
+    /// nothing was added).
+    pub fn render_from(&self, rev: usize) -> String {
         let mut out = String::new();
-        for id in &self.order {
+        for id in self.order.iter().skip(rev) {
             let class = &self.classes[id];
             let decl = &self.decls[id];
             out.push_str(&format!(".{class}{{{decl}}}\n"));

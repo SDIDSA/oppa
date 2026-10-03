@@ -9,7 +9,6 @@ description = "Desktop application runner: window + event/paint loop over Compon
 oppa = { path = "../oppa" }
 oppa-cpu = { path = "../oppa-cpu" }
 oppa-gpu = { path = "../oppa-gpu" }
-oppa-vello = { path = "../oppa-vello" }
 tiny-skia = "0.12"
 wgpu = "29"
 raw-window-handle = "0.6"

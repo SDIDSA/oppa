@@ -20,11 +20,18 @@ Sources: `12-archive/DESIGN.md` §§1–2, 9.2–9.3 (locked #2, #23, #27);
 - **Built (M7):** TreeDiff→DOM mutations (minimality preserved
   end-to-end — scroll ticks mutate zero structure),
   `StyleId`→CSS rules (stable `s{bits}`, minimal churn, no
-  inline-style spam), native scroll (overflow container + spacer,
+  inline-style spam; post-boot rules ship as patch deltas —
+  decision 392, so theme flips and late styles arrive with
+  their rules), native scroll (overflow container + spacer,
   INPUT-fed offset with ≤1-frame trail, +4 overscan,
   `overflow-anchor: none` on slots), external-element hole
   (`data-external` marker — v1 is a marked box, not a true void
-  element), ARIA mapping incl. text-edit payload.
+  element), ARIA mapping incl. text-edit payload. Native field
+  chrome is suppressed in base CSS (`outline:none;border:0` — the
+  framework `focus_ring` owns focus visuals, borders ride inset
+  box-shadow rings); the theme stanza drives body chrome, scene-root
+  background, and root `color-scheme` (decision 392 — verified
+  Light→Dark→Light live in Edge with zero console errors).
 - **Measured (M7):** parity corpus 10/10 gated rows in the flat
   subset (untracked text width exact) + 1 record-only text-height
   row; editing suite green through the real `<input>`.

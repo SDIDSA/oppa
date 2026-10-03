@@ -1,12 +1,12 @@
-//! Windows event/present glue (decision 242, Round 7.4 decision 279):
-//! `Win32Shell` window + DirectWrite shaping + GPU-first paint (Vello
-//! hardware swapchains primary, GDI blit fallback). The input mapping
+//! Windows event/present glue: `Win32Shell` window + DirectWrite
+//! shaping + GPU-first paint (custom-rasterizer hardware swapchains
+//! primary, GDI blit fallback). The input mapping
 //! (`Cmd` → framework `InputEvent`) is written out explicitly here:
 //! the only proven Win32→framework mapper lives in the spike rig
 //! (session-direct, not pipeline input), so this small layer is new
 //! code over proven endpoints (`inject_input`, `keys`). Swapchain
-//! bring-up mirrors `oppa-fps::driver` (Vulkan first, then DX12,
-//! pipeline-cache round-trip, Immediate/Mailbox/Fifo pick).
+//! bring-up probes Vulkan first, then DX12 (Immediate/Mailbox/Fifo
+//! pick).
 //!
 //! IME delivery (Round 2.1, decision 256): the shell snapshots
 //! `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` (result +
@@ -116,6 +116,7 @@ pub(crate) fn make_resize_callback(
             let _ = s.loop_.repaint();
             s.sync_swapchain();
             let _ = s.present(hwnd);
+            s.loop_.note_frame_presented();
         }
     })
 }
@@ -281,6 +282,9 @@ pub fn run_windows<P: Props>(
     // close veto consults the loop-installed app handler on
     // `WM_CLOSE` — installed by the app, defaulting to close).
     loop_.set_window_control(Box::new(Win32WindowControl::of_shell(&shell)));
+    loop_.host().set_debug_overlay(options.debug_overlay);
+    loop_
+        .set_continuous_repaint(options.continuous_repaint || crate::continuous_repaint_override());
     loop_.mount("App", props, component);
     // App ownership (Round 25.3, decision 338): after mount (host
     // signals exist) and after the platform backend installs above
@@ -295,29 +299,34 @@ pub fn run_windows<P: Props>(
         .map_err(|e| format!("oppa-app: initial dpr: {e}"))?;
 
     // Raster faces for everything the mount + DPR pass shaped
-    // (Round 7.2 — regular, bold, fallback alike, or bars; Round 7.4
-    // lands them in BOTH backends so the Vello twin never paints
-    // tofu).
+    // (regular, bold, fallback alike, or bars) land in BOTH
+    // backends so the GPU twin never paints tofu.
     // Re-topped every frame below: ids first shaped by later
     // input (a new fallback family) resolve on the next pump —
     // one frame of bars at most, file IO only for novel ids.
     let mut injected_faces: HashSet<FontId> = HashSet::new();
     inject_recorded_faces(&mut loop_, &dwrite, &mut injected_faces);
 
-    // GPU-first bring-up (Round 7.4, decision 279): hardware
-    // swapchains primary (Vulkan first, then DX12), GDI fallback.
-    // Any failure logs loudly and keeps GDI (never a silent blank,
-    // never fatal for a missing GPU); `OPPA_RENDERER=cpu` skips the
-    // attempt entirely for deterministic CPU runs.
+    // GPU-first bring-up: hardware swapchains primary (Vulkan
+    // first, then DX12), GDI fallback. Any failure logs loudly and
+    // keeps GDI (never a silent blank, never fatal for a missing
+    // GPU); `OPPA_RENDERER=cpu` skips the attempt entirely for
+    // deterministic CPU runs.
     let mut gpu: Option<WindowsGpu> = None;
     if gpu_disabled_by_env() {
         eprintln!("oppa-app: OPPA_RENDERER=cpu — CPU path (GDI)");
+        loop_
+            .host()
+            .set_presenter_name(loop_.presenter_badge_name());
     } else {
         let size = loop_.viewport();
         match build_gpu_windows(hwnd, &mut loop_, size) {
             Ok(g) => {
                 eprintln!("oppa-app: GPU path ({} / {:?})", g.name, g.mode);
-                // Sync the Vello twin before the first present
+                loop_
+                    .host()
+                    .set_presenter_name(loop_.presenter_badge_name());
+                // Sync the GPU twin before the first present
                 // (creation-time scene is stale once GPU enables
                 // both-backend paints).
                 if let Err(e) = loop_.repaint() {
@@ -327,12 +336,15 @@ pub fn run_windows<P: Props>(
             }
             Err(e) => {
                 eprintln!("oppa-app: {e}; CPU fallback");
+                loop_
+                    .host()
+                    .set_presenter_name(loop_.presenter_badge_name());
             }
         }
     }
 
     // Warmup paint before the first pump so the window appears with
-    // content, never blank (GPU presents the Vello twin when up,
+    // content, never blank (GPU presents the GPU twin when up,
     // GDI blits the CPU pixmap otherwise).
     loop_.repaint()?;
     present_frame(&mut loop_, hwnd, gpu.as_ref())?;
@@ -362,7 +374,11 @@ pub fn run_windows<P: Props>(
         // from an owned `Option<u32>` below).
         let timeout = {
             let s = state.borrow();
-            wait_timeout_ms(s.loop_.host())
+            // Continuous repaint polls with a 0ms horizon instead of
+            // sleeping until input (benchmark mode — the
+            // `pump_wait_timeout_ms` choke point, headless-tested).
+            s.loop_
+                .pump_wait_timeout_ms(wait_timeout_ms(s.loop_.host()))
         };
         let timed_out = matches!(shell.wait_for_input(timeout), WaitOutcome::Timeout);
         // `state` is NOT borrowed here: `WM_SIZE` dispatched
@@ -501,6 +517,15 @@ pub fn run_windows<P: Props>(
                 state.borrow_mut().present(hwnd)?;
             }
         }
+        // Continuous repaint (benchmark mode): after each presented
+        // frame the scene is marked dirty and the next frame
+        // requested, so the settle arm above repaints + presents
+        // again instead of going idle (quiet no-op unless armed —
+        // the event-driven path is unchanged).
+        state.borrow().loop_.rearm_continuous_frame();
+        // Overlay meter tick (both modes): present cadence drives the
+        // FPS clock, throttled badge refresh included.
+        state.borrow().loop_.note_frame_presented();
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! PAINT-phase wiring for the DOM backend: same hook shape as the CPU
-//! (`oppa-cpu`) and Vello (`oppa-vello`) hooks (M7 — the third presenter
-//! joins the same phase discipline).
+//! (`oppa-cpu`) and GPU (`oppa-gpu`) hooks — every presenter joins
+//! the same phase discipline.
 //!
 //! Each PAINT phase builds the shared dirty-subtree [`FramePlan`](oppa::FramePlan)
 //! (the builder is shared — same plans, same damage discipline; the DOM
