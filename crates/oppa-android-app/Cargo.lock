@@ -1405,7 +1405,6 @@ dependencies = [
  "oppa-text-dwrite",
  "oppa-text-linux",
  "raw-window-handle",
- "tiny-skia",
  "wgpu",
  "windows",
  "winit",

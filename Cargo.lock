@@ -1463,7 +1463,6 @@ dependencies = [
  "oppa-text-dwrite",
  "oppa-text-linux",
  "raw-window-handle",
- "tiny-skia",
  "wgpu",
  "windows",
  "winit",
@@ -1656,6 +1655,7 @@ name = "oppa-web"
 version = "0.1.0"
 dependencies = [
  "oppa",
+ "oppa-app",
  "oppa-controls",
  "oppa-cpu",
  "oppa-dom",

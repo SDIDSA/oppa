@@ -25,19 +25,31 @@
 //! halves), and the candidate anchor rides
 //! [`DesktopLoop::ime_anchor`] after every IME step.
 
+// Platform-free loop seam (compiles on wasm32 too — the web crate
+// builds against these).
+use oppa::{ComponentHost, DebugOverlayConfig};
+
+// Desktop/pixel-present glue: deliberately absent from the wasm build
+// (no surface/wgpu/readout code path may compile into oppa-web).
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::rc::Rc;
 
+#[cfg(not(target_arch = "wasm32"))]
 use oppa::input::keys;
+#[cfg(not(target_arch = "wasm32"))]
 use oppa::text::TextService;
+#[cfg(not(target_arch = "wasm32"))]
 use oppa::{
-    dispatch_ime_event, Clipboard, Clock, ComponentHost, Ctx, DebugOverlayConfig,
-    FileDialogOptions, FolderDialog, FolderDialogOptions, FramePlan, ImeCompositionEvent,
-    InMemoryClipboard, InputEvent, KeyState, LayoutTextConfig, Modifiers, MountHandle,
-    PasteOutcome, Props, RendererBackend, SaveFileDialog, SurfaceDesc, SurfaceId, SystemClock,
-    SystemThemeSource, ThemeTokens, VNode, WindowControl, WindowIcon,
+    dispatch_ime_event, Clipboard, Clock, Ctx, FileDialogOptions, FolderDialog,
+    FolderDialogOptions, FramePlan, ImeCompositionEvent, InMemoryClipboard, InputEvent, KeyState,
+    LayoutTextConfig, Modifiers, MountHandle, PasteOutcome, Props, RendererBackend, SaveFileDialog,
+    SurfaceDesc, SurfaceId, SystemClock, SystemThemeSource, ThemeTokens, VNode, WindowControl,
+    WindowIcon,
 };
-use oppa_cpu::{CpuBackend, FramePlanBuilder};
+#[cfg(not(target_arch = "wasm32"))]
+use oppa_cpu::CpuBackend;
 #[cfg(not(target_arch = "wasm32"))]
 use oppa_gpu::GpuBackend;
 

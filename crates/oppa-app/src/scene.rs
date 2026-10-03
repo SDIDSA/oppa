@@ -27,6 +27,7 @@
 
 use super::*;
 use crate::presenter_rgb::RgbPresenter;
+use oppa_cpu::FramePlanBuilder;
 
 /// Platform-free pixel scene engine — see the module docs.
 pub struct SceneCore {
