@@ -301,11 +301,12 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   `oppa-cpu/builder.rs` → hub + `node`/`shape`/`leaf`/`resolve`
   with every public path preserved, and headless `tap_log`
   persistence through the decision-399 helper — per-suite counts
-  identical to the locked baseline-401-final multiset after each).
+  identical to the locked baseline-401-final multiset after each;
+  23-target red-suite attribution recorded in Known issues below —
+  the headline result is a rig artifact, not tree breakage: 21 of 23
+  red targets go green with a clean env, 2 genuine web gaps stay).
   Remaining in round, in order: vnode.rs split, `oppa-app` tests
-  split, `oppa-controls/tests.rs` split (2–3 commits), and 23-target
-  red-suite attribution into Known issues (evidence-gated, no
-  behavior changes).
+  split, `oppa-controls/tests.rs` split (2–3 commits).
 - Loop-doctrine close-outs complete (decisions 399–401 shut the
   decision-398 follow-ups: `taps.txt` keeps batches with the summary
   appended, `frameloop.rs` measures through the engine benchmark
@@ -348,3 +349,27 @@ closed by decision 402).
 - Stated edges: ZWJ-inside-regional-indicator double-click selects the joiner alone (pathological); right-held single-gesture drag-select stays out (tap-to-open).
 - Standing debt: hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question); headless TaskStudio quiescence resolved (decision 383 — gated unshaped text re-measure); full studio tests remain bounded-frame by doctrine; Dark-OS web boot shows the static light body until the first patch carries the theme stanza (settled pages take nothing — body heals on first interaction).
 - Deliberate non-goals (not debt): fixed decorative literals, `SELECTION_FILL`, OS title-bar theming; right-held menu drag-select; color-emoji rendering.
+- Red-suite attribution (locked `target/baseline-401-final.log` — normalized multiset identical to
+  `target/baseline-398-HEAD.log`; attribution only, zero behavior changed to make anything pass):
+  recording-shell env artifact (rig artifact) explains 21 of the 23 red targets. The recording shell
+  exports `OPPA_DEBUG_FPS=1` + `OPPA_BENCHMARK=1` + `OPPA_CONTINUOUS_REPAINT=1` +
+  `OPPA_RENDERER=custom_gpu` (retired spelling, decision 389 → parses to auto GPU-first). `OPPA_DEBUG_FPS=1`
+  arms the debug overlay in every default config, so every mounted scene carries the badge layer
+  (`host_mount.rs:219-244`: pill `RRect` at 8,8 radius-4 `0x1E1E1E` @0.88 + `0x00FF66` ink + cold-meter
+  `60 FPS | 16.6ms | N dirty` spans — values never presented, only mounted); the benchmark flags force
+  uncapped repaint at runner startup. Proven by removal: `m4_cpu` 11p/9f → 20p/0f with the four vars
+  unset (`target/probe-m4cpu-clean.log`); full workspace with a clean env: 21 red targets green, 0 newly
+  red (`target/probe-cleanenv-full.log`, 99 ok + the 2 web targets below). Dirty→clean: g11_touch 8/14,
+  m3_layout 49/1, m5_input 9/7, m8_virtualization 8/2, oppa-app lib 44/31, task_studio_e2e 0/1, atspi_emit
+  1/1, oppa-controls lib 104/33, oppa-cpu lib 12/1, m4_style_fx 6/6, m5_toggle 0/4, vector_path 4/1,
+  m7_dom 32/18 (both browser rows incl.), m8_transitions 5/1, m9_reload_gate 5/1, real_dylib 0/1,
+  android_contract 2/4, testkit lib 7/4, keyboard_text 4/1, uia_emit 0/2 — all green clean. Standing rule:
+  suite runs must use a clean env; with the benchmark vars set, red counts measure the shell, not the
+  tree. (Full-suite runs also rewrite the tracked browser-rig outputs under `spike/results/` — run
+  artifacts, restored before committing, never committed.)
+  - Genuine gaps, env-independent (fail identically with a clean env, cause open — flagged, not fixed):
+  `oppa-web --lib` `tests::toggle_flips_through_binding_calls` (`lib.rs:563` — click at (700,500) inside
+  the 800-wide viewport reports a hit where the test expects miss-is-None; the no-root-fallback contract
+  vs the implementation is open) and `kitchen_sink_web` `focused_field_survives_background_updates`
+  (`kitchen_sink_web.rs:394` — re-feeding the converged value through the U8 channel yields a patch where
+  the test expects quiet-None; the convergence rule vs the implementation is open).
