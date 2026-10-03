@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-03 (through Decision 401).
+Status: current. Last verified: 2026-10-03 (through Decision 402).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -213,7 +213,11 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    `host_binding.rs` 386 + `host_query.rs` 275 + `host_frame.rs` 145 + `host_services.rs` 469;
    `MountHandle` re-exported, 3 callees widened to `pub(super)`),
    `crates/oppa-dom/src/dom.rs` (1,638 $\rightarrow$ 239-line hub + `scroll.rs` 55 + `sync.rs` 393 +
-   `patch.rs` 322 + `encode.rs` 446 + `commit.rs` 209; helpers `pub(crate)`, public paths via hub re-exports).
+   `patch.rs` 322 + `encode.rs` 446 + `commit.rs` 209; helpers `pub(crate)`, public paths via hub re-exports),
+   `crates/oppa-cpu/src/builder.rs` (decision 402, 1,272 $\rightarrow$ 333-line hub + `node.rs` 385 +
+   `shape.rs` 251 + `leaf.rs` 184 + `resolve.rs` 109; node dispatch vs fills/rings/bands/gradients/shadows
+   vs path/canvas payload leaves vs style/ink/edge queries, `builder::node_styles` preserved via hub
+   re-export, cross-module callees `pub(super)`).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
@@ -280,6 +284,15 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 
 ## Now (in progress)
 
+- Debt + attribution round open (decision 402 lands the first
+  mechanical split: `oppa-cpu/builder.rs` → hub + `node`/`shape`/
+  `leaf`/`resolve`, every public path preserved, zero behavior
+  change — per-suite counts identical to the locked
+  baseline-401-final multiset). Remaining in round, in order:
+  headless `tap_log` persistence micro-fix (decision 403), vnode.rs
+  split, `oppa-app` tests split, `oppa-controls/tests.rs` split
+  (2–3 commits), and 23-target red-suite attribution into Known
+  issues (evidence-gated, no behavior changes).
 - Loop-doctrine close-outs complete (decisions 399–401 shut the
   decision-398 follow-ups: `taps.txt` keeps batches with the summary
   appended, `frameloop.rs` measures through the engine benchmark
@@ -297,8 +310,9 @@ value loop, reference apps).
 Accepted-carry: weak-GPU sustained-cost standing rule.
 
 Accepted-carry: file-size follow-ups (`oppa-controls/tests.rs`, `vnode.rs`,
-`oppa-cpu/builder.rs`, `oppa-app` tests) stay over the
-hard 1000-line limit — same mechanical split pattern applies.
+`oppa-app` tests) stay over the
+hard 1000-line limit — same mechanical split pattern applies (`oppa-cpu/builder.rs`
+closed by decision 402).
 
 ## Blocked (with blocker)
 
