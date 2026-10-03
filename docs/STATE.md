@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-03 (through Decision 399).
+Status: current. Last verified: 2026-10-03 (through Decision 401).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -271,17 +271,22 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   re-read every frame; the `parts_mut`/`gpu_backend_mut` accessors are
   removed with no callers left. No host behavior change; on-device
   numbers prove on device (no device attached).
+- Per-adapter diff-cursor policy recorded (decision 401, prose-only
+  2026-10-03): the pixel adapters replay `diffs_from(0)` every paint
+  (fresh-surface correctness), the DOM adapter walks a committed
+  cursor (touched-count patch semantics) — the invariant now lives in
+  `docs/SPEC.md` Runner (decision 398 paragraph); no code change (the
+  `ScenePresenter::commit`/`paint` adapters already carried it).
 
 ## Now (in progress)
 
-- Per-adapter diff-cursor policy still lives in code docs only
-  (`RgbPresenter` replays `diffs_from(0)` every paint for
-  fresh-surface correctness, `DomPresenter` walks a committed cursor
-  for touched-count patch semantics — decision-398 follow-up):
-  record it as a decision row naming where the invariant lives.
-  Workspace suite red counts unchanged by the 397–399 rounds (31 in
-  `oppa-app --lib`, 14 in `oppa` g11_touch — all failing identically
-  before these rounds' edits, mid-flight core work in the tree).
+- Loop-doctrine close-outs complete (decisions 399–401 shut the
+  decision-398 follow-ups: `taps.txt` keeps batches with the summary
+  appended, `frameloop.rs` measures through the engine benchmark
+  seam, diff-cursor policy recorded). Workspace suite red counts
+  unchanged by the 397–401 rounds (31 in `oppa-app --lib`, 14 in
+  `oppa` g11_touch — all failing identically before these rounds'
+  edits, mid-flight core work in the tree).
 
 ## Next (accepted, not started)
 
