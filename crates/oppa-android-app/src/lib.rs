@@ -25,7 +25,8 @@
 //! `cpu_on.rgba`, `{gl,vulkan}_on.rgba` (raw RGBA8 row-major,
 //! live-window WxH — exactly one GPU path writes, GL first then Vulkan),
 //! `shapes.txt` (reference-corpus shaping), `fonts_jni.txt`
-//! (platform font list), `taps.txt` (input batches + density),
+//! (platform font list), `taps.txt` (per-batch input/density oracle
+//! lines first, run-log summary appended below — decision 399),
 //! `imm.txt` (composition feeds + IMM policy record), `meta.txt`
 //! (adapter/timings/sizes/state incl. swapchain + text + tap
 //! records + scoped-storage resolution/validation), `error.txt`
@@ -96,6 +97,32 @@ fn themed_page_bg(host: &ComponentHost) -> Color {
 /// `WebApp::new_with_root`.
 pub fn mount_app<P: Props>(host: &ComponentHost, props: P, render: fn(&Ctx, &P) -> VNode) {
     host.mount("MobileApp", props, render);
+}
+
+/// Writes the taps oracle file (decision 399): per-batch
+/// input/density records first, run-log summary lines appended below.
+/// The end-of-run summary write used to overwrite the batch records
+/// (the whole-file `tap_log` write clobbered the incremental
+/// `tap_lines` writes); now both sections share one file with stable
+/// per-line layouts and no new output path for host pulls. Either
+/// section may be empty (empty batches stay oracle-silent, quiet runs
+/// stay summary-silent) — never a missing trailing newline.
+fn write_taps_file(
+    taps_path: &std::path::Path,
+    tap_lines: &[String],
+    tap_log: &[String],
+) -> Result<(), String> {
+    let mut body = String::new();
+    if !tap_lines.is_empty() {
+        body.push_str(&tap_lines.join("\n"));
+        body.push('\n');
+    }
+    if !tap_log.is_empty() {
+        body.push_str(&tap_log.join("\n"));
+        body.push('\n');
+    }
+    std::fs::write(taps_path, body).map_err(|e| format!("write taps.txt: {e}"))?;
+    Ok(())
 }
 
 /// One tap batch: inject commands into the engine host, run idle,
@@ -668,8 +695,7 @@ fn android_main(app: AndroidApp) {
                     &mut tap_lines,
                     &taps_path,
                 )?;
-                std::fs::write(&taps_path, tap_log.join("\n") + "\n")
-                    .map_err(|e| format!("write taps.txt: {e}"))?;
+                write_taps_file(&taps_path, &tap_lines, &tap_log)?;
                 record
             }
         };
@@ -750,7 +776,7 @@ fn android_main(app: AndroidApp) {
                     tap_log.push(note);
                 }
             }
-            let _ = std::fs::write(&taps_path, tap_log.join("\n") + "\n");
+            let _ = write_taps_file(&taps_path, &tap_lines, &tap_log);
         } else {
             tap_log.push("interactive skipped (no window)".to_string());
         }

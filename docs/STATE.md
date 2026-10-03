@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-03 (through Decision 397).
+Status: current. Last verified: 2026-10-03 (through Decision 399).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -254,6 +254,15 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   `cfg(not(wasm32))`, so no surface/wgpu/readout path can compile into
   `oppa-web`. No behavior change — all suites identical to the
   recorded pre-refactor baseline (red counts unchanged).
+- `taps.txt` clobber fix (decision 399, Android-target check/clippy
+  green 2026-10-03): the bounded + interactive end-of-run whole-file
+  `tap_log` writes overwrote the incremental per-batch `cmds/density`
+  oracle lines — one `write_taps_file` helper now carries both
+  (oracle lines first, run-log summary below, each layout unchanged,
+  no new output path for host pulls). Host `cargo test` unbuildable
+  on host by construction (`ndk-sys` refuses non-Android); no
+  behavioral test possible on host — the on-device oracle run is the
+  test (no device attached; shape verified by code review only).
 
 ## Now (in progress)
 

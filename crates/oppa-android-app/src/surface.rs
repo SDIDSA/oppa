@@ -140,7 +140,8 @@ pub fn wait_for_window(
 /// interactive-until-Destroy — running one
 /// [`crate::apply_tap_batch`] per command batch and presenting
 /// whenever it reports a change. `log` collects one line per batch
-/// (plus open/close lines) for `taps.txt`.
+/// (plus open/close lines): the caller appends it under the per-batch
+/// oracle records in `taps.txt` (decision 399), never over them.
 ///
 /// `benchmark` arms the decision-393 uncapped loop (bounded phase
 /// only): the activity poll never sleeps (`Duration::ZERO`, the
