@@ -1,4 +1,6 @@
 use super::*;
+use crate::style::Color;
+use crate::text::FontWeight;
 
 #[test]
 fn builder_chain_shapes() {

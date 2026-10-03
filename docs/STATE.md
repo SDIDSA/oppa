@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-03 (through Decision 403).
+Status: current. Last verified: 2026-10-03 (through Decision 404).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -217,7 +217,11 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    `crates/oppa-cpu/src/builder.rs` (decision 402, 1,272 $\rightarrow$ 333-line hub + `node.rs` 385 +
    `shape.rs` 251 + `leaf.rs` 184 + `resolve.rs` 109; node dispatch vs fills/rings/bands/gradients/shadows
    vs path/canvas payload leaves vs style/ink/edge queries, `builder::node_styles` preserved via hub
-   re-export, cross-module callees `pub(super)`).
+   re-export, cross-module callees `pub(super)`),
+   `crates/oppa/src/vnode.rs` (decision 404, 1,179 $\rightarrow$ 225-line hub + `element.rs` 347 +
+   `text.rs` 258 + `media.rs` 369; core tree types vs chainable element builders/factories vs text leaves
+   vs payload leaves, every `vnode::` path preserved via hub re-exports, `auto_handler_id` widened to
+   `pub(super)`, test-only `Color`/`FontWeight` use deep paths).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
@@ -297,16 +301,17 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 
 ## Now (in progress)
 
-- Debt + attribution round in progress (decisions 402–403 landed:
-  `oppa-cpu/builder.rs` → hub + `node`/`shape`/`leaf`/`resolve`
-  with every public path preserved, and headless `tap_log`
-  persistence through the decision-399 helper — per-suite counts
-  identical to the locked baseline-401-final multiset after each;
-  23-target red-suite attribution recorded in Known issues below —
-  the headline result is a rig artifact, not tree breakage: 21 of 23
-  red targets go green with a clean env, 2 genuine web gaps stay).
-  Remaining in round, in order: vnode.rs split, `oppa-app` tests
-  split, `oppa-controls/tests.rs` split (2–3 commits).
+- Debt + attribution round in progress (decisions 402–404 landed:
+  `oppa-cpu/builder.rs` → hub + `node`/`shape`/`leaf`/`resolve`,
+  `oppa/vnode.rs` → hub + `element`/`text`/`media`, every public path
+  preserved, plus headless `tap_log` persistence through the
+  decision-399 helper — per-suite counts identical to the locked
+  baseline-401-final multiset after each; 23-target red-suite
+  attribution recorded in Known issues below — the headline result is
+  a rig artifact, not tree breakage: 21 of 23 red targets go green
+  with a clean env, 2 genuine web gaps stay).
+  Remaining in round, in order: `oppa-app` tests split,
+  `oppa-controls/tests.rs` split (2–3 commits).
 - Loop-doctrine close-outs complete (decisions 399–401 shut the
   decision-398 follow-ups: `taps.txt` keeps batches with the summary
   appended, `frameloop.rs` measures through the engine benchmark
@@ -323,10 +328,10 @@ value loop, reference apps).
 
 Accepted-carry: weak-GPU sustained-cost standing rule.
 
-Accepted-carry: file-size follow-ups (`oppa-controls/tests.rs`, `vnode.rs`,
+Accepted-carry: file-size follow-ups (`oppa-controls/tests.rs`,
 `oppa-app` tests) stay over the
 hard 1000-line limit — same mechanical split pattern applies (`oppa-cpu/builder.rs`
-closed by decision 402).
+closed by decision 402, `vnode.rs` by decision 404).
 
 ## Blocked (with blocker)
 
