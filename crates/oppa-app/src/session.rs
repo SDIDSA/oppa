@@ -180,11 +180,17 @@ impl SceneSession {
             .with_retained_mut(|rec, styles| self.builder.build_full(rec, styles));
         self.last_caret_shown = self.builder.caret().is_some();
         self.last_plan = Some(plan.clone());
-        let damage = plan.damage.len();
         let images = self.host.images();
         pres.set_images(&images);
-        pres.paint(&self.host, &plan)?;
-        Ok(damage)
+        // The adapter's frame metric (see the `paint` contract
+        // above): plan damage-rect count for the pixel adapters
+        // (`RgbPresenter::paint` returns exactly this), touched-work
+        // count for the DOM adapter (returning plan damage here sent
+        // damage-but-untouched DOM frames down the full-page
+        // fallback — e.g. background presses and converged value
+        // re-feeds reported work that never touched the page).
+        let touched = pres.paint(&self.host, &plan)?;
+        Ok(touched)
     }
 
     /// Settles and repaints iff the caret overlay flipped (Round

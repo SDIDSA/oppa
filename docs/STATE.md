@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-03 (through Decision 408).
+Status: current. Last verified: 2026-10-03 (through Decision 409).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -298,6 +298,17 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   cursor (touched-count patch semantics) — the invariant now lives in
   `docs/SPEC.md` Runner (decision 398 paragraph); no code change (the
   `ScenePresenter::commit`/`paint` adapters already carried it).
+- `repaint` returns the adapter's frame metric (decision 409, gates
+  green 2026-10-03): `SceneSession::repaint` returned the plan's
+  damage-rect count for every adapter while the `ScenePresenter::paint`
+  contract promises damage for pixels and touched-work for DOM — so
+  damage-but-untouched DOM frames (background presses, converged value
+  re-feeds) fell into the full-page fallback and reported work that
+  never touched the page. One line at the contract point
+  (`Ok(pres.paint(...))` instead of `Ok(damage)`); pixel legs provably
+  identical (`RgbPresenter::paint` returns exactly the old value).
+  Both clean-env web failures green; full workspace per-suite identical
+  to the locked baseline otherwise.
 - Headless `tap_log` persistence (decision 403, Android-target
   check/clippy green 2026-10-03): `drive_headless_taps` pushed
   per-batch `batch=N t=…ms cmds=… density=…` timing lines into the
@@ -314,20 +325,21 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 
 ## Now (in progress)
 
-- Debt + attribution round in progress (decisions 402–408 landed:
-  `oppa-cpu/builder.rs` → hub + `node`/`shape`/`leaf`/`resolve`,
-  `oppa/vnode.rs` → hub + `element`/`text`/`media`, `oppa-app` tests
-  → hub + ten per-area modules, `oppa-controls` tests parts 1–3 (hub +
-  16 per-area modules, file fully decomposed),
-  every public path preserved, plus
-  headless `tap_log` persistence through the decision-399 helper —
-  per-suite counts identical to the locked baseline-401-final multiset
-  after each (controls parts gated per-test: same tests, same outcomes,
-  only module path segments added); 23-target red-suite attribution
-  recorded in Known issues
-  below — the headline result is a rig artifact, not tree breakage:
-  21 of 23 red targets go green with a clean env, 2 genuine web gaps
-  stay). All accepted-carry file-size follow-ups are closed.
+- Debt + attribution round CLOSED (decisions 402–408: `builder.rs`,
+  `vnode.rs`, `oppa-app` tests, `oppa-controls` tests fully decomposed
+  to hub + responsibility modules, every public path preserved;
+  headless `tap_log` persistence; 23-target attribution — 21 rig
+  artifact, 2 genuine web gaps, all recorded below).
+- Web-gap close-out complete (decision 409): both env-independent
+  failures shared one root cause — `SceneSession::repaint` returned
+  plan-damage count for every adapter while the trait contract promises
+  the adapter's frame metric (damage for pixels, touched-work for DOM),
+  so damage-but-untouched DOM frames fell into the full-page fallback
+  (background clicks and converged value re-feeds reported work that
+  never touched the page). One-line fix at the contract point, zero
+  behavior change on the pixel legs (`RgbPresenter::paint` returns
+  exactly the old value); both web suites green, full workspace suite
+  per-suite identical to the locked baseline otherwise.
 - Loop-doctrine close-outs complete (decisions 399–401 shut the
   decision-398 follow-ups: `taps.txt` keeps batches with the summary
   appended, `frameloop.rs` measures through the engine benchmark
@@ -387,9 +399,10 @@ by decision 402, `vnode.rs` by decision 404, `oppa-app` tests by decision 405,
   suite runs must use a clean env; with the benchmark vars set, red counts measure the shell, not the
   tree. (Full-suite runs also rewrite the tracked browser-rig outputs under `spike/results/` — run
   artifacts, restored before committing, never committed.)
-  - Genuine gaps, env-independent (fail identically with a clean env, cause open — flagged, not fixed):
-  `oppa-web --lib` `tests::toggle_flips_through_binding_calls` (`lib.rs:563` — click at (700,500) inside
-  the 800-wide viewport reports a hit where the test expects miss-is-None; the no-root-fallback contract
-  vs the implementation is open) and `kitchen_sink_web` `focused_field_survives_background_updates`
-  (`kitchen_sink_web.rs:394` — re-feeding the converged value through the U8 channel yields a patch where
-  the test expects quiet-None; the convergence rule vs the implementation is open).
+  - Genuine gaps, env-independent — both FIXED by decision 409 (shared
+  root cause, not two bugs): `oppa-web --lib` `tests::toggle_flips_through_binding_calls`
+  (`lib.rs:563` — background click returned a full-page reload instead of miss-is-None) and
+  `kitchen_sink_web` `focused_field_survives_background_updates` (`kitchen_sink_web.rs:394` —
+  converged re-feed yielded a patch instead of quiet-None). Both were damage-but-untouched DOM frames
+  (`repaint` returned plan-damage as touched-work, tripping the full-page fallback); both green after
+  the one-line contract fix, full suite otherwise baseline-identical.

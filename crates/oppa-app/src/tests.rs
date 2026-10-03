@@ -141,43 +141,6 @@ fn focus_field(loop_: &mut DesktopLoop) {
     assert_eq!(loop_.host().focused_node(), Some(id));
 }
 
-/// One pressed key with explicit modifiers (Round 22.1 — the
-/// exact shape runners feed [`DesktopLoop::step`] for Shift/Ctrl
-/// navigation).
-fn nav_key(code: u32, shift: bool, ctrl: bool) -> InputEvent {
-    InputEvent::Key {
-        code,
-        modifiers: Modifiers {
-            shift,
-            ctrl,
-            ..Modifiers::NONE
-        },
-        state: KeyState::Pressed,
-        repeat: false,
-    }
-}
-
-fn session_of(loop_: &DesktopLoop) -> oppa::EditSession {
-    loop_
-        .host()
-        .focused_field_session()
-        .expect("focused session")
-}
-
-/// One pressed Ctrl+letter key event (decision 246): the exact
-/// shape both platform runners feed [`DesktopLoop::step`].
-fn ctrl_key(code: u32) -> InputEvent {
-    InputEvent::Key {
-        code,
-        modifiers: Modifiers {
-            ctrl: true,
-            ..Modifiers::NONE
-        },
-        state: KeyState::Pressed,
-        repeat: false,
-    }
-}
-
 mod basic;
 mod dpr_gpu;
 mod editing;
