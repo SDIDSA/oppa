@@ -173,7 +173,10 @@ fn apply_tap_batch(
 /// through the shell mapping and repaints the scene per batch.
 /// State flips are CPU-proven here; on-screen proof needs the
 /// swapchain path (used when the window serves the scene size).
-/// Runs the full budget so `adb input` gestures land.
+/// Runs the full budget so `adb input` gestures land. The per-batch
+/// timing lines ride `log` into `taps.txt` through the decision-399
+/// helper (oracle records first, run-log lines appended below) —
+/// leaving them in memory only would drop the headless evidence.
 fn drive_headless_taps(
     app: &AndroidApp,
     state: &mut SceneState,
@@ -249,7 +252,7 @@ fn drive_headless_taps(
         state.scene.note_frame_presented();
         log.push(format!("batch={batches} t={elapsed_ms:.0}ms {note}"));
     }
-    std::fs::write(&taps_path, tap_lines.join("\n") + "\n")
+    write_taps_file(&taps_path, &tap_lines, log)
         .map_err(|e| format!("write taps.txt: {e}"))?;
     let s = touch.stats_summary();
     Ok(format!(
@@ -761,6 +764,12 @@ fn android_main(app: AndroidApp) {
             let _ = write_taps_file(&taps_path, &tap_lines, &tap_log);
         } else {
             tap_log.push("interactive skipped (no window)".to_string());
+            // Headless runs never reach the windowed write above and
+            // `drive_headless_taps` wrote before this note existed —
+            // re-persist best-effort so the skip is on record, never
+            // memory-only (the windowed arm's `let _` rule: bonus-phase
+            // bookkeeping must not fail the banked proof).
+            let _ = write_taps_file(&taps_path, &tap_lines, &tap_log);
         }
 
         Ok::<_, String>(meta)

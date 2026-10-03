@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-03 (through Decision 402).
+Status: current. Last verified: 2026-10-03 (through Decision 403).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -281,18 +281,31 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   cursor (touched-count patch semantics) — the invariant now lives in
   `docs/SPEC.md` Runner (decision 398 paragraph); no code change (the
   `ScenePresenter::commit`/`paint` adapters already carried it).
+- Headless `tap_log` persistence (decision 403, Android-target
+  check/clippy green 2026-10-03): `drive_headless_taps` pushed
+  per-batch `batch=N t=…ms cmds=… density=…` timing lines into the
+  run-log that its end-of-run write never persisted (oracle lines
+  only) — the headless write now routes through the decision-399
+  `write_taps_file` helper (oracle records first, timing log appended
+  below, same shape, no new output path), and the caller re-persists
+  best-effort after the `interactive skipped (no window)` note (the
+  windowed arm's `let _` rule — bonus-phase bookkeeping never fails
+  the banked proof). Host `cargo test` unbuildable by construction
+  (`ndk-sys` refuses non-Android); no behavioral test possible on
+  host — the on-device oracle run is the test (no device attached;
+  shape verified by code review only).
 
 ## Now (in progress)
 
-- Debt + attribution round open (decision 402 lands the first
-  mechanical split: `oppa-cpu/builder.rs` → hub + `node`/`shape`/
-  `leaf`/`resolve`, every public path preserved, zero behavior
-  change — per-suite counts identical to the locked
-  baseline-401-final multiset). Remaining in round, in order:
-  headless `tap_log` persistence micro-fix (decision 403), vnode.rs
-  split, `oppa-app` tests split, `oppa-controls/tests.rs` split
-  (2–3 commits), and 23-target red-suite attribution into Known
-  issues (evidence-gated, no behavior changes).
+- Debt + attribution round in progress (decisions 402–403 landed:
+  `oppa-cpu/builder.rs` → hub + `node`/`shape`/`leaf`/`resolve`
+  with every public path preserved, and headless `tap_log`
+  persistence through the decision-399 helper — per-suite counts
+  identical to the locked baseline-401-final multiset after each).
+  Remaining in round, in order: vnode.rs split, `oppa-app` tests
+  split, `oppa-controls/tests.rs` split (2–3 commits), and 23-target
+  red-suite attribution into Known issues (evidence-gated, no
+  behavior changes).
 - Loop-doctrine close-outs complete (decisions 399–401 shut the
   decision-398 follow-ups: `taps.txt` keeps batches with the summary
   appended, `frameloop.rs` measures through the engine benchmark
