@@ -38,6 +38,7 @@ use oppa::{
     SystemThemeSource, ThemeTokens, VNode, WindowControl, WindowIcon,
 };
 use oppa_cpu::{CpuBackend, FramePlanBuilder};
+#[cfg(not(target_arch = "wasm32"))]
 use oppa_gpu::GpuBackend;
 
 #[cfg(target_os = "linux")]
@@ -45,17 +46,35 @@ mod linux;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod frame;
+#[cfg(not(target_arch = "wasm32"))]
 mod gpu;
+#[cfg(not(target_arch = "wasm32"))]
+mod presenter_rgb;
+#[cfg(not(target_arch = "wasm32"))]
 mod resize;
+#[cfg(not(target_arch = "wasm32"))]
 mod scene;
+mod session;
+#[cfg(not(target_arch = "wasm32"))]
 mod step;
+#[cfg(not(target_arch = "wasm32"))]
 mod text_input;
+#[cfg(not(target_arch = "wasm32"))]
 mod wiring;
 
 /// The unified platform-free loop engine (decision 397): shared by
 /// `DesktopLoop` and the Android runner.
+#[cfg(not(target_arch = "wasm32"))]
 pub use scene::SceneCore;
+/// The presenter-adapter seam (decision 398): the platform-free
+/// session loop, with the pixel adapter (`RgbPresenter`, behind the
+/// desktop/Android [`SceneCore`] facade) on one side and the web
+/// crate's DOM adapter on the other. Nothing DOM-specific (`sync`,
+/// `take_patch`, `render_page`) rides the trait — those are
+/// backend-adapter state, not engine logic.
+pub use session::{ScenePresenter, SceneSession};
 
 /// Window launch parameters.
 #[derive(Clone, Debug)]
@@ -125,6 +144,7 @@ impl WindowOptions {
 ///
 /// Needs loop ownership (close veto, custom dialogs, theme source)?
 /// Use [`run_desktop_with`] — this is exactly that with a no-op hook.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_desktop<P: Props>(
     options: WindowOptions,
     props: P,
@@ -141,6 +161,7 @@ pub fn run_desktop<P: Props>(
 /// backend installs (clipboard, native dialogs, OS theme), so app
 /// configuration wins; runs after mount, so `loop_.host()` signals
 /// already exist for handler closures to capture.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_desktop_with<P: Props>(
     options: WindowOptions,
     props: P,
@@ -173,11 +194,13 @@ pub fn run_desktop_with<P: Props>(
 /// shape (decision 246 — the AltGr guard, see
 /// [`DesktopLoop::step`]). Shared with the Linux runner's `Char`
 /// skip so both arms use one predicate.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn is_edit_shortcut_modifier(modifiers: Modifiers) -> bool {
     modifiers.ctrl && !modifiers.alt && !modifiers.meta
 }
 
 /// The six intercepted codes (decision 246).
+#[cfg(not(target_arch = "wasm32"))]
 fn is_edit_shortcut_code(code: u32) -> bool {
     matches!(
         code,
@@ -344,14 +367,19 @@ pub fn continuous_repaint_override() -> bool {
 }
 
 /// Poll hook callback for [`DesktopLoop`] pump iterations (Round 26.2, decision 342).
+#[cfg(not(target_arch = "wasm32"))]
 pub type DesktopPollHook = Box<dyn FnMut(&mut DesktopLoop)>;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct DesktopLoop {
     /// The unified platform-free loop engine (decision 397): host +
-    /// plan builder + both paint arms + resize/DPR/theme machinery +
-    /// GPU bring-up state + frame telemetry. Everything here is
-    /// shared with the Android runner verbatim — a bug fixed in
-    /// `scene.rs` fixes desktop Windows/Linux and Android at once.
+    /// plan builder + the shared session loop + the pixel adapter
+    /// (both paint arms + resize/DPR/theme machinery + GPU bring-up
+    /// state + frame telemetry). Everything here is shared with the
+    /// Android runner verbatim — a bug fixed in `scene.rs` fixes
+    /// desktop Windows/Linux and Android at once. The web DOM loop
+    /// runs the same session through its own presenter adapter
+    /// instead (decision 398, locked #1 — the browser owns pixels).
     scene: SceneCore,
     /// The clipboard the editing shortcuts read and write (decision
     /// 246). Session-local memory by default (headless-correct — the
@@ -404,6 +432,7 @@ pub struct DesktopLoop {
     continuous_repaint: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl DesktopLoop {
     /// The unified loop engine (borrow for mount records, plan
     /// reads, GPU state — everything [`SceneCore`] owns).
@@ -432,5 +461,5 @@ impl DesktopLoop {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

@@ -1767,17 +1767,17 @@ fn gpu_backend_pins_share_the_gpu_twin_and_badge() {
         RendererKind::GpuDx12,
         RendererKind::GpuGl,
     ] {
-        loop_.scene_mut().active = kind;
+        loop_.scene_mut().rgb.active = kind;
         assert!(loop_.is_gpu(), "is_gpu for {kind:?}");
         assert_eq!(loop_.presenter_badge_name(), "Gpu");
     }
-    loop_.scene_mut().active = RendererKind::GpuDx12;
+    loop_.scene_mut().rgb.active = RendererKind::GpuDx12;
     assert_eq!(loop_.renderer_name(), "gpu-dx12");
-    loop_.scene_mut().active = RendererKind::GpuVulkan;
+    loop_.scene_mut().rgb.active = RendererKind::GpuVulkan;
     assert_eq!(loop_.renderer_name(), "gpu-vulkan");
-    loop_.scene_mut().active = RendererKind::GpuGl;
+    loop_.scene_mut().rgb.active = RendererKind::GpuGl;
     assert_eq!(loop_.renderer_name(), "gpu-gl");
-    loop_.scene_mut().active = RendererKind::Cpu;
+    loop_.scene_mut().rgb.active = RendererKind::Cpu;
     assert!(!loop_.is_gpu());
 }
 
@@ -1789,7 +1789,7 @@ fn gpu_badge_names_the_recorded_wgpu_backend() {
     let mut loop_ =
         DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
     assert_eq!(loop_.gpu_api(), None);
-    loop_.scene_mut().active = RendererKind::GpuAuto;
+    loop_.scene_mut().rgb.active = RendererKind::GpuAuto;
     assert_eq!(loop_.presenter_badge_name(), "Gpu");
     loop_.set_gpu_api(GpuApi::Dx12);
     assert_eq!(loop_.gpu_api(), Some(GpuApi::Dx12));
@@ -1844,7 +1844,7 @@ fn gpu_family_parses_pins_and_badges_the_recorded_api() {
     assert!(!RendererKind::Cpu.is_gpu());
     let mut loop_ =
         DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
-    loop_.scene_mut().active = RendererKind::GpuDx12;
+    loop_.scene_mut().rgb.active = RendererKind::GpuDx12;
     assert_eq!(loop_.renderer_name(), "gpu-dx12");
     assert!(loop_.is_gpu());
     assert_eq!(loop_.presenter_badge_name(), "Gpu");

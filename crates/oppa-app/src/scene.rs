@@ -1,20 +1,19 @@
 // ---------------------------------------------------------------------------
-// SceneCore — the unified platform-free app-loop engine
+// SceneCore — the unified platform-free app-loop engine (facade)
 // ---------------------------------------------------------------------------
 //
-// One implementation of the pixel presentation pipeline that both the
-// `DesktopLoop` runners (Windows GDI/GPU, Linux winit/softbuffer) and
-// the Android runner (`oppa-android-app`) drive. It owns:
+// One composition of the shared loop rule that both the `DesktopLoop`
+// runners (Windows GDI/GPU, Linux winit/softbuffer) and the Android
+// runner (`oppa-android-app`) drive:
 //
-// - the `ComponentHost` scene,
-// - the `FramePlanBuilder` (selection/caret/theme-tracking),
-// - BOTH paint arms (CPU pixmap + GPU scene twin) with their surfaces,
-// - the diff cursor (commits always land in both backends),
-// - the theme contract (build theme + page background + surface refit),
-// - the resize/DPR rebase rules,
-// - GPU bring-up state (active renderer, recorded API, present mode,
-//   present-mode negotiation),
-// - the last committed plan + caret-overlay presence (frame telemetry).
+// - the shared [`SceneSession`] (one implementation of the loop rule:
+//   diff commit replay into presenters, overlay publish, theme/page-bg
+//   contract with the refit trigger, plan build, image-sync trigger,
+//   resize/DPR rules, step ladder, plan/caret telemetry), plus
+// - the pixel [`RgbPresenter`] adapter:
+//   BOTH paint arms (CPU pixmap + GPU scene twin) with their
+//   surfaces, GPU bring-up state (active renderer, recorded API,
+//   present mode, current-mode negotiation), and the pixel readout.
 //
 // Platform glue keeps ONLY the window/event pump and its own recorder
 // for delivers: shell commands, IME snapshots, dialogs, clipboard...
@@ -27,54 +26,15 @@
 // loop: ...") is preserved load-bearing — tests grep it.
 
 use super::*;
+use crate::presenter_rgb::RgbPresenter;
 
 /// Platform-free pixel scene engine — see the module docs.
 pub struct SceneCore {
-    pub(crate) host: ComponentHost,
-    pub(crate) cpu: CpuBackend,
-    pub(crate) surface: SurfaceId,
-    /// Hardware scene twin: same frame plans encode here whenever
-    /// GPU is active (headless encoding needs no device — only
-    /// `present_gpu` needs the swapchain context). Always created
-    /// beside the CPU surface so enabling GPU never rebuilds the
-    /// scene; CPU-only repaints leave it untouched (a Text run
-    /// without an injected face would refuse loudly there while the
-    /// CPU path still draws bars — the decision-200 contract).
-    pub(crate) gpu_backend: GpuBackend,
-    pub(crate) gpu_surface: SurfaceId,
-    /// Which backend the platform glue presents. CPU until a runner
-    /// enables GPU against a live window; runners flip it back on
-    /// loud GPU failure (fallback, never silent).
-    pub(crate) active: RendererKind,
-    /// Winning `wgpu` backend recorded at bring-up (see
-    /// [`GpuApi`]). `None` until a runner records one.
-    pub(crate) gpu_api: Option<GpuApi>,
-    /// Swapchain present mode once GPU is up (Immediate first, then
-    /// Mailbox, then Fifo). `None` while CPU-only.
-    pub(crate) gpu_mode: Option<wgpu::PresentMode>,
-    pub(crate) builder: FramePlanBuilder,
-    /// Paint surface size in device px (physical pixels).
-    pub(crate) viewport: (u32, u32),
-    /// Output scale: device px per CSS px (Round 2.4, OQ-G10-2).
-    /// The host viewport, layout config, and builder all derive
-    /// from (`viewport`, `dpr`) — never set one without the others
-    /// (see `resize` / `set_device_pixel_ratio`).
-    pub(crate) dpr: f32,
-    /// Scene clear color (theme contract round): both paint surfaces
-    /// clear to the host theme's `background`. Tracked so a theme
-    /// toggle refits the surfaces instead of presenting a stale page
-    /// (same one-refit path as resize/DPR, never two).
-    pub(crate) page_bg: oppa::Color,
-    /// The last committed frame plan (Round 15.2, decision 313 —
-    /// test/presenter observability: proves which overlay `Rect`s a
-    /// repaint committed; one retained plan, refreshed every
-    /// repaint, never a growing history).
-    last_plan: Option<FramePlan>,
-    /// Caret overlay presence at the last repaint (Round 15.2,
-    /// decision 313 — the blink demand: the flip writes no signals,
-    /// so the tick path compares presence instead of waiting for
-    /// dirt that never comes).
-    last_caret_shown: bool,
+    /// The shared loop rule (also the web DOM loop's engine).
+    pub(crate) session: SceneSession,
+    /// The pixel present adapter (CPU arm + GPU twin, surfaces,
+    /// present machinery, readout).
+    pub(crate) rgb: RgbPresenter,
 }
 
 impl SceneCore {
@@ -118,48 +78,19 @@ impl SceneCore {
             family: family.to_string(),
             ..Default::default()
         });
-        // Theme contract round: surfaces clear to the host theme's
-        // page background (a fresh host is Light — the pre-contract
-        // white, pixel-identical).
-        let page_bg = ThemeTokens::of(host.theme().mode()).background;
-        let mut cpu = CpuBackend::new();
-        let surface = cpu
-            .create_surface(SurfaceDesc {
-                width_px: w,
-                height_px: h,
-                background: page_bg,
-            })
-            .map_err(|e| format!("desktop loop: create cpu surface: {e:?}"))?;
-        let mut gpu_backend = GpuBackend::new();
-        let gpu_surface = gpu_backend
-            .create_surface(SurfaceDesc {
-                width_px: w,
-                height_px: h,
-                background: page_bg,
-            })
-            .map_err(|e| format!("desktop loop: create gpu surface: {e:?}"))?;
-        Ok(Self {
-            host,
-            cpu,
-            surface,
-            gpu_backend,
-            gpu_surface,
-            active: RendererKind::Cpu,
-            gpu_api: None,
-            gpu_mode: None,
-            builder: FramePlanBuilder::new(1.0),
-            viewport: (w, h),
-            dpr: 1.0,
-            page_bg,
-            last_plan: None,
-            last_caret_shown: false,
-        })
+        // Theme contract round: the page background seeds from the
+        // host theme (a fresh host is Light — the pre-contract
+        // white, pixel-identical) and clears both paint surfaces.
+        let bg = ThemeTokens::of(host.theme().mode()).background;
+        let rgb = RgbPresenter::new(w, h, bg)?;
+        let session = SceneSession::from_parts(host, FramePlanBuilder::new(1.0), (w, h), 1.0);
+        Ok(Self { session, rgb })
     }
 
     /// The host (mount records, recursive journal reads — shared by
     /// every runner and the testkit escape-hatch rule).
     pub fn host(&self) -> &ComponentHost {
-        &self.host
+        &self.session.host
     }
 
     /// Injects a raster face for one shaper font id (decision 200):
@@ -169,88 +100,30 @@ impl SceneCore {
     /// when the face is unreadable). Always lands in both backends
     /// so a later `enable_gpu` never paints tofu.
     pub fn set_font_for(&mut self, id: oppa::text::FontId, bytes: Vec<u8>, index: u32) {
-        self.cpu.set_font_for(id, bytes.clone(), index);
-        self.gpu_backend.set_font_for(id, bytes, index);
+        self.rgb.set_font_for(id, bytes, index);
     }
 
-    /// The frame engine: replays every new diff into BOTH backends
-    /// (cheap bookkeeping), publishes the focused selection/caret as
+    /// The frame engine: replays every new diff into the paint
+    /// adapters (the CPU pixmap and the GPU twin — cheap
+    /// bookkeeping), publishes the focused selection/caret as
     /// build-scoped overlays, follows the theme contract (build theme
-    /// and page background with surface refit on toggle), builds ONE
+    /// and page background with presenter refit on toggle), builds ONE
     /// full plan, syncs static-image pixel deposits (CPU always, GPU
-    /// twin when active), and paints both arms. Pixels encode into the
-    /// CPU pixmap always (the GDI / softbuffer source and the GPU
-    /// fallback) plus into the custom twin whenever GPU is active.
-    /// CPU-only repaints skip custom so a faceless test shaper never
-    /// trips the custom loud-no-face rule while the CPU path still
-    /// draws bars. Returns the plan's damage-rect count; pixels
-    /// failures are loud `Err`s.
+    /// twin when active), and paints the arms. The full loop rule +
+    /// per-adapter paints live on
+    /// [`SceneSession::repaint`]; pixels encode into the
+    /// CPU pixmap always plus the custom twin whenever GPU is active.
+    /// Returns the plan's damage-rect count; pixels failures are
+    /// loud `Err`s.
     pub fn repaint(&mut self) -> Result<usize, String> {
-        for d in self.host.diffs_from(0) {
-            self.cpu
-                .commit(&d)
-                .map_err(|e| format!("desktop loop: cpu commit: {e:?}"))?;
-            self.gpu_backend
-                .commit(&d)
-                .map_err(|e| format!("desktop loop: gpu commit: {e:?}"))?;
-        }
-        // Round 15.2 (decision 313): the text overlays ride every
-        // committed frame — the shared build-scoped rule from the
-        // paint hooks (selection + caret resolved outside the
-        // retained borrow). Before this, live presented frames
-        // committed with both overlays `None`: zero selection rects
-        // and zero carets on GPU and GDI alike.
-        self.builder
-            .set_selection(self.host.focused_selection_paint());
-        self.builder.set_caret(self.host.focused_caret_paint());
-        // Theme contract round: the build theme rides the same
-        // per-frame publish rule (default text ink follows the host
-        // mode), and a toggled page background refits the surfaces
-        // before painting (same one-refit path as resize/DPR —
-        // steady state is a color compare, never surface churn).
-        let mode = self.host.theme().mode();
-        self.builder.set_theme_mode(mode);
-        let want_bg = ThemeTokens::of(mode).background;
-        if want_bg != self.page_bg {
-            self.page_bg = want_bg;
-            self.refit_surface()?;
-        }
-        let plan = self
-            .host
-            .with_retained_mut(|rec, styles| self.builder.build_full(rec, styles));
-        self.last_caret_shown = self.builder.caret().is_some();
-        self.last_plan = Some(plan.clone());
-        let damage = plan.damage.len();
-        let images = self.host.images();
-        for op in &plan.ops {
-            if let oppa::DrawOp::RImg { image, .. } = op {
-                if !self.cpu.has_image(*image) && images.pixels_of(*image).is_some() {
-                    self.cpu.insert_cached(&images, *image);
-                }
-                if self.is_gpu()
-                    && !self.gpu_backend.has_image(*image)
-                    && images.pixels_of(*image).is_some()
-                {
-                    self.gpu_backend.insert_cached(&images, *image);
-                }
-            }
-        }
-        self.cpu
-            .paint(self.surface, &plan)
-            .map_err(|e| format!("desktop loop: cpu paint: {e:?}"))?;
-        if self.is_gpu() {
-            self.gpu_backend
-                .paint(self.gpu_surface, &plan)
-                .map_err(|e| format!("desktop loop: gpu paint: {e:?}"))?;
-        }
-        Ok(damage)
+        self.session.repaint(&mut self.rgb)
     }
 
     /// The last committed frame plan (Round 15.2, decision 313 —
     /// proves which overlay `Rect`s a repaint committed; `None`
     /// before the first repaint, never a live borrow).
     pub fn last_plan(&self) -> Option<FramePlan> {
-        self.last_plan.clone()
+        self.session.last_plan()
     }
 
     /// Seconds until the focused caret's next blink flip, if any
@@ -258,14 +131,14 @@ impl SceneCore {
     /// while a collapsed caret is focused (wake then to repaint the
     /// flip); `None` otherwise. Pure over the host.
     pub fn blink_tick_in_secs(&self) -> Option<f64> {
-        self.host.caret_blink_in_secs()
+        self.session.host.caret_blink_in_secs()
     }
 
     /// True when the caret overlay's presence flipped since the last
     /// repaint (Round 15.2, decision 313 — the blink demand). Pure
     /// over the host state above.
     pub fn caret_overlay_dirty(&self) -> bool {
-        self.host.focused_caret_paint().is_some() != self.last_caret_shown
+        self.session.caret_overlay_dirty()
     }
 
     /// Settles and repaints iff the caret overlay flipped (Round
@@ -274,21 +147,15 @@ impl SceneCore {
     /// when settled-quiet (never a spin — a quiet poll schedules
     /// nothing). Paint failures are loud `Err`s like `repaint`.
     pub fn poll_blink(&mut self) -> Result<bool, String> {
-        self.host.run_until_idle();
-        if self.caret_overlay_dirty() {
-            self.repaint()?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        self.session.poll_blink(&mut self.rgb)
     }
 
     /// Earliest component-timer due instant in host-clock ms (Round
     /// 21.1, decision 328 — the wake-query twin of
     /// `blink_tick_in_secs`). Pure over the host.
     pub fn next_timer_due_ms(&self) -> Option<f64> {
-        let now = self.host.now_ms();
-        self.host.next_timer_due_ms(now)
+        let now = self.session.host.now_ms();
+        self.session.host.next_timer_due_ms(now)
     }
 
     /// Fires due component timers, settling + repainting when
@@ -296,13 +163,7 @@ impl SceneCore {
     /// path runners call on wake): returns the fired count. Zero
     /// when nothing was due (quiet). Paint failures are loud `Err`s.
     pub fn tick_timers(&mut self) -> Result<usize, String> {
-        let now = self.host.now_ms();
-        let fired = self.host.tick_timers(now);
-        if fired > 0 {
-            self.host.run_until_idle();
-            self.repaint()?;
-        }
-        Ok(fired)
+        self.session.tick_timers(&mut self.rgb)
     }
 
     /// Tracks a resize: refits the viewport and rebuilds the paint
@@ -314,26 +175,17 @@ impl SceneCore {
     /// re-runs layout now). Same-size calls are a no-op. Loud on
     /// failure.
     pub fn resize(&mut self, width_px: u32, height_px: u32) -> Result<(), String> {
-        let (w, h) = (width_px.max(1), height_px.max(1));
-        if (w, h) == self.viewport {
-            return Ok(());
-        }
-        self.viewport = (w, h);
-        self.host
-            .set_viewport(w as f32 / self.dpr, h as f32 / self.dpr);
-        self.refit_surface()?;
-        self.host.run_until_idle();
-        Ok(())
+        self.session.resize(&mut self.rgb, width_px, height_px)
     }
 
     /// Current output scale (device px per CSS px).
     pub fn dpr(&self) -> f32 {
-        self.dpr
+        self.session.dpr()
     }
 
     /// Viewport in device px.
     pub fn viewport(&self) -> (u32, u32) {
-        self.viewport
+        self.session.viewport()
     }
 
     /// Re-bases the loop on a new device pixel ratio keeping the CSS
@@ -347,80 +199,7 @@ impl SceneCore {
     /// loudly (a scale is never zero/NaN — shells map raw OS values
     /// through `dpr_from_dpi`/`dpr_from_scale_factor` first).
     pub fn set_device_pixel_ratio(&mut self, dpr: f32) -> Result<(), String> {
-        if !dpr.is_finite() || dpr <= 0.0 {
-            panic!(
-                "desktop loop: device pixel ratio {dpr} refused — scales are finite and positive"
-            );
-        }
-        if dpr == self.dpr {
-            return Ok(());
-        }
-        // CSS size is viewport_px / old_dpr (exact at 1.0, the only
-        // previously reachable state — no drift by construction).
-        let css_w = self.viewport.0 as f32 / self.dpr;
-        let css_h = self.viewport.1 as f32 / self.dpr;
-        self.dpr = dpr;
-        let mut config = self.host.layout_config();
-        config.device_pixel_ratio = dpr;
-        self.host.set_layout_config(config);
-        self.builder.set_dpr(dpr);
-        self.host.set_viewport(css_w, css_h);
-        let w = (css_w * dpr).round().max(1.0) as u32;
-        let h = (css_h * dpr).round().max(1.0) as u32;
-        self.viewport = (w, h);
-        self.refit_surface()?;
-        self.host.run_until_idle();
-        Ok(())
-    }
-
-    /// Recreates BOTH paint surfaces at the tracked viewport size
-    /// with the tracked page background and replays the scene
-    /// commits onto them (the Android `rebase_surfaces` rule and the
-    /// desktop `refit_surface` rule are this one path now — a theme
-    /// toggle and a resize can never diverge again). The GPU twin
-    /// refits even while CPU-only so a later `enable_gpu` never
-    /// presents a stale size.
-    pub(crate) fn refit_surface(&mut self) -> Result<(), String> {
-        let (w, h) = self.viewport;
-        let bg = self.page_bg;
-        let old = self.surface;
-        let next = self
-            .cpu
-            .create_surface(SurfaceDesc {
-                width_px: w,
-                height_px: h,
-                background: bg,
-            })
-            .map_err(|e| format!("desktop loop: recreate cpu surface: {e:?}"))?;
-        self.surface = next;
-        let _ = self.cpu.destroy_surface(old);
-        let old_gpu = self.gpu_surface;
-        let next_gpu = self
-            .gpu_backend
-            .create_surface(SurfaceDesc {
-                width_px: w,
-                height_px: h,
-                background: bg,
-            })
-            .map_err(|e| format!("desktop loop: recreate gpu surface: {e:?}"))?;
-        self.gpu_surface = next_gpu;
-        let _ = self.gpu_backend.destroy_surface(old_gpu);
-        // Replay all commits from zero so the fresh surfaces'
-        // `live_nodes` match the scene (the Android `rebase_surfaces`
-        // rule — the desktop runners had no callers of the replay
-        // because their first repaint after refit replays naturally;
-        // replaying here keeps every driver correct with the same
-        // method, including offscreen flows that paint without a
-        // settle between resize and paint).
-        for d in self.host.diffs_from(0) {
-            self.cpu
-                .commit(&d)
-                .map_err(|e| format!("desktop loop: rebase cpu commit: {e:?}"))?;
-            self.gpu_backend
-                .commit(&d)
-                .map_err(|e| format!("desktop loop: rebase gpu commit: {e:?}"))?;
-        }
-        Ok(())
+        self.session.set_device_pixel_ratio(&mut self.rgb, dpr)
     }
 
     /// Straight RGBA8 row-major pixels of the last paint (opaque
@@ -430,8 +209,9 @@ impl SceneCore {
     /// XRGB words for softbuffer).
     pub fn rgba8(&self) -> Result<Vec<u8>, String> {
         let px = self
+            .rgb
             .cpu
-            .pixmap(self.surface)
+            .pixmap(self.rgb.surface)
             .ok_or_else(|| "desktop loop: cpu pixmap missing".to_string())?;
         if px.width() == 0 || px.height() == 0 {
             return Err("desktop loop: zero-size pixmap".to_string());
@@ -452,18 +232,18 @@ impl SceneCore {
     /// Which backend the platform glue presents (`Cpu` until a
     /// runner enables GPU; runners flip back on loud GPU failure).
     pub fn renderer_kind(&self) -> RendererKind {
-        self.active
+        self.rgb.active
     }
 
     /// True once a runner enabled hardware presentation (any GPU
     /// variant — the only GPU presenter since decision 388).
     pub fn is_gpu(&self) -> bool {
-        self.active.is_gpu()
+        self.rgb.active.is_gpu()
     }
 
     /// Human name for logs (one per `OPPA_RENDERER` value).
     pub fn renderer_name(&self) -> &'static str {
-        match self.active {
+        match self.rgb.active {
             RendererKind::Gpu => "gpu",
             RendererKind::GpuAuto => "gpu-auto",
             RendererKind::GpuVulkan => "gpu-vulkan",
@@ -483,7 +263,7 @@ impl SceneCore {
     /// bare presenter (`Gpu`).
     pub fn presenter_badge_name(&self) -> &'static str {
         if self.is_gpu() {
-            return match self.gpu_api {
+            return match self.rgb.gpu_api {
                 Some(GpuApi::Vulkan) => "Gpu/Vulkan",
                 Some(GpuApi::Dx12) => "Gpu/DX12",
                 Some(GpuApi::Gl) => "Gpu/GL",
@@ -496,40 +276,40 @@ impl SceneCore {
     /// Recorded winning `wgpu` backend underneath the GPU presenter
     /// (`None` until a runner records one at bring-up).
     pub fn gpu_api(&self) -> Option<GpuApi> {
-        self.gpu_api
+        self.rgb.gpu_api
     }
 
     /// Records the winning `wgpu` backend after bring-up (runners
     /// call this with the attempt name that succeeded, before
     /// publishing [`SceneCore::presenter_badge_name`]).
     pub fn set_gpu_api(&mut self, api: GpuApi) {
-        self.gpu_api = Some(api);
+        self.rgb.gpu_api = Some(api);
     }
 
     /// Swapchain present mode once GPU is up (`None` while CPU-only).
     pub fn gpu_present_mode(&self) -> Option<wgpu::PresentMode> {
-        self.gpu_mode
+        self.rgb.gpu_mode
     }
 
     /// GPU surface (painted whenever a GPU variant is active).
     pub fn gpu_surface_id(&self) -> SurfaceId {
-        self.gpu_surface
+        self.rgb.gpu_surface
     }
 
     /// GPU twin retained op count.
     pub fn gpu_retained_op_count(&self) -> Option<usize> {
-        self.gpu_backend.retained_op_count(self.gpu_surface)
+        self.rgb.gpu_backend.retained_op_count(self.rgb.gpu_surface)
     }
 
     /// CPU retained op count (test symmetry with the GPU twin).
     pub fn cpu_retained_op_count(&self) -> Option<usize> {
-        self.cpu.retained_op_count(self.surface)
+        self.rgb.cpu.retained_op_count(self.rgb.surface)
     }
 
     /// CPU pixmap surface (always painted — the GDI / softbuffer
     /// source and the GPU fallback pixels).
     pub fn cpu_surface_id(&self) -> SurfaceId {
-        self.surface
+        self.rgb.surface
     }
 
     /// Enables hardware presentation after the runner configured the
@@ -541,25 +321,25 @@ impl SceneCore {
         // override, so the active variant records what was actually
         // attempted (never a silent substitution). Unset resolves
         // to the custom automatic default (decision 388).
-        self.active = renderer_override().unwrap_or(RendererKind::GpuAuto);
-        self.gpu_mode = Some(mode);
+        self.rgb.active = renderer_override().unwrap_or(RendererKind::GpuAuto);
+        self.rgb.gpu_mode = Some(mode);
     }
 
     /// Enables hardware presentation with an explicit renderer kind
     /// (no environment consultation): the Android runner's bring-up
     /// shape — zygote-inherited env must not decide the arm there.
     pub fn enable_gpu_pinned(&mut self, kind: RendererKind, mode: wgpu::PresentMode) {
-        self.active = kind;
-        self.gpu_mode = Some(mode);
+        self.rgb.active = kind;
+        self.rgb.gpu_mode = Some(mode);
     }
 
     /// Drops back to the CPU pixmap (loud GPU failure path): later
     /// repaints skip the GPU twin again; its retained scene stays
     /// for a later re-enable (refit keeps sizes in lockstep).
     pub fn disable_gpu(&mut self) {
-        self.active = RendererKind::Cpu;
-        self.gpu_mode = None;
-        self.gpu_api = None;
+        self.rgb.active = RendererKind::Cpu;
+        self.rgb.gpu_mode = None;
+        self.rgb.gpu_api = None;
     }
 
     /// Ensures a live GPU context on an adapter compatible with
@@ -580,10 +360,11 @@ impl SceneCore {
             return Err("desktop loop: ensure gpu for surface while OPPA_RENDERER=cpu".to_string());
         }
         let info = self
+            .rgb
             .gpu_backend
             .ensure_gpu_for_surface(instance, surface)
             .map_err(|e| format!("desktop loop: ensure gpu for surface: {e:?}"))?;
-        self.active = renderer_override().unwrap_or(RendererKind::GpuAuto);
+        self.rgb.active = renderer_override().unwrap_or(RendererKind::GpuAuto);
         Ok(format!("{info} ({})", self.renderer_name()))
     }
 
@@ -599,10 +380,11 @@ impl SceneCore {
         surface: &wgpu::Surface<'_>,
     ) -> Result<String, String> {
         let info = self
+            .rgb
             .gpu_backend
             .ensure_gpu_for_surface(instance, surface)
             .map_err(|e| format!("desktop loop: ensure pinned gpu for surface: {e:?}"))?;
-        self.active = kind;
+        self.rgb.active = kind;
         Ok(info)
     }
 
@@ -618,7 +400,8 @@ impl SceneCore {
         height: u32,
         mode: wgpu::PresentMode,
     ) -> Result<wgpu::TextureFormat, String> {
-        self.gpu_backend
+        self.rgb
+            .gpu_backend
             .configure_surface(surface, width, height, mode)
             .map_err(|e| format!("desktop loop: configure custom gpu surface: {e:?}"))
     }
@@ -630,6 +413,7 @@ impl SceneCore {
     /// are this one method now.
     pub fn pick_gpu_mode(&self, surface: &wgpu::Surface<'_>) -> wgpu::PresentMode {
         let offered = self
+            .rgb
             .gpu_backend
             .adapter()
             .map(|a| surface.get_capabilities(a).present_modes)
@@ -658,8 +442,9 @@ impl SceneCore {
         if !self.is_gpu() {
             return Err("desktop loop: present_gpu while CPU-only".to_string());
         }
-        self.gpu_backend
-            .present_surface(self.gpu_surface, surface)
+        self.rgb
+            .gpu_backend
+            .present_surface(self.rgb.gpu_surface, surface)
             .map_err(|e| format!("desktop loop: present custom gpu: {e:?}"))
     }
 
@@ -670,7 +455,7 @@ impl SceneCore {
     /// [`ComponentHost::note_overlay_frame`](oppa::ComponentHost::note_overlay_frame)).
     /// Quiet no-op unless the overlay is enabled.
     pub fn note_frame_presented(&self) {
-        self.host.note_overlay_frame();
+        self.session.host.note_overlay_frame();
     }
 
     /// Reads the retained benchmark machinery out of the engine
@@ -693,10 +478,10 @@ impl SceneCore {
         SurfaceId,
     ) {
         (
-            &mut self.host,
-            &mut self.builder,
-            &mut self.cpu,
-            self.surface,
+            &mut self.session.host,
+            &mut self.session.builder,
+            &mut self.rgb.cpu,
+            self.rgb.surface,
         )
     }
 
@@ -705,7 +490,7 @@ impl SceneCore {
     /// The engine otherwise paints it; keep runs out if at all
     /// possible.
     pub fn gpu_backend_mut(&mut self) -> &mut GpuBackend {
-        &mut self.gpu_backend
+        &mut self.rgb.gpu_backend
     }
 
     /// Mounts the root component and settles the first frame.
@@ -715,8 +500,8 @@ impl SceneCore {
         props: P,
         render: fn(&Ctx, &P) -> VNode,
     ) -> MountHandle<P> {
-        let handle = self.host.mount(name, props, render);
-        self.host.run_until_idle();
+        let handle = self.session.host.mount(name, props, render);
+        self.session.host.run_until_idle();
         handle
     }
 }
