@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-03 (through Decision 406).
+Status: current. Last verified: 2026-10-03 (through Decision 407).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -228,7 +228,10 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    imports where the hub glob does not reach),
    `crates/oppa-controls/src/tests.rs` part 1 (decision 406: hub + `buttons`/`fields`/`overlays`, ~1,160
    lines out; shared FakeText + measure/press/lookup helpers + `settle_clocked` stay hub, `ToastCase`
-   rides with its toast tests, groups carry test-only deep-path imports).
+   rides with its toast tests, groups carry test-only deep-path imports),
+   part 2 (decision 407: + `pickers`/`interaction`/`bindings`; shared `tab` key helper + `change`/`blowing`
+   reporters and the check/toggle/slider render rigs move to hub with later regions, all call sites
+   unchanged).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
@@ -308,17 +311,20 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 
 ## Now (in progress)
 
-- Debt + attribution round in progress (decisions 402–406 landed:
+- Debt + attribution round in progress (decisions 402–407 landed:
   `oppa-cpu/builder.rs` → hub + `node`/`shape`/`leaf`/`resolve`,
   `oppa/vnode.rs` → hub + `element`/`text`/`media`, `oppa-app` tests
-  → hub + ten per-area modules, `oppa-controls` tests part 1 (hub +
-  `buttons`/`fields`/`overlays`), every public path preserved, plus
+  → hub + ten per-area modules, `oppa-controls` tests parts 1–2 (hub +
+  `buttons`/`fields`/`overlays` + `pickers`/`interaction`/`bindings`),
+  every public path preserved, plus
   headless `tap_log` persistence through the decision-399 helper —
   per-suite counts identical to the locked baseline-401-final multiset
-  after each; 23-target red-suite attribution recorded in Known issues
+  after each (controls parts gated per-test: same tests, same outcomes,
+  only module path segments added); 23-target red-suite attribution
+  recorded in Known issues
   below — the headline result is a rig artifact, not tree breakage:
   21 of 23 red targets go green with a clean env, 2 genuine web gaps
-  stay). Remaining in round: `oppa-controls/tests.rs` parts 2–3.
+  stay). Remaining in round: `oppa-controls/tests.rs` part 3.
 - Loop-doctrine close-outs complete (decisions 399–401 shut the
   decision-398 follow-ups: `taps.txt` keeps batches with the summary
   appended, `frameloop.rs` measures through the engine benchmark
@@ -336,10 +342,10 @@ value loop, reference apps).
 Accepted-carry: weak-GPU sustained-cost standing rule.
 
 Accepted-carry: file-size follow-ups (`oppa-controls/tests.rs`
-parts 2–3) stay over the
+part 3) stay over the
 hard 1000-line limit — same mechanical split pattern applies (`oppa-cpu/builder.rs`
 closed by decision 402, `vnode.rs` by decision 404, `oppa-app` tests by decision 405,
-controls part 1 by decision 406).
+controls parts 1–2 by decisions 406–407).
 
 ## Blocked (with blocker)
 

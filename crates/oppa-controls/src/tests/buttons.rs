@@ -60,16 +60,6 @@ fn button_disabled_is_handlerless_and_untabbable() {
     assert!(!fired.get(), "press on disabled never activates");
 }
 
-#[derive(Clone)]
-struct CheckCase {
-    props: CheckboxProps,
-}
-impl Props for CheckCase {}
-
-fn check_render(ctx: &Ctx, p: &CheckCase) -> VNode {
-    ctx.child("oppa::Checkbox", 7, &p.props, Checkbox)
-}
-
 #[test]
 fn checkbox_flips_and_reports_checked() {
     let host = ComponentHost::new();
@@ -169,16 +159,6 @@ fn checkbox_renders_drawn_box_check_iff_checked_and_label() {
     );
 }
 
-#[derive(Clone)]
-struct ToggleCase {
-    props: ToggleProps,
-}
-impl Props for ToggleCase {}
-
-fn toggle_render(ctx: &Ctx, p: &ToggleCase) -> VNode {
-    ctx.child("oppa::Toggle", 7, &p.props, Toggle)
-}
-
 #[test]
 fn toggle_flips_like_the_m5_pattern() {
     let host = ComponentHost::new();
@@ -250,16 +230,6 @@ fn toggle_renders_switch_knob_side_and_label() {
     assert!(on.get());
     assert_eq!(knob_x(&host), 22.0);
     label_only(&host);
-}
-
-#[derive(Clone)]
-struct SliderCase {
-    props: SliderProps,
-}
-impl Props for SliderCase {}
-
-fn slider_render(ctx: &Ctx, p: &SliderCase) -> VNode {
-    ctx.child("oppa::Slider", 7, &p.props, Slider)
 }
 
 #[test]
@@ -401,32 +371,6 @@ fn slider_rail_fill_knob_track_value() {
     let (_, fill, knob_x) = geom(&host);
     assert!(approx(fill, 0.0), "empty fill at 0, got {fill}");
     assert!(approx(knob_x, 0.0), "knob at start, got {knob_x}");
-}
-
-/// Presses a track point owned by the track itself (not the
-/// step buttons): scans the trackbox for a hit the buttons
-/// do not own (layout-independent — a missing free point is a
-/// genuine layout surprise, panics loudly). Capture still
-/// belongs to the `slider` root (visuals carry no handlers —
-/// presses climb to it).
-fn press_track(host: &ComponentHost) -> (f32, f32, f32, f32) {
-    let track = node_by_debug(host, "slider");
-    let tb = host
-        .committed_box(node_by_debug(host, "slider-trackbox"))
-        .expect("trackbox");
-    for i in 0..16 {
-        let x = tb.x + tb.w * (i as f32 + 0.5) / 16.0;
-        let y = tb.y + tb.h / 2.0;
-        host.inject_input(oppa::InputEvent::pointer_down(x, y));
-        host.run_until_idle();
-        if host.capture_node_for(0) == Some(track) {
-            let _ = host.pointer_position(0);
-            return (x, y, tb.x, tb.w);
-        }
-        host.inject_input(oppa::InputEvent::pointer_cancel_for(0));
-        host.run_until_idle();
-    }
-    panic!("no track-owned press point in the slider box");
 }
 
 #[test]

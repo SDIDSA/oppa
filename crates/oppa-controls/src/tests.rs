@@ -1,9 +1,11 @@
 use super::*;
-use oppa::input::InputEvent;
+use oppa::input::{keys, InputEvent, KeyState};
 use oppa::{
-    find_retained_by_debug, Cluster, ComponentHost, FontId, FontMetrics, NodeId, ShapedGlyph,
-    ShapedRun, TextError, TextRun, TextService, TextStyle,
+    find_retained_by_debug, Cluster, ComponentHost, Ctx, FontId, FontMetrics, NodeId, Props,
+    ShapedGlyph, ShapedRun, TextError, TextRun, TextService, TextStyle, VNode,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
 /// Uniform-advance fake shaper (body 14px → 8.75px/char), so measured
 /// content widths prove which string is displayed.
 pub(crate) struct FakeText;
@@ -104,6 +106,92 @@ fn settle_clocked(host: &ComponentHost, clock: &oppa::MockClock) {
     panic!("settle_clocked: still demanding after 600 frames (10s mock)");
 }
 
+fn tab(host: &ComponentHost, shift: bool) {
+    let mut ev = InputEvent::key(keys::TAB, KeyState::Pressed);
+    if shift {
+        ev = InputEvent::Key {
+            code: keys::TAB,
+            modifiers: oppa::Modifiers::shift(),
+            state: KeyState::Pressed,
+            repeat: false,
+        };
+    }
+    host.inject_input(ev);
+    host.run_until_idle();
+}
+
+/// Test-only `Change` constructor (the round-5.4 helper lived at
+/// top level but only tests ever called it — top-level placement
+/// tripped `dead_code` on the lib build; moved here in 6.3).
+fn change<T>(f: impl Fn(T) + 'static) -> Change<T> {
+    Rc::new(f)
+}
+
+fn blowing<T: Clone + 'static>() -> (Change<T>, Rc<RefCell<Vec<T>>>) {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    (change(move |v| s.borrow_mut().push(v)), seen)
+}
+
+#[derive(Clone)]
+struct CheckCase {
+    props: CheckboxProps,
+}
+impl Props for CheckCase {}
+
+fn check_render(ctx: &Ctx, p: &CheckCase) -> VNode {
+    ctx.child("oppa::Checkbox", 7, &p.props, Checkbox)
+}
+
+#[derive(Clone)]
+struct ToggleCase {
+    props: ToggleProps,
+}
+impl Props for ToggleCase {}
+
+fn toggle_render(ctx: &Ctx, p: &ToggleCase) -> VNode {
+    ctx.child("oppa::Toggle", 7, &p.props, Toggle)
+}
+
+#[derive(Clone)]
+struct SliderCase {
+    props: SliderProps,
+}
+impl Props for SliderCase {}
+
+fn slider_render(ctx: &Ctx, p: &SliderCase) -> VNode {
+    ctx.child("oppa::Slider", 7, &p.props, Slider)
+}
+
+/// Presses a track point owned by the track itself (not the
+/// step buttons): scans the trackbox for a hit the buttons
+/// do not own (layout-independent — a missing free point is a
+/// genuine layout surprise, panics loudly). Capture still
+/// belongs to the `slider` root (visuals carry no handlers —
+/// presses climb to it).
+fn press_track(host: &ComponentHost) -> (f32, f32, f32, f32) {
+    let track = node_by_debug(host, "slider");
+    let tb = host
+        .committed_box(node_by_debug(host, "slider-trackbox"))
+        .expect("trackbox");
+    for i in 0..16 {
+        let x = tb.x + tb.w * (i as f32 + 0.5) / 16.0;
+        let y = tb.y + tb.h / 2.0;
+        host.inject_input(oppa::InputEvent::pointer_down(x, y));
+        host.run_until_idle();
+        if host.capture_node_for(0) == Some(track) {
+            let _ = host.pointer_position(0);
+            return (x, y, tb.x, tb.w);
+        }
+        host.inject_input(oppa::InputEvent::pointer_cancel_for(0));
+        host.run_until_idle();
+    }
+    panic!("no track-owned press point in the slider box");
+}
+
+mod bindings;
 mod buttons;
 mod fields;
+mod interaction;
 mod overlays;
+mod pickers;
