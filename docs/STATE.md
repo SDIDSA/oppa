@@ -239,10 +239,30 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 - Overlay idle-gap skip (decision 395, gate green 2026-10-03): `note_frame` resyncs past 1s gaps instead of dividing by them (event-driven taps printed `0 FPS` after idle, against the stated doctrine). Proven live on the RMX3370: tap → 30s idle → tap shows a held live rate (`35 FPS | 4.0ms`) instead of gap-poisoned `0 FPS`. Unit: new hold-rate test; all 9 overlay tests + fmt + clippy green.
 - Android tap-path theme sync (decision 394, gate green 2026-10-03): `apply_tap_batch` syncs the builder theme every build + refits the page-background surfaces on toggle (desktop `frame.rs` rule via a shared `rebase_surfaces` core; blank-guard compares the live bg); the step returns the live GPU scene id (a rebase re-homes surfaces mid-loop — presenting the call-time id aborted the loop and froze the app). A dp-passthrough coordinate experiment was tried and reverted (taps regressed); corrected diagnosis: the router hit-tests device px (`LayoutBox` commits device px), so the px→dp→px round trip is correct spacing — proven by on-device event-vs-track-box comparison with accurate flips. Proven live on the RMX3370 phone (Vulkan row): uniform dark scene after toggle (near-black page bg, themed controls + text), loop alive after (`66 FPS [Gpu/Vulkan]`), taps keep processing.
 - Unified app-loop engine (decision 397, gates green 2026-10-03): the platform-free pixel pipeline now lives once in `oppa-app::SceneCore` (host + `FramePlanBuilder` + both paint arms + surfaces, diff replay, selection/caret overlay publish, theme/page-bg contract with surface refit, resize/DPR rebase, GPU bring-up state + present-mode negotiation, static-image deposit sync, plan/caret telemetry). `DesktopLoop` composes it behind the unchanged public API (moved bodies are verbatim, error wording preserved — tests grep it) and `oppa-android-app` drives it: `SceneState` collapsed to one `SceneCore` (its private re-implementations — the plan-build/paint ladder, `rebase_surfaces`, `sync_page_bg`, `straight_rgba`, `pick_uncapped_mode`, density rebase — deleted; presents address the engine's live GPU surface id, eliminating the stale-id threading; `enable_gpu_pinned` keeps zygote-inherited env out of the arm decision). The merge also fixes the Android pipeline's missing static-image `insert_cached` sync (decision 385 rode desktop only). Web stays presenter-owned (locked #1). Gates: host `cargo check --workspace --all-targets` + clippy + fmt --all --check green; `cargo test -p oppa-app --lib` 44/31 — identical to the refactoring baseline (the 31 reds pre-date this change, see Now); Android target `cargo +stable check/clippy --target aarch64-linux-android --all-targets` green (host compile impossible — `ndk-sys` refuses non-Android; on-device oracle run remains the test, still blocked on hardware).
+- Presenter-adapter split (decision 398, gates green 2026-10-03): the
+  decision-397 `SceneCore` split along the locked-#1 seam — the shared
+  loop logic (diff replay into presenters, overlay publish, theme
+  publish + page-bg refit trigger, plan build, image-sync trigger, step
+  ladder, resize/DPR rules, plan/caret telemetry) lives in
+  `oppa-app::SceneSession` behind the tiny `ScenePresenter` trait,
+  with `RgbPresenter` (CPU arm + GPU twin, surfaces, refit/rebase,
+  image deposits, present, readout) as the pixel adapter behind the
+  unchanged `SceneCore` facade, AND the web loop driving the same
+  session through a `DomPresenter` adapter in `oppa-web`
+  (DOM sync/patch/render stay crate-local, not on the trait); wgpu/
+  oppa-gpu/raw-window-handle and the pixel modules are
+  `cfg(not(wasm32))`, so no surface/wgpu/readout path can compile into
+  `oppa-web`. No behavior change — all suites identical to the
+  recorded pre-refactor baseline (red counts unchanged).
 
 ## Now (in progress)
 
-- Loop-consolidation round (decision 397) done 2026-10-03: `SceneCore` is the one engine (see Done); remaining follow-up from the same doctrine — the `frameloop.rs` benchmark damage loop still drives `parts_mut`/`gpu_backend_mut` accessors rather than engine methods (kept, oracle-owned); workspace suite red counts unchanged by this change (31 in `oppa-app --lib`, 14 in `oppa` g11_touch — all failing identically before this round's edits, mid-flight core work in the tree).
+- `frameloop.rs` benchmark damage loop still drives
+  `parts_mut`/`gpu_backend_mut` accessors rather than engine methods
+  (kept, oracle-owned — decision-397/398 follow-up). Workspace suite
+  red counts unchanged by the 397 and 398 rounds (31 in
+  `oppa-app --lib`, 14 in `oppa` g11_touch — all failing identically
+  before these rounds' edits, mid-flight core work in the tree).
 
 ## Next (accepted, not started)
 
