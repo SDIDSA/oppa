@@ -363,6 +363,13 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   Shift+Ctrl released. Proven under fire: full workspace per-suite identical to the locked
   baseline with Shift physically held for the entire run (`target/probe-shiftheld-full.log`,
   101/101) as well as in the normal record.
+- Firefox automation UNBLOCKED (tooling proven 2026-10-04, was Blocked): Firefox 157
+  installed + puppeteer-core 23 drives it over native WebDriver BiDi — spawn headless with
+  `--remote-debugging-port`, `connect({browserWSEndpoint: 'ws://127.0.0.1:PORT/session',
+  protocol: 'webDriverBiDi'})`, full newPage/goto/evaluate proven live (`CONNECTED
+  firefox/157.0`, `EVAL 2`). (`puppeteer.launch({product:'firefox'})` does not take here;
+  manual spawn + connect is the recipe.) The full-leg BiDi port of the CDP harness
+  (`harness.mjs` + parity/dom_text/sink suites) is scoped but not started.
 - Debt round 2 CLOSED (decisions 410–416: `m4_cpu` tests → hub + 13 area modules,
   `oppa-cpu/backend.rs` → hub + `raster`/`replay`, `oppa-shell-win/tsf.rs` → hub +
   `store`/`text_store`/`sinks`, `oppa-shell-linux/input.rs` → hub + `events`/`shell`/`tests`,
@@ -418,7 +425,6 @@ by decision 402, `vnode.rs` by decision 404, `oppa-app` tests by decision 405,
 | Live human passes (IME composition manual, theme flips, menu/tooltip eyeball, close-veto app) | Needs a person at the keyboard |
 | macOS/iOS shells | No Apple hardware; excluded by design |
 | Weak-tier silicon validation (Mali-G52/Adreno-610 class) | Needs hardware wall |
-| Firefox full-leg automation | Rig limitation: spike/web puppeteer harness is CDP-only; Firefox lacks CDP endpoint without BiDi/geckodriver tooling |
 | PWA load-once-offline hand pass | Needs an interactive browser session |
 | Safari pass | No Safari binary or Apple hardware on this machine |
 | Multi-window `DesktopLoop` (secondary `SurfaceId` windows) | Deferred by plan; per-surface granularity is out — re-decision required to revive |
