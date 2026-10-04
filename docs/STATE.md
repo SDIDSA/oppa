@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-04 (through Decision 417).
+Status: current. Last verified: 2026-10-04 (through Decision 418).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -370,11 +370,14 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   firefox/157.0`, `EVAL 2`). (`puppeteer.launch({product:'firefox'})` does not take here;
   manual spawn + connect is the recipe.) The full-leg BiDi port of the CDP harness
   (`harness.mjs` + parity/dom_text/sink suites) is in progress: `spike/web/driver.mjs`
-  (Firefox spawn + BiDi connect) plus Firefox arms in `parity`/`sink`/`webapp` (Edge blocks
-  byte-identical). First Firefox results: `webapp` PASS; `parity` 13/14 with the same
-  text-width row Edge fails (browsers agree within 0.05px — stale corpus vs current engine,
-  pre-existing on both arms); `sink` verdict identical on both arms (same pre-existing
-  roles drift). `harness.mjs` + `dom_text.mjs` CDP input still to port.
+  (Firefox spawn + BiDi connect) plus Firefox arms in `parity`/`sink`/`webapp`/`dom_text`/
+  `harness` (decision 418; Edge blocks byte-identical, CDP kept on the Edge arm).
+  Firefox results: `webapp` PASS; `dom_text` 0 failed steps; `parity` 13/14 == Edge (same
+  stale-corpus row, browsers within 0.05px); `sink` verdict == Edge; harness c2:14/c4:3
+  complete (c4 17/18 identical — CJK dbl-click is the known segmentation class; c3 skipped
+  — no BiDi IME primitives). Hygiene finding: committed `spike/results` fixtures carry the
+  dirty-env overlay badge (swallows click-scans on every browser) — rig runs must start
+  from a clean-env m7 regen; fixtures restored uncommitted per rule.
 - Debt round 2 CLOSED (decisions 410–416: `m4_cpu` tests → hub + 13 area modules,
   `oppa-cpu/backend.rs` → hub + `raster`/`replay`, `oppa-shell-win/tsf.rs` → hub +
   `store`/`text_store`/`sinks`, `oppa-shell-linux/input.rs` → hub + `events`/`shell`/`tests`,
