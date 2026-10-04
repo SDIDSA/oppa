@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-04 (through Decision 418).
+Status: current. Last verified: 2026-10-04 (through Decision 419).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -369,15 +369,31 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   protocol: 'webDriverBiDi'})`, full newPage/goto/evaluate proven live (`CONNECTED
   firefox/157.0`, `EVAL 2`). (`puppeteer.launch({product:'firefox'})` does not take here;
   manual spawn + connect is the recipe.) The full-leg BiDi port of the CDP harness
-  (`harness.mjs` + parity/dom_text/sink suites) is in progress: `spike/web/driver.mjs`
+  (`harness.mjs` + parity/dom_text/sink suites) landed: `spike/web/driver.mjs`
   (Firefox spawn + BiDi connect) plus Firefox arms in `parity`/`sink`/`webapp`/`dom_text`/
-  `harness` (decision 418; Edge blocks byte-identical, CDP kept on the Edge arm).
-  Firefox results: `webapp` PASS; `dom_text` 0 failed steps; `parity` 13/14 == Edge (same
-  stale-corpus row, browsers within 0.05px); `sink` verdict == Edge; harness c2:14/c4:3
-  complete (c4 17/18 identical — CJK dbl-click is the known segmentation class; c3 skipped
-  — no BiDi IME primitives). Hygiene finding: committed `spike/results` fixtures carry the
-  dirty-env overlay badge (swallows click-scans on every browser) — rig runs must start
-  from a clean-env m7 regen; fixtures restored uncommitted per rule.
+  `harness` (decision 418; Edge blocks byte-identical, CDP kept on the Edge arm). Prior
+  Firefox results (fixtures-independent legs, still current): `webapp` PASS; `sink` verdict
+  == Edge; harness c2:14/c4:3 complete (c4 17/18 identical — CJK dbl-click is the known
+  segmentation class; c3 skipped — no BiDi IME primitives).
+- Browser-rig hygiene round 1 CLOSED (decision 419, gates green 2026-10-04): the committed
+  `spike/results` fixtures (`dom_field.html`, `parity_page.html`, `parity_expected.json`)
+  regenerated from a clean-env m7_dom run (all four dirty-env vars unset) — the debug-overlay
+  badge is gone (no `00ff66`/`1e1e1e`/FPS text; pids renumbered from the engine, engine wins).
+  Click-scan suites green on the clean fixtures on both browsers: `parity` 10/10 Edge +
+  10/10 Firefox (record-only text-height row listed, never gating), `dom_text` 0 failed steps
+  Edge + Firefox. Key finding: the dirty 13/14 `parity` failure (badge-text width dw≈10.77)
+  was badge dirt, not a stale corpus — clean fixtures gate 10/10 with no expectation edit,
+  so round 2 scope narrows to the sink role-count rebase (+ verify parity stays green).
+  Known tolerance class observed, not a failure: `undo_granularity` records split on Edge
+  (`aHello world`) vs coalesced on Firefox (`Hello world`) — both pass by suite design.
+  Test-only lint fix in the same change: `#[allow(clippy::module_inception)]` on the lifted
+  `browser::browser` module (decision-416 paths preserved; zero behavior change). Full
+  workspace clean-env run 101/101 green, per-suite multiset-identical to
+  `target/round-409-cleanfull.log` (dirty `baseline-401-final.log` stays 23 red by the
+  standing rule). Logs: `target/round-419-full-clean.log`, `target/round-419-parity-edge.log`,
+  `target/round-419-domtext-edge.log`, `target/round-419-parity-firefox.log`,
+  `target/round-419-domtext-firefox.log`, `target/gate-419-{fmt,clippy,wasm}.log`.
+  Remaining hygiene: sink expectation rebase (round 2), Firefox compare leg (round 3).
 - Debt round 2 CLOSED (decisions 410–416: `m4_cpu` tests → hub + 13 area modules,
   `oppa-cpu/backend.rs` → hub + `raster`/`replay`, `oppa-shell-win/tsf.rs` → hub +
   `store`/`text_store`/`sinks`, `oppa-shell-linux/input.rs` → hub + `events`/`shell`/`tests`,

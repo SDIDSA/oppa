@@ -1,6 +1,7 @@
 #![cfg(windows)]
 
 #[cfg(windows)]
+#[allow(clippy::module_inception)] // decision 416 keeps browser::browser paths; the file name matches the lifted module by design.
 mod browser {
     use super::super::fields_basic::{render_field, FieldProps};
     use super::super::*;
