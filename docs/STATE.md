@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-04 (through Decision 414).
+Status: current. Last verified: 2026-10-04 (through Decision 415).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -255,7 +255,12 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    modules under `tests/m9_reload_gate/` via `#[path]`, all $<430; cross-scenario `assert_*` helpers
    move to hub, groups `use super::*`; same 6 tests, same outcomes — dirty 5/1, clean 6/6;
    fn-name set 30/30 identical, per-suite baseline-identical on re-probe after one full run caught
-   3 live-Shift pointer flakes, the documented environmental class).
+   3 live-Shift pointer flakes, the documented environmental class),
+   `crates/oppa/tests/m3_layout.rs` (decision 415, 1,879 → 224-line hub + 15 area modules under
+   `tests/m3_layout/` via `#[path]`, all $<230; shared `FakeText`/`Rig`/`find_ids`/`approx` stay hub,
+   groups `use super::*`, `delay` via file-level `#![allow(non_snake_case)]` for the `Panel`
+   component fn; same 50 tests, same outcomes — dirty 49/1, clean 50/50; fn-name set 61/61
+   identical, per-suite baseline-identical).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
@@ -346,14 +351,13 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 
 ## Now (in progress)
 
-- Debt round 2 OPEN (decisions 410–414 landed: `m4_cpu` tests → hub + 13 area modules,
+- Debt round 2 OPEN (decisions 410–415 landed: `m4_cpu` tests → hub + 13 area modules,
   `oppa-cpu/backend.rs` → hub + `raster`/`replay`, `oppa-shell-win/tsf.rs` → hub +
   `store`/`text_store`/`sinks`, `oppa-shell-linux/input.rs` → hub + `events`/`shell`/`tests`,
-  `m9_reload_gate` tests → hub + 6 scenario modules;
+  `m9_reload_gate` tests → hub + 6 scenario modules, `m3_layout` tests → hub + 15 area modules;
   every shared rig in hub, every public path
   preserved, full workspace per-suite identical to the locked baseline after each commit;
-  remaining >1000-line files, smallest first:
-  `m3_layout` tests, `m7_dom` tests last;
+  remaining >1000-line file: `m7_dom` tests last;
   spike rig excluded).
 - Debt + attribution round CLOSED (decisions 402–409: `builder.rs`,
   `vnode.rs`, `oppa-app` tests, `oppa-controls` tests fully decomposed
