@@ -36,7 +36,8 @@ emitter layer current, live-bus closed (M10/v1-closure). Sources:
   high-count presents on WSLg Weston (pipe dies ~8th present —
   acceptance needs none of it), X11 path (`libxkbcommon-x11`
   absent), Linux input mapping + IME policy.
-- **Input mapping CLOSED (v1 close-out):** `input.rs` (winit
+- **Input mapping CLOSED (v1 close-out):** `input.rs` hub + `events`/`shell`/`tests`
+  modules (winit
   events into the shared `InputEvent` pipeline, mirroring the
   Android shell: left/touch-0 pointer commands with dp→px,
   Escape/Enter/Space/Tab key table, sampled modifiers, loud
