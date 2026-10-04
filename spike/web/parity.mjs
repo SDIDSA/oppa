@@ -17,6 +17,7 @@ import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isFirefox, launchFirefox } from './driver.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const resultsDir = path.resolve(here, '..', 'results');
@@ -31,18 +32,27 @@ const EDGE_CANDIDATES = [
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
 const edge = EDGE_CANDIDATES.find((p) => fs.existsSync(p));
-if (!edge) {
+if (!edge && !isFirefox) {
   console.error('M7 parity: no Edge binary found (loud requirement, never a silent pass)');
   process.exit(2);
 }
 
-const browser = await puppeteer.launch({
-  executablePath: edge,
-  headless: true,
-  args: ['--font-render-hinting=none', '--disable-lcd-text', '--hide-scrollbars'],
-  defaultViewport: { width: 500, height: 400, deviceScaleFactor: 1 },
-});
+let browser = null;
+let ffCleanup = null;
+if (isFirefox) {
+  ({ browser, cleanup: ffCleanup } = await launchFirefox());
+} else {
+  browser = await puppeteer.launch({
+    executablePath: edge,
+    headless: true,
+    args: ['--font-render-hinting=none', '--disable-lcd-text', '--hide-scrollbars'],
+    defaultViewport: { width: 500, height: 400, deviceScaleFactor: 1 },
+  });
+}
 const page = await browser.newPage();
+if (isFirefox) {
+  await page.setViewport({ width: 500, height: 400, deviceScaleFactor: 1 });
+}
 await page.goto('file:///' + pageFile.replaceAll('\\', '/'));
 
 const dpr = await page.evaluate(() => window.devicePixelRatio);
@@ -120,5 +130,6 @@ for (const r of rows) {
   if (r.verdict === 'fail') console.log(`  FAIL ${r.kind} ${r.pid} deltas=${JSON.stringify(r.deltas)}`);
   if (r.verdict === 'record') console.log(`  RECORD ${r.kind} ${r.pid} engine_h=${r.engine.h} browser_h=${r.browser.h}`);
 }
-await browser.close();
+if (ffCleanup) await ffCleanup();
+else await browser.close();
 process.exit(verdict.pass ? 0 : 1);

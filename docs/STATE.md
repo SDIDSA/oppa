@@ -369,7 +369,12 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   protocol: 'webDriverBiDi'})`, full newPage/goto/evaluate proven live (`CONNECTED
   firefox/157.0`, `EVAL 2`). (`puppeteer.launch({product:'firefox'})` does not take here;
   manual spawn + connect is the recipe.) The full-leg BiDi port of the CDP harness
-  (`harness.mjs` + parity/dom_text/sink suites) is scoped but not started.
+  (`harness.mjs` + parity/dom_text/sink suites) is in progress: `spike/web/driver.mjs`
+  (Firefox spawn + BiDi connect) plus Firefox arms in `parity`/`sink`/`webapp` (Edge blocks
+  byte-identical). First Firefox results: `webapp` PASS; `parity` 13/14 with the same
+  text-width row Edge fails (browsers agree within 0.05px — stale corpus vs current engine,
+  pre-existing on both arms); `sink` verdict identical on both arms (same pre-existing
+  roles drift). `harness.mjs` + `dom_text.mjs` CDP input still to port.
 - Debt round 2 CLOSED (decisions 410–416: `m4_cpu` tests → hub + 13 area modules,
   `oppa-cpu/backend.rs` → hub + `raster`/`replay`, `oppa-shell-win/tsf.rs` → hub +
   `store`/`text_store`/`sinks`, `oppa-shell-linux/input.rs` → hub + `events`/`shell`/`tests`,

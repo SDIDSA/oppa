@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { isFirefox, launchFirefox } from './driver.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(here, '..', '..', 'crates', 'oppa-web', 'web');
@@ -25,7 +26,7 @@ const EDGE_CANDIDATES = [
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
 const edge = EDGE_CANDIDATES.find((p) => fs.existsSync(p));
-if (!edge) {
+if (!edge && !isFirefox) {
   console.error('sink: no Edge binary found (loud requirement, never a silent pass)');
   process.exit(2);
 }
@@ -82,15 +83,23 @@ const verdict = {
 };
 
 let browser = null;
+let ffCleanup = null;
 try {
-  browser = await puppeteer.launch({
-    executablePath: edge,
-    headless: true,
-    args: ['--hide-scrollbars'],
-    defaultViewport: { width: 900, height: 900, deviceScaleFactor: 1 },
-  });
+  if (isFirefox) {
+    ({ browser, cleanup: ffCleanup } = await launchFirefox());
+  } else {
+    browser = await puppeteer.launch({
+      executablePath: edge,
+      headless: true,
+      args: ['--hide-scrollbars'],
+      defaultViewport: { width: 900, height: 900, deviceScaleFactor: 1 },
+    });
+  }
   verdict.browser = await browser.userAgent();
   const page = await browser.newPage();
+  if (isFirefox) {
+    await page.setViewport({ width: 900, height: 900, deviceScaleFactor: 1 });
+  }
   const errors = [];
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   page.on('console', (m) => {
@@ -287,6 +296,7 @@ try {
 fs.mkdirSync(resultsDir, { recursive: true });
 fs.writeFileSync(path.join(resultsDir, 'sink.json'), JSON.stringify(verdict, null, 2));
 console.log(`sink: ready=${verdict.ready} title=${verdict.title} roles=${verdict.form_roles} check=${verdict.checkbox_svg} pick=${verdict.select_pick} step=${verdict.slider_step} typing=${verdict.text_typing} chips=${verdict.layout_chips} modal=${verdict.modal_confirm} fetch=${verdict.fetch_mock} file=${verdict.platform_pick} count=${verdict.platform_count} demo=${verdict.demo_still_boots} pass=${verdict.pass}${verdict.note ? ' note=' + verdict.note : ''}`);
-await browser?.close();
+if (ffCleanup) await ffCleanup();
+else await browser?.close();
 server.kill();
 process.exit(verdict.pass ? 0 : 1);
