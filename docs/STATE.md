@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-04 (through Decision 415).
+Status: current. Last verified: 2026-10-04 (through Decision 416).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -260,7 +260,13 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    `tests/m3_layout/` via `#[path]`, all $<230; shared `FakeText`/`Rig`/`find_ids`/`approx` stay hub,
    groups `use super::*`, `delay` via file-level `#![allow(non_snake_case)]` for the `Panel`
    component fn; same 50 tests, same outcomes — dirty 49/1, clean 50/50; fn-name set 61/61
-   identical, per-suite baseline-identical).
+   identical, per-suite baseline-identical),
+   `crates/oppa-dom/tests/m7_dom.rs` (decision 416, 2,763 → 370-line hub + 14 area modules under
+   `tests/m7_dom/` via `#[path]`, all $<375; shared cards/slots/`Rig` stay hub, groups `use super::*`,
+   cross-region `FieldProps`/`render_field` + `SwitchProps`/`render_switch` widened to `pub(super)`,
+   the nested `#[cfg(windows)] mod browser` lifts verbatim (paths only gain segments); same 50 tests,
+   same outcomes — dirty 32/18, clean 50/50; fn-name set 84/84 identical, per-suite baseline-identical
+   on the third probe after two probes caught transient live-Shift flakes, the documented class).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
@@ -351,13 +357,14 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 
 ## Now (in progress)
 
-- Debt round 2 OPEN (decisions 410–415 landed: `m4_cpu` tests → hub + 13 area modules,
+- Debt round 2 CLOSED (decisions 410–416: `m4_cpu` tests → hub + 13 area modules,
   `oppa-cpu/backend.rs` → hub + `raster`/`replay`, `oppa-shell-win/tsf.rs` → hub +
   `store`/`text_store`/`sinks`, `oppa-shell-linux/input.rs` → hub + `events`/`shell`/`tests`,
-  `m9_reload_gate` tests → hub + 6 scenario modules, `m3_layout` tests → hub + 15 area modules;
+  `m9_reload_gate` tests → hub + 6 scenario modules, `m3_layout` tests → hub + 15 area modules,
+  `m7_dom` tests → hub + 14 area modules;
   every shared rig in hub, every public path
   preserved, full workspace per-suite identical to the locked baseline after each commit;
-  remaining >1000-line file: `m7_dom` tests last;
+  no >1000-line files remain outside the excluded spike rig;
   spike rig excluded).
 - Debt + attribution round CLOSED (decisions 402–409: `builder.rs`,
   `vnode.rs`, `oppa-app` tests, `oppa-controls` tests fully decomposed
@@ -392,7 +399,10 @@ Accepted-carry: weak-GPU sustained-cost standing rule.
 
 Accepted-carry: file-size follow-ups all closed (`oppa-cpu/builder.rs`
 by decision 402, `vnode.rs` by decision 404, `oppa-app` tests by decision 405,
-`oppa-controls/tests.rs` by decisions 406–408).
+`oppa-controls/tests.rs` by decisions 406–408, `m4_cpu` tests by decision 410,
+`oppa-cpu/backend.rs` by decision 411, `oppa-shell-win/tsf.rs` by decision 412,
+`oppa-shell-linux/input.rs` by decision 413, `m9_reload_gate` tests by decision 414,
+`m3_layout` tests by decision 415, `m7_dom` tests by decision 416).
 
 ## Blocked (with blocker)
 
