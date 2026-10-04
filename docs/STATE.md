@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-04 (through Decision 419).
+Status: current. Last verified: 2026-10-04 (through Decision 420).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -393,7 +393,25 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   standing rule). Logs: `target/round-419-full-clean.log`, `target/round-419-parity-edge.log`,
   `target/round-419-domtext-edge.log`, `target/round-419-parity-firefox.log`,
   `target/round-419-domtext-firefox.log`, `target/gate-419-{fmt,clippy,wasm}.log`.
-  Remaining hygiene: sink expectation rebase (round 2), Firefox compare leg (round 3).
+  Remaining hygiene: sink expectation rebase done below (round 2), Firefox compare leg (round 3).
+- Browser-rig hygiene round 2 CLOSED (decision 420, gates green 2026-10-04): stale rig
+  expectations rebased to the current engine/app (engine wins, re-derived never tuned).
+  `parity` needed NO rebase — 10/10 Edge + 10/10 Firefox on the round-419 clean fixtures
+  (the dirty 13/14 row was badge dirt, confirmed closed). `sink` thresholds rebased in
+  `spike/web/sink.mjs`: `combobox` 1→2 (Select + DatePicker, both `Semantics::combobox` —
+  `select.rs:165`, `date_picker.rs:357` decision 370) and `tab` 4→5 (SinkTab gained Views —
+  `kitchen_sink.rs` decision 380); both browsers had reported `{1,1,1,2,5}` live against
+  the stale `{1,1,1,1,4}` gate. After the rebase the full sink story gates clean on both
+  browsers (roles/check/pick-Mint/step-55/typing-Ada/chips/modal/fetch-mock/file/count/demo
+  all true, `pass=true`; `webapp` PASS both arms unchanged). No product-code change, no
+  rig-mechanism change (threshold constants + comment only; Edge/CDP blocks byte-identical,
+  Firefox arms addition-only untouched). Full workspace clean-env run 101/101 green,
+  per-suite multiset-identical to `target/round-409-cleanfull.log` (dirty
+  `baseline-401-final.log` stays 23 red by the standing rule). Logs:
+  `target/round-420-full-clean.log`, `target/round-420-{parity,domtext,sink,webapp}-{edge,
+  firefox}.log` (plus pre-rebase mismatch captures `target/round-420-sink-{edge,
+  firefox}.log`), `target/gate-420-{fmt,clippy,wasm}.log`.
+  Remaining hygiene: Firefox compare leg (round 3).
 - Debt round 2 CLOSED (decisions 410–416: `m4_cpu` tests → hub + 13 area modules,
   `oppa-cpu/backend.rs` → hub + `raster`/`replay`, `oppa-shell-win/tsf.rs` → hub +
   `store`/`text_store`/`sinks`, `oppa-shell-linux/input.rs` → hub + `events`/`shell`/`tests`,

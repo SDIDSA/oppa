@@ -167,9 +167,15 @@ try {
     combobox: await roleCount('combobox'),
     tab: await roleCount('tab'),
   };
+  // Rebased decision 420 (engine wins — re-derived, never tuned): the
+  // Form panel carries TWO comboboxes (Select + DatePicker, both
+  // `Semantics::combobox` — date_picker.rs:357, select.rs:165) and the
+  // tablist carries FIVE tabs (SinkTab Form/Layout/Overlays/Platform/Views —
+  // kitchen_sink.rs; Views added by decision 380). Both browsers report
+  // {1,1,1,2,5} live.
   verdict.form_roles =
     roles.checkbox === 1 && roles.switch === 1 && roles.slider === 1 &&
-    roles.combobox === 1 && roles.tab === 4;
+    roles.combobox === 2 && roles.tab === 5;
   if (!verdict.form_roles) {
     throw new Error('form roles mismatch: ' + JSON.stringify(roles));
   }
