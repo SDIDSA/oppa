@@ -187,17 +187,27 @@ for (const hit of corpus.hit_strings) {
     }
     {
       await click(clusters[0].x + 1);
-      await click(clusters[Math.min(2, clusters.length - 1)].x + 1, CLICK_Y, { modifiers: 8 });
+      if (isFirefox) {
+        // No in-event modifiers over BiDi (the c4-arm reason — the
+        // `modifiers` option never reaches the pointer event): hold
+        // Shift around the click, exactly like the c4 shift-click arm.
+        await page.keyboard.down('Shift');
+        await click(clusters[Math.min(2, clusters.length - 1)].x + 1, CLICK_Y);
+        await page.keyboard.up('Shift');
+      } else {
+        await click(clusters[Math.min(2, clusters.length - 1)].x + 1, CLICK_Y, { modifiers: 8 });
+      }
       const st = await state();
       selOps.push({ kind: 'shift-click', start: st.start, end: st.end });
     }
     {
       const x = clusters[Math.min(1, clusters.length - 1)].x + 1;
       if (isFirefox) {
-        // Raw pressed/released pairs do not register double-click over
-        // BiDi; two counted clicks do (proven in isolation).
-        await click(x, CLICK_Y, { clickCount: 1 });
-        await click(x, CLICK_Y, { clickCount: 2 });
+        // `page.mouse.click` with counted clicks (the dom_text-proven
+        // shape): down/up pairs collapse to a caret over BiDi while the
+        // click API forms a genuine word selection (proven in isolation).
+        await page.mouse.click(x, CLICK_Y, { count: 1 });
+        await page.mouse.click(x, CLICK_Y, { count: 2 });
       } else {
         await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 1 });
         await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 1 });
@@ -481,8 +491,11 @@ for (const suite of corpus.op_suites) {
     } else if (step.op === 'dbl-click') {
       const x = Math.round(opX[0]);
       if (isFirefox) {
-        await click(x, CLICK_Y, { clickCount: 1 });
-        await click(x, CLICK_Y, { clickCount: 2 });
+        // `page.mouse.click` with counted clicks (the dom_text-proven
+        // shape — same finding as the c2 arm above): down/up pairs
+        // collapse to a caret over BiDi instead of word-selecting.
+        await page.mouse.click(x, CLICK_Y, { count: 1 });
+        await page.mouse.click(x, CLICK_Y, { count: 2 });
       } else {
         await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 1 });
         await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 1 });

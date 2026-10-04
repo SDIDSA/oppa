@@ -3,6 +3,14 @@
 // four pass/fail criteria concretely, and emits per-criterion per-arm raw
 // results + failure classification + the authority-model recommendation.
 // Nothing is averaged away; every mismatch stays in the output.
+//
+// Firefox leg (decision 421): `OPPA_BROWSER=firefox` judges Windows-vs-Firefox
+// from a Firefox-produced web.json and writes `verdict-firefox.json` alongside
+// the Edge verdict. The criterion computations are shared; only the c3
+// rig-limitation skip, the browser labels, the Firefox divergence-class
+// summary, and the output name branch on the arm (Edge output byte-identical).
+// Divergence classes reused: CJK segmentation, BiDi digit tails, undo-shape
+// tolerance, c3 rig-limitation.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +21,11 @@ const corpus = JSON.parse(fs.readFileSync(path.join(spikeDir, 'corpus.json'), 'u
 const win = JSON.parse(fs.readFileSync(path.join(spikeDir, 'results', 'windows.json'), 'utf8'));
 const web = JSON.parse(fs.readFileSync(path.join(spikeDir, 'results', 'web.json'), 'utf8'));
 
+// Browser under judgment (decision 421; mirrors the harness rigs' switch).
+// The Edge path below is byte-identical to the pre-Firefox verdict.
+const isFirefox = (process.env.OPPA_BROWSER ?? 'edge') === 'firefox';
+const outName = isFirefox ? 'verdict-firefox.json' : 'verdict.json';
+
 const TOL = corpus.tolerance_px;
 
 // UTF-16 index (DOM) → code-point index (the shared normalization).
@@ -21,7 +34,9 @@ const u16ToCp = (text, u16) => [...text.slice(0, u16)].length;
 const verdict = {
   rig: {
     windows_arm: 'windows-gpu (framework-authority editing session over DWriteTextService; set_ime anchoring)',
-    web_arm: 'web-dom (real <input> in headless Edge; native clicks/keys/IME; hook records what the DOM reports)',
+    web_arm: isFirefox
+      ? 'web-dom (real <input> in headless Firefox over WebDriver BiDi; native clicks/keys; hook records what the DOM reports; IME unscored — BiDi has no composition primitives)'
+      : 'web-dom (real <input> in headless Edge; native clicks/keys/IME; hook records what the DOM reports)',
     tolerance_px: TOL,
     rig_notes: web.rig_notes,
   },
@@ -35,7 +50,9 @@ const verdict = {
     'RTL/bidi visual ordering: M0b-deferred M3 layout work — the corpus now carries a bidi string so the rtl flag gets exercised and the visual-order divergence is measured (expect c1/c2 mismatches on it), not silently covered.',
     'Variant A on Web (framework authority over a hidden input, browser as event source) was NOT built this round — the round scope was Windows-GPU (framework authority) vs Web-DOM (native). The recommendation maps accordingly (see verdict).',
     'Combining marks / ZWJ corpus entries (DESIGN §9.2 criterion 2) are now in the corpus (rig v2: decomposed e-acute, ZWJ technologist); the surrogate-pair string ("héllo 👍") covered the multi-unit case first.',
-    'A real OS IME was not drivable from this environment on either arm; both arms use scripted IME through the platform-native input path (Windows: ImeCompositionFeed per M0b; Web: CDP IME scripting, which routes through Chromium\'s text-input state machine).',
+    isFirefox
+      ? 'A real OS IME was not drivable from this environment on either arm; the Windows arm uses scripted IME through the platform-native input path (ImeCompositionFeed per M0b), while the Firefox arm scores no IME scenarios at all — WebDriver BiDi has no IME composition primitives, so c3 records a rig-limitation skip, never a model verdict.'
+      : 'A real OS IME was not drivable from this environment on either arm; both arms use scripted IME through the platform-native input path (Windows: ImeCompositionFeed per M0b; Web: CDP IME scripting, which routes through Chromium\'s text-input state machine).',
   ],
 };
 
@@ -88,6 +105,13 @@ const verdict = {
   for (const hit of corpus.hit_strings) {
     const w = win.c2_sweep.find((r) => r.string === hit.text);
     const clicks = web.c2_clicks.find((c) => c.string === hit.text);
+    if (!clicks) {
+      // Arm recorded no sweep for this string (rig gap, not a model
+      // verdict — never triggers on the Edge arm, which sweeps every
+      // corpus string).
+      perString.push({ string: hit.text, absent_on_web_arm: true });
+      continue;
+    }
     const mismatches = [];
     for (let x = 0; x <= w.max_x; x++) {
       const ours = w.answers_cp[x];
@@ -159,7 +183,19 @@ const verdict = {
 // ---------------------------------------------------------------------------
 // Criterion 3 — composition event fidelity (both arms).
 // ---------------------------------------------------------------------------
-{
+// No composition scenarios recorded on this arm (Firefox over WebDriver BiDi
+// has no IME composition primitives — the harness skips c3 by design):
+// a rig-limitation skip, never a model verdict. The Edge arm records every
+// corpus scenario, so this branch never fires there (Edge output unchanged).
+if (web.c3_scenarios.length === 0) {
+  verdict.c3 = {
+    statement: 'The begin/update/commit/cancel streams for each scripted scenario (candidate commit, kana conversion, cancel mid-composition, in-composition caret navigation, rapid zh↔ja switching, delete-range re-anchor, focus loss mid-composition) must match the editing model with no lost or duplicated characters. In-progress state must be visible identically: the framework sees composition text in (Windows) the session buffer / (Web) the field value + compositionupdate data.',
+    pass: 'SKIP_RIG_LIMITATION',
+    rig_limitation: 'c3 rig-limitation class: WebDriver BiDi exposes no IME composition primitives (no imeSetComposition/imeCommitText twin), so no composition scenario ran on this arm — unscored, not passed and not failed.',
+    per_scenario: [],
+  };
+}
+if (web.c3_scenarios.length > 0) {
   const perScenario = [];
   let allOk = true;
   for (const scenario of corpus.ime_scenarios) {
@@ -253,6 +289,16 @@ const verdict = {
   let allMatch = true;
   for (const suite of corpus.op_suites) {
     const w = web.c4_suites.find((s) => s.name === suite.name);
+    if (!w) {
+      // Suite absent on this arm (rig gap, not a model verdict — every
+      // corpus suite runs on the Edge arm, so this never fires there).
+      suites.push({
+        name: suite.name, steps_total: 0, steps_matched: 0, mismatches: [],
+        note: 'suite absent on this arm (rig gap), not a model verdict.',
+        absent: true,
+      });
+      continue;
+    }
     const stepRows = w.steps.map((r) => {
       const e = r.expected ?? {};
       const valueMatch = r.value === e.value;
@@ -292,6 +338,80 @@ const verdict = {
 }
 
 // ---------------------------------------------------------------------------
+// Firefox divergence-class summary (decision 421 — Firefox arm only; the
+// Edge verdict carries no such section and stays byte-identical without it).
+// Every Windows-vs-Firefox mismatch row lands in exactly one reused class;
+// the `unclassified` bucket must stay empty or the leg is not clean.
+// ---------------------------------------------------------------------------
+function classifyFirefoxDivergences(corpus, win, web, verdict) {
+  const classes = {
+    cjk_segmentation: [],
+    word_selection_rule: [],
+    bidi_digit_tails: [],
+    midpoint_tie_break: [],
+    undo_shape_tolerance: [],
+    c3_rig_limitation: [],
+    unclassified: [],
+  };
+  const isCjkString = (s) => /^\p{Lo}+$/u.test(s ?? '');
+  const hasNd = (s) => /\p{Nd}/u.test(s ?? '');
+  for (const row of verdict.c2.per_string ?? []) {
+    if (row.absent_on_web_arm) {
+      classes.unclassified.push({ c2: row.string, reason: 'sweep absent on web arm' });
+      continue;
+    }
+    const sweepClass = hasNd(row.string) ? 'bidi_digit_tails' : 'midpoint_tie_break';
+    for (const m of row.sweep_mismatches ?? []) {
+      classes[sweepClass].push({ c2: 'sweep', string: row.string, x: m.x, ours_cp: m.ours_cp, web_cp: m.web_cp });
+    }
+    for (const m of row.boundary_mismatches ?? []) {
+      classes[sweepClass].push({ c2: 'boundary', string: row.string, ...m });
+    }
+    for (const s of row.selection_ops ?? []) {
+      if (s.match) continue;
+      if (s.kind === 'dbl-click') {
+        // CJK segmentation is the all-ideograph string's dictionary rule
+        // (shared-suite spec item); every other string's dbl-click delta is
+        // the generic browser word-selection rule.
+        classes[isCjkString(row.string) ? 'cjk_segmentation' : 'word_selection_rule'].push({
+          c2: 'dbl-click', string: row.string, windows_cp: s.windows_cp, web_cp: s.web_cp,
+        });
+      } else {
+        classes.unclassified.push({ c2: s.kind, string: row.string, windows_cp: s.windows_cp, web_cp: s.web_cp });
+      }
+    }
+  }
+  for (const suite of verdict.c4.suites ?? []) {
+    for (const m of suite.mismatches ?? []) {
+      if (suite.name === 'multibyte_edit' && m.op === 'dbl-click') {
+        classes.cjk_segmentation.push({ c4: suite.name, ...m });
+      } else if (suite.name === 'undo_granularity' && m.op === 'undo') {
+        classes.undo_shape_tolerance.push({ c4: suite.name, ...m });
+      } else {
+        classes.unclassified.push({ c4: suite.name, ...m });
+      }
+    }
+  }
+  if (verdict.c3.pass === 'SKIP_RIG_LIMITATION') {
+    classes.c3_rig_limitation.push({ c3: 'skipped', reason: verdict.c3.rig_limitation });
+  }
+  const sweepTotal = verdict.c2.sweep_probes ?? 0;
+  const selTotal = verdict.c2.selection_op_probes ?? 0;
+  classes.counts = {
+    sweep_agree: sweepTotal - (verdict.c2.sweep_mismatches ?? 0),
+    sweep_total: sweepTotal,
+    selection_agree: selTotal - (verdict.c2.selection_op_mismatches ?? 0),
+    selection_total: selTotal,
+  };
+  return classes;
+}
+
+if (isFirefox) {
+  verdict.browser = 'firefox';
+  verdict.divergence_classes = classifyFirefoxDivergences(corpus, win, web, verdict);
+}
+
+// ---------------------------------------------------------------------------
 // Verdict
 // ---------------------------------------------------------------------------
 const c1Pass = verdict.c1.pass;
@@ -303,7 +423,9 @@ const c3Failures = verdict.c3.per_scenario.filter((s) => !s.phases_match || s.va
 verdict.recommendation = {
   c1_windows: c1Pass ? 'PASS' : 'FAIL',
   c2: c2Pass ? 'PASS' : 'FAIL',
-  c3: c3Pass ? 'PASS' : 'FAIL',
+  // The c3 skip is a rig-limitation record, never a model PASS or FAIL —
+  // the boolean gate only ever sees the Edge arm (always boolean there).
+  c3: c3Pass === true ? 'PASS' : (c3Pass === 'SKIP_RIG_LIMITATION' ? 'SKIP_RIG_LIMITATION' : 'FAIL'),
   c4: c4Pass ? 'PASS' : (verdict.c4.suites.every((s) => !s.note || s.steps_matched >= s.steps_total - 2) ? 'PASS_WITH_DOCUMENTED_DIVERGENCES' : 'FAIL'),
   interpretation:
     'This round\'s rig is Windows-GPU (framework authority, the mechanism of variant (a)) vs Web-DOM native (the mechanism variant (b) would own on Web). DESIGN\'s third variant (framework authority ON Web via a hidden input) was explicitly out of this round\'s scope; the (a)-on-Web-specific risks it alone can measure (candidate anchoring fidelity over a hidden input, hit-test parity under framework-rendered text) are flagged as the residual open item below.',
@@ -335,6 +457,6 @@ verdict.recommendation = {
   },
 };
 
-fs.writeFileSync(path.join(spikeDir, 'results', 'verdict.json'), JSON.stringify(verdict, null, 1));
-console.log('verdict.json written');
+fs.writeFileSync(path.join(spikeDir, 'results', outName), JSON.stringify(verdict, null, 1));
+console.log(outName + ' written');
 console.log('c1:', verdict.recommendation.c1_windows, '| c2:', verdict.recommendation.c2, '| c3:', verdict.recommendation.c3, '| c4:', verdict.recommendation.c4);

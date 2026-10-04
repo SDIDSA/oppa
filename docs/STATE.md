@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-04 (through Decision 420).
+Status: current. Last verified: 2026-10-04 (through Decision 421).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -411,7 +411,32 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   `target/round-420-full-clean.log`, `target/round-420-{parity,domtext,sink,webapp}-{edge,
   firefox}.log` (plus pre-rebase mismatch captures `target/round-420-sink-{edge,
   firefox}.log`), `target/gate-420-{fmt,clippy,wasm}.log`.
-  Remaining hygiene: Firefox compare leg (round 3).
+  Remaining hygiene: Firefox compare leg done below (round 3).
+- Browser-rig hygiene round 3 CLOSED (decision 421, gates green 2026-10-04): the Firefox
+  compare leg — `compare.mjs` judges Windows-vs-Firefox from a Firefox-produced `web.json`
+  (`OPPA_BROWSER=firefox` → `verdict-firefox.json`) alongside the unchanged Windows-vs-Edge
+  verdict (proven byte-identical, 55,837 bytes same hash). Criterion computations shared;
+  Firefox-only additions: c3 rig-limitation skip (BiDi has no IME primitives — recorded,
+  never scored), browser labels, output name, and a `divergence_classes` summary reusing
+  CJK segmentation / BiDi digit tails / undo-shape tolerance / c3 rig-limitation (plus an
+  `unclassified` bucket that stays empty). First Windows-vs-Firefox verdict: c1 FAIL (shared
+  Windows-arm evidence, identical to Edge) | c2 FAIL (sweep 340/411, selection 15/21 —
+  strict gate, same philosophy as the Edge FAIL) | c3 SKIP_RIG_LIMITATION | c4
+  PASS_WITH_DOCUMENTED_DIVERGENCES (latin 9/9, multibyte 4/5 CJK rule, undo 3/4 burst).
+  Buckets: CJK 2, word-rule 5, BiDi tails 67, tie-break 4, undo-shape 1, c3-skip 1,
+  unclassified 0. New of the same class (flagged, fixed in-arm): the Firefox c2/c4
+  dbl-click + c2 shift-click shapes never delivered real input over BiDi (selections
+  collapsed — down/up pairs and modifier-less clicks); diagnosed with throwaway probes
+  (created, run, deleted) and repaired Firefox-only to the dom_text-proven shapes
+  (`page.mouse.click` counted clicks, Shift held around the click — same trusted path,
+  no expectation touched). One genuine browser-vs-browser divergence recorded: ZWJ-string
+  dbl-click selects [0,4] on Edge vs [1,4] on Firefox (both differ from the session [1,1] —
+  word-rule class). Full workspace clean-env 101/101 green, multiset-identical to
+  `target/round-409-cleanfull.log`. Logs: `target/round-421-{harness-{edge,firefox{,2,3}},
+  web-{edge,firefox{,3}},probe{,2},compare-{edge-before,edge-after,firefox{,2}},
+  verdict-{edge-before,firefox{,2}},full-clean}.log/json` + `target/gate-421-{fmt,clippy,
+  wasm}.log`. Hygiene close-out complete: fixtures clean (419), expectations rebased (420),
+  Firefox leg recorded (421).
 - Debt round 2 CLOSED (decisions 410–416: `m4_cpu` tests → hub + 13 area modules,
   `oppa-cpu/backend.rs` → hub + `raster`/`replay`, `oppa-shell-win/tsf.rs` → hub +
   `store`/`text_store`/`sinks`, `oppa-shell-linux/input.rs` → hub + `events`/`shell`/`tests`,
