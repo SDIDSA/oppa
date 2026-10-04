@@ -262,6 +262,9 @@ pub struct MessageRecord {
 }
 
 pub(crate) fn key_down(vk: u16) -> bool {
+    if let Some(pinned) = super::key_override(vk) {
+        return pinned;
+    }
     unsafe { GetKeyState(vk as i32) as u16 & 0x8000 != 0 }
 }
 

@@ -65,6 +65,32 @@ pub(crate) use events::{
 pub use events::{Cmd, ImeMessage, MessageRecord, ShellEvent, HWHEEL_LINE_PX, WHEEL_LINE_PX};
 pub(crate) use shell_platform::shell_wnd_proc;
 
+/// Test-only modifier pin (decision 417): when set, [`key_down`]
+/// answers from this table instead of the live `GetKeyState`, so
+/// hidden-window pointer tests are deterministic no matter what the
+/// machine's keyboard is doing (the documented live-Shift flake class:
+/// a Shift held anywhere on the box flips `shift: false` assertions
+/// and reroutes wheel ticks horizontally mid-suite). Production never
+/// writes here — the table starts empty (everything live).
+static KEY_OVERRIDE: std::sync::Mutex<[Option<bool>; 256]> = std::sync::Mutex::new([None; 256]);
+
+/// Pin one virtual key for tests (`None` releases back to live).
+/// Test-only by convention: production code must never call this.
+pub fn set_key_override(vk: u16, down: Option<bool>) {
+    if let Some(slot) = KEY_OVERRIDE.lock().unwrap().get_mut(vk as usize) {
+        *slot = down;
+    }
+}
+
+pub(crate) fn key_override(vk: u16) -> Option<bool> {
+    KEY_OVERRIDE
+        .lock()
+        .unwrap()
+        .get(vk as usize)
+        .copied()
+        .flatten()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShellConfig {
     pub title: String,

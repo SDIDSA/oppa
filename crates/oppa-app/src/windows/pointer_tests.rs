@@ -59,6 +59,18 @@ impl TextService for FakeText {
 }
 
 fn hidden_shell() -> Win32Shell {
+    // Deterministic modifiers (decision 417): the shell proc samples
+    // live Shift/Ctrl per message — pin both released (same override
+    // the shell's own pointer tests pin; the synthetic `shift: true`
+    // drive below bypasses sampling, so it is unaffected).
+    oppa_shell_win::win::set_key_override(
+        windows::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT.0,
+        Some(false),
+    );
+    oppa_shell_win::win::set_key_override(
+        windows::Win32::UI::Input::KeyboardAndMouse::VK_CONTROL.0,
+        Some(false),
+    );
     Win32Shell::new(ShellConfig {
         title: "pointer-test".to_string(),
         width: 200,

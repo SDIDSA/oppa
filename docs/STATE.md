@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-04 (through Decision 416).
+Status: current. Last verified: 2026-10-04 (through Decision 417).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -357,6 +357,12 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 
 ## Now (in progress)
 
+- Flake quarantine CLOSED (decision 417, gates green 2026-10-04): the Win32 proc's live
+  `GetKeyState` Shift/Ctrl sampling now consults a test-only `KEY_OVERRIDE` table first
+  (empty = live, production path unchanged); both pointer-test `hidden_shell` helpers pin
+  Shift+Ctrl released. Proven under fire: full workspace per-suite identical to the locked
+  baseline with Shift physically held for the entire run (`target/probe-shiftheld-full.log`,
+  101/101) as well as in the normal record.
 - Debt round 2 CLOSED (decisions 410–416: `m4_cpu` tests → hub + 13 area modules,
   `oppa-cpu/backend.rs` → hub + `raster`/`replay`, `oppa-shell-win/tsf.rs` → hub +
   `store`/`text_store`/`sinks`, `oppa-shell-linux/input.rs` → hub + `events`/`shell`/`tests`,
@@ -421,7 +427,9 @@ by decision 402, `vnode.rs` by decision 404, `oppa-app` tests by decision 405,
 
 ## Known issues (not code bugs unless noted)
 
-- Environmental flakes: `oppa-shell-win` live-Shift sampling; sandboxed clipboard returns NULL handle with `ERROR_SUCCESS` (loud skip); transient clipboard box contention in full-suite runs.
+- Environmental flakes: `oppa-shell-win` live-Shift sampling (production still samples
+  the live keyboard by design — real input; pointer-test suites pin Shift+Ctrl released via
+  the decision-417 override, proven immune with Shift held for a full run); sandboxed clipboard returns NULL handle with `ERROR_SUCCESS` (loud skip); transient clipboard box contention in full-suite runs.
 - Stated edges: ZWJ-inside-regional-indicator double-click selects the joiner alone (pathological); right-held single-gesture drag-select stays out (tap-to-open).
 - Standing debt: hot-reload true unload is v2 scope; inline-child effect precision stops at the window (open architecture question); headless TaskStudio quiescence resolved (decision 383 — gated unshaped text re-measure); full studio tests remain bounded-frame by doctrine; Dark-OS web boot shows the static light body until the first patch carries the theme stanza (settled pages take nothing — body heals on first interaction).
 - Deliberate non-goals (not debt): fixed decorative literals, `SELECTION_FILL`, OS title-bar theming; right-held menu drag-select; color-emoji rendering.

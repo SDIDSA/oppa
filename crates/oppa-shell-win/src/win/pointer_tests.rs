@@ -2,6 +2,11 @@ use super::*;
 use oppa::shell::PlatformShell;
 
 fn hidden_shell() -> Win32Shell {
+    // Deterministic modifiers (decision 417): the proc samples live
+    // Shift/Ctrl per message — pin both released so no assertion can
+    // depend on the machine's keyboard.
+    super::set_key_override(VK_SHIFT.0, Some(false));
+    super::set_key_override(VK_CONTROL.0, Some(false));
     Win32Shell::new(ShellConfig {
         title: "pointer-test".to_string(),
         width: 200,
