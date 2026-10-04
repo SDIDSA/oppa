@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-04 (through Decision 410).
+Status: current. Last verified: 2026-10-04 (through Decision 411).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -239,7 +239,10 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
    `tests/m4_cpu/` via `#[path]` — plain `mod` beside a test-target root resolves as siblings, not
    into the subdirectory; shared `FakeText` + card `Rig` + color probes stay hub, groups
    `use super::*`, `dwrite` via file-level `#![cfg(windows)]`, `rimg_refused` rides with its
-   image tests; same 20 tests, same outcomes — dirty 11/9, clean 20/20).
+   image tests; same 20 tests, same outcomes — dirty 11/9, clean 20/20),
+   `crates/oppa-cpu/src/backend.rs` (decision 411, 1,124 → 384-line hub + `raster.rs` 404 +
+   `replay.rs` 368; callees widened to `pub(super)`, call sites qualified, every `backend::`
+   public path preserved; fn-name set 39/39 identical, per-suite baseline-identical).
   Cross-module callees widened to `pub(super)` (component / dbus subtrees only, no public API change);
   `crate::dbus` paths preserved via hub re-exports (`connect_unix`/`connect_abstract` stay `#[cfg(unix)]`;
   test-only `MSG_METHOD_CALL`/`parse_address` import from their submodules). All public APIs preserved 100% via re-exports;
@@ -330,9 +333,10 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 
 ## Now (in progress)
 
-- Debt round 2 OPEN (decision 410 landed first: `m4_cpu` tests → hub + 13 area modules,
-  every shared rig in hub, full workspace per-suite identical to the locked baseline;
-  remaining >1000-line files, smallest first: `oppa-cpu/backend.rs`, `oppa-shell-win/tsf.rs`,
+- Debt round 2 OPEN (decisions 410–411 landed: `m4_cpu` tests → hub + 13 area modules,
+  `oppa-cpu/backend.rs` → hub + `raster`/`replay`; every shared rig in hub, every public path
+  preserved, full workspace per-suite identical to the locked baseline after each commit;
+  remaining >1000-line files, smallest first: `oppa-shell-win/tsf.rs`,
   `oppa-shell-linux/input.rs`, `m9_reload_gate` tests, `m3_layout` tests, `m7_dom` tests last;
   spike rig excluded).
 - Debt + attribution round CLOSED (decisions 402–409: `builder.rs`,
