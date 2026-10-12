@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-12 (through Decision 482).
+Status: current. Last verified: 2026-10-12 (through Decision 492).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -904,6 +904,32 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   the channel DWM features and accessibility tools read. Gates: fmt
   clean, clippy zero warnings, core bar-box union, shell live-proc,
   runner end-to-end proofs green. Awaiting user snap-flyout proof.
+- Outside resize grabs + Win11 snap-layouts flyout (decision 492,
+  gate green 2026-10-12): resolves both remaining Windows desktop
+  Extended issues (outside resize grabs over dropshadow + windowed snap
+  layouts flyout) following the JavaFX `StageStyle.EXTENDED` architecture
+  (OpenJDK PR #1605 / JDK-8313424): Extended `WM_NCCALCSIZE` preserves
+  `DefWindowProcW`'s non-client border insets (left, right, bottom ==
+  `SM_CXSIZEFRAME + SM_CXPADDEDBORDER`) while restoring `new_size.top = original_top`
+  (plus `SM_CXPADDEDBORDER + SM_CYSIZEFRAME` when maximized, matching the
+  monitor work area exactly). `WM_NCHITTEST` checks caption button zones
+  first (beating the top sizing band and `DefWindowProcW` in the button
+  top sliver `0.0 <= pt.y < top_border_height`), then passes non-client border
+  hits directly from `DefWindowProcW` (`HTLEFT`, `HTRIGHT`, `HTBOTTOM`,
+  corners over dropshadow) while client points query drag regions
+  (`HTCAPTION`, top edge `HTTOP`/corners), and client body (`HTCLIENT`).
+  Standard desktop frame negotiation aligns with Win11 DWM frame
+  expectations to enable native Snap Layouts flyout on maximize button hover
+  in windowed mode (awaiting live verification). `fit_client_to_scene`
+  compensates HWND bounds with `+ 2 * frame_x` width and `+ frame_y` height
+  so scene size matches client rect exactly; `title_bar_info` maps client coords
+  to screen via `ClientToScreen`; 1px glass frame extension scoped to non-Extended
+  frameless styles (real frame already provides border/shadow). Gates: fmt clean,
+  clippy zero warnings, wasm check clean, full workspace tests green (incl.
+  positive OS `WindowFromPoint` margin routing delivery proof, outside resize,
+  button top sliver, maximized work area, and snap tests, updated title_bar_info,
+  `oppa-shell-win` 39/39, `oppa-app` 93/93, `stylebook` 5/5). Awaiting user
+  live snap-flyout proof.
 
 ## Now (in progress)
 

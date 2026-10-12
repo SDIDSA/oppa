@@ -1078,8 +1078,9 @@ fn header_loop_and_shell() -> (DesktopLoop, Win32Shell) {
 /// answer with.
 #[test]
 fn sync_publishes_caption_zones_from_header_buttons() {
-    use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SendMessageW, WM_NCHITTEST};
+    use windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCHITTEST};
     let (loop_, shell) = header_loop_and_shell();
     // Center of the live maximize button box (committed layout —
     // the same boxes the runner published as zones).
@@ -1087,13 +1088,13 @@ fn sync_publishes_caption_zones_from_header_buttons() {
         .host()
         .committed_box_by_debug("header-max")
         .expect("maximize button laid out");
-    let mut rect = RECT::default();
+    let mut origin = POINT { x: 0, y: 0 };
     unsafe {
-        let _ = GetWindowRect(shell.hwnd(), &mut rect);
+        let _ = ClientToScreen(shell.hwnd(), &mut origin);
     }
     let (sx, sy) = (
-        rect.left + (max.x + max.w / 2.0) as i32,
-        rect.top + (max.y + max.h / 2.0) as i32,
+        origin.x + (max.x + max.w / 2.0) as i32,
+        origin.y + (max.y + max.h / 2.0) as i32,
     );
     let code = unsafe {
         SendMessageW(
@@ -1116,21 +1117,22 @@ fn sync_publishes_caption_zones_from_header_buttons() {
 /// Decision 491 end to end: the runner publishes the title-bar box
 /// on the same sync, so a real `WM_GETTITLEBARINFOEX` over the
 /// mounted header reports the maximize slot at the committed box +
-/// window origin (mount → sync → OS query → struct).
+/// client origin (mount → sync → OS query → struct).
 #[test]
 fn sync_publishes_title_bar_info_for_dwm_and_tools() {
-    use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+    use windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SendMessageW, TITLEBARINFOEX, WM_GETTITLEBARINFOEX,
+        SendMessageW, TITLEBARINFOEX, WM_GETTITLEBARINFOEX,
     };
     let (loop_, shell) = header_loop_and_shell();
     let max = loop_
         .host()
         .committed_box_by_debug("header-max")
         .expect("maximize button laid out");
-    let mut origin = RECT::default();
+    let mut origin = POINT { x: 0, y: 0 };
     unsafe {
-        let _ = GetWindowRect(shell.hwnd(), &mut origin);
+        let _ = ClientToScreen(shell.hwnd(), &mut origin);
     }
     let mut info = TITLEBARINFOEX::default();
     let handled = unsafe {
@@ -1151,11 +1153,11 @@ fn sync_publishes_title_bar_info_for_dwm_and_tools() {
             info.rgrect[3].bottom
         ),
         (
-            origin.left + max.x as i32,
-            origin.top + max.y as i32,
-            origin.left + (max.x + max.w) as i32,
-            origin.top + (max.y + max.h) as i32,
+            origin.x + max.x as i32,
+            origin.y + max.y as i32,
+            origin.x + (max.x + max.w) as i32,
+            origin.y + (max.y + max.h) as i32,
         ),
-        "maximize slot matches the committed box at the window origin"
+        "maximize slot matches the committed box at the client origin"
     );
 }

@@ -139,15 +139,26 @@ contract test suite — not prose — defines sameness.
   caption metrics, so minimize/maximize run the bridge's
   `ShowWindow` calls and close queues the veto path; double-clicks
   swallow after the single-click acted); the shell reports real
-  custom-frame geometry through `WM_GETTITLEBARINFOEX` (decision
-  491 — bar box plus min/max/close slots in screen coordinates with
-  honest states — instead of phantom standard metrics);
+  custom-frame geometry through `WM_GETTITLEBARINFOEX` (decisions
+  491, 492 — bar box plus min/max/close slots mapped in screen
+  coordinates via `ClientToScreen` with honest states — instead of
+  phantom standard metrics);
   delivered border points
-  resize by genuine OS frame metrics (decision 490 — the proc
-  consults `DefWindowProcW` first and accepts only sizing codes, so
-  bands and cursors match the platform; outside points are not
-  routed to stripped windows at all — true outside-grab needs an
-  owned transparent margin, deferred); button glyphs are true Win11
+  resize by genuine OS frame metrics (decisions 490, 492 — the
+  JavaFX `EXTENDED` model, JDK-8313424: `WM_NCCALCSIZE` preserves
+  `DefWindowProcW` frame insets on left, right, and bottom while
+  keeping top flush, and `fit_client_to_scene` sizes the HWND to
+  include `2 * frame_x` and `frame_y` margins; points outside the
+  client area over the dropshadow route to the HWND and return
+  genuine OS sizing codes directly from `DefWindowProcW`;
+  caption button zones beat the top sizing band and `DefWindowProcW`
+  in the top sliver, while the top edge of non-button drag regions
+  resizes vertically via `HTTOP`/corners; maximized windows expand so
+  the client area matches the monitor work area exactly;
+  the negotiated non-client frame metrics align with Windows 11 DWM
+  expectations for the windowed Snap Layouts flyout on hovering
+  `HTMAXBUTTON`, awaiting live verification);
+  button glyphs are true Win11
   caption shapes (decision 487 — 16px Segoe-metric strokes baked
   per palette at 4x, centered exactly in their targets, close-hover
   white on signal red, docked flush top-right with zero inset);

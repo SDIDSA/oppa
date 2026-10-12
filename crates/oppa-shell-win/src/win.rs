@@ -554,12 +554,13 @@ impl Win32Shell {
                 }
             }
 
-            // Decision 489: every frameless window extends the 1px
-            // glass frame (native border line + drop shadow — the
-            // `WM_NCCALCSIZE` strip takes them with the visuals).
-            // Loud on refusal but never fatal (a shadowless window
-            // stays fully usable).
-            if cfg.style.is_frameless() {
+            // Decision 489, 492: frameless windows without a real OS frame
+            // (`Undecorated`, `Transparent`) extend the 1px glass frame (native
+            // border line + drop shadow — the `WM_NCCALCSIZE` strip takes them
+            // with the visuals). `Extended` keeps standard OS non-client frame
+            // metrics on left, right, and bottom (decision 492), so 1px glass is
+            // not needed there. Loud on refusal but never fatal.
+            if cfg.style.is_frameless() && cfg.style != oppa::WindowStyle::Extended {
                 if let Err(e) = extend_glass_frame(hwnd) {
                     eprintln!("oppa-shell-win: glass frame unavailable: {e} (no border/shadow)");
                 }

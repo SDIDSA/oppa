@@ -5,15 +5,16 @@
 use super::*;
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    ClientToScreen, GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowRect, IsZoomed, ShowWindow, NCCALCSIZE_PARAMS, SW_MAXIMIZE,
-    SW_MINIMIZE, SW_RESTORE, TITLEBARINFOEX, WM_ERASEBKGND, WM_GETTITLEBARINFOEX,
-    WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE,
+    GetClientRect, GetSystemMetrics, IsZoomed, ShowWindow, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER,
+    SM_CYSIZEFRAME, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, TITLEBARINFOEX, WM_ERASEBKGND,
+    WM_GETTITLEBARINFOEX, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE,
 };
 
 /// Publishes the hovered caption zone (decision 486): maps the
@@ -64,15 +65,15 @@ const TITLE_STATE_INVISIBLE: u32 = 0x0000_8000;
 fn title_bar_info(shared: &Rc<RefCell<ShellShared>>, hwnd: HWND) -> Option<TITLEBARINFOEX> {
     let s = shared.borrow();
     let bar = s.title_bar_rect?;
-    let mut origin = RECT::default();
+    let mut origin = POINT { x: 0, y: 0 };
     unsafe {
-        let _ = GetWindowRect(hwnd, &mut origin);
+        let _ = ClientToScreen(hwnd, &mut origin);
     }
     let to_screen = |r: [f32; 4]| RECT {
-        left: origin.left + r[0].round() as i32,
-        top: origin.top + r[1].round() as i32,
-        right: origin.left + (r[0] + r[2]).round() as i32,
-        bottom: origin.top + (r[1] + r[3]).round() as i32,
+        left: origin.x + r[0].round() as i32,
+        top: origin.y + r[1].round() as i32,
+        right: origin.x + (r[0] + r[2]).round() as i32,
+        bottom: origin.y + (r[1] + r[3]).round() as i32,
     };
     let mut states = [0u32; 6];
     let mut rects = [RECT::default(); 6];
@@ -99,7 +100,7 @@ fn title_bar_info(shared: &Rc<RefCell<ShellShared>>, hwnd: HWND) -> Option<TITLE
 /// frameless clamp keeps the taskbar visible. `None` when the
 /// monitor query fails (the `WM_NCCALCSIZE` arm then keeps the
 /// proposed rect — a missing clamp never misplaces the window).
-fn monitor_work_rect(hwnd: HWND) -> Option<RECT> {
+pub(crate) fn monitor_work_rect(hwnd: HWND) -> Option<RECT> {
     unsafe {
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
@@ -307,18 +308,57 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_NCCALCSIZE => {
-            // Decisions 482–484: frameless windows strip the
-            // non-client visuals (title bar + borders) — return 0
-            // for both the `wParam`-TRUE DWM frame negotiation and
-            // the FALSE shape. The creation style stays overlapped
-            // (decision 484 — the OS keeps owning snap, tiling,
-            // shadows, and animations); only the visuals go. A
-            // maximized frameless window additionally clamps to the
-            // monitor work area (the winit mirror — without
-            // decorations to offset it, the proposed rect would span
-            // the taskbar). Decorated windows keep the OS frame
-            // (default handling, byte-identical).
-            if shared.borrow().style.is_frameless() {
+            // Decisions 482–484, 492: for `WindowStyle::Extended`, preserve
+            // the OS non-client frame metrics on left, right, and bottom via
+            // `DefWindowProcW`, while restoring `top = original_top` (flush
+            // title bar, plus frame height if maximized) per the JavaFX
+            // `EXTENDED` architecture (JDK-8313424). This provides genuine
+            // outside-the-client-area resize grab margins over the dropshadow
+            // for free and satisfies Windows 11 DWM's frame requirement for
+            // windowed Snap Layouts flyout activation over `HTMAXBUTTON`.
+            // Other frameless styles (`Undecorated`, `Transparent`) strip the
+            // non-client visuals completely to 0 and clamp to the monitor work
+            // area when maximized. Decorated windows keep default handling.
+            if shared.borrow().style == oppa::WindowStyle::Extended {
+                if wparam.0 != 0 {
+                    let params = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
+                    let original_top = params.rgrc[0].top;
+                    let res = DefWindowProcW(hwnd, msg, wparam, lparam);
+                    if res.0 != 0 {
+                        return res;
+                    }
+                    let mut new_size = params.rgrc[0];
+                    new_size.top = original_top;
+                    if unsafe { IsZoomed(hwnd).as_bool() } {
+                        // Note on DPI: GetSystemMetrics queries system-DPI metrics (96 DPI base);
+                        // GetSystemMetricsForDpi is the per-monitor DPI equivalent if per-monitor
+                        // dynamic scaling is enabled.
+                        let border_y = unsafe {
+                            GetSystemMetrics(SM_CXPADDEDBORDER) + GetSystemMetrics(SM_CYSIZEFRAME)
+                        };
+                        new_size.top += border_y;
+                    }
+                    params.rgrc[0] = new_size;
+                    LRESULT(0)
+                } else {
+                    let rect = unsafe { &mut *(lparam.0 as *mut RECT) };
+                    let original_top = rect.top;
+                    let res = DefWindowProcW(hwnd, msg, wparam, lparam);
+                    if res.0 != 0 {
+                        return res;
+                    }
+                    let mut new_size = *rect;
+                    new_size.top = original_top;
+                    if unsafe { IsZoomed(hwnd).as_bool() } {
+                        let border_y = unsafe {
+                            GetSystemMetrics(SM_CXPADDEDBORDER) + GetSystemMetrics(SM_CYSIZEFRAME)
+                        };
+                        new_size.top += border_y;
+                    }
+                    *rect = new_size;
+                    LRESULT(0)
+                }
+            } else if shared.borrow().style.is_frameless() {
                 if wparam.0 != 0 && unsafe { IsZoomed(hwnd).as_bool() } {
                     if let Some(work) = monitor_work_rect(hwnd) {
                         let params = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
@@ -344,27 +384,64 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             }
         }
         WM_NCHITTEST => {
-            // Decisions 482–490: frameless hit-testing — native
-            // caption zones first (`HT*BUTTON`, so the OS owns press
-            // and snap layouts over the `HeaderBar` buttons; hover
-            // glow paints in-scene from the published hover state
-            // below, since DWM paints no glow on a stripped frame),
-            // then genuine OS frame metrics (`DefWindowProcW` maps
-            // the point through the real thick-frame metrics —
-            // decision 490 — so delivered border points resize by OS
-            // logic with native cursors downstream, never ours), then
-            // the pure `frameless_hit_test` fallback over the live
-            // client rect plus the runner-published drag regions (OS
-            // drag on `HTCAPTION`, edge/corner resize, snap), so a
-            // title bar is never needed for full window management.
-            // The default answer narrows on the way down: only sizing
-            // codes pass from `DefWindowProcW` (button codes stay
-            // ours-alone — standard positions would phantom where
-            // visuals differ — and `HTCAPTION` maps to client so
-            // nested header controls keep their presses while our
-            // drag regions own the bare chrome). Decorated windows
-            // keep the default (byte-identical).
-            if shared.borrow().style.is_frameless() {
+            // Decisions 482–492: hit-testing.
+            // For `Extended` (decision 492, JavaFX EXTENDED model):
+            // Native caption buttons check first (`HT*BUTTON`), so zones beat
+            // the top sizing band and DefWindowProcW in the top sliver
+            // (0.0 <= pt.y < top_border_height). Non-client hits from
+            // `DefWindowProcW` (`def != HTCLIENT`, e.g. HTLEFT, HTRIGHT, HTBOTTOM,
+            // corners over dropshadow) return next. For remaining points inside
+            // the client area (`def == HTCLIENT`), drag regions check next
+            // (`HTCAPTION`, with top edge returning `HTTOP`/`HTTOPLEFT`/`HTTOPRIGHT`
+            // when windowed for the top resize grab), then `HTCLIENT`.
+            // Other frameless styles keep the internal frameless_hit_test classifier.
+            // Decorated windows keep default handling.
+            if shared.borrow().style == oppa::WindowStyle::Extended {
+                let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
+                let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;
+                let mut pt = POINT { x: sx, y: sy };
+                let _ = ScreenToClient(hwnd, &mut pt);
+                let zones = shared.borrow().caption_buttons.clone();
+                publish_caption_hover(&shared, pt.x as f32, pt.y as f32, &zones, hwnd);
+                if let Some(code) = caption_button_at(pt.x as f32, pt.y as f32, &zones) {
+                    return LRESULT(code);
+                }
+                let def = DefWindowProcW(hwnd, msg, wparam, lparam);
+                if def.0 != HTCLIENT_PX {
+                    return def;
+                }
+                let mut client = RECT::default();
+                let _ = GetClientRect(hwnd, &mut client);
+                let client_w = (client.right - client.left) as f32;
+                let maximized = IsZoomed(hwnd).as_bool();
+                let drag = shared.borrow().drag_rects.clone();
+                // Note: the drag/top hit-test logic below mirrors `frameless_hit_test`,
+                // but is only reached when `DefWindowProcW` stays silent (returns `HTCLIENT_PX`).
+                // It classifies the client interior (header drag regions and the top resize band
+                // along the flush top edge) without re-invoking DefWindowProcW.
+                if in_rects(pt.x as f32, pt.y as f32, &drag) {
+                    if maximized {
+                        LRESULT(HTCAPTION_PX)
+                    } else {
+                        let top_border_height = unsafe {
+                            GetSystemMetrics(SM_CXPADDEDBORDER) + GetSystemMetrics(SM_CYSIZEFRAME)
+                        } as f32;
+                        if (pt.y as f32) < top_border_height {
+                            if (pt.x as f32) < top_border_height {
+                                LRESULT(HTTOPLEFT_PX)
+                            } else if (pt.x as f32) >= client_w - top_border_height {
+                                LRESULT(HTTOPRIGHT_PX)
+                            } else {
+                                LRESULT(HTTOP_PX)
+                            }
+                        } else {
+                            LRESULT(HTCAPTION_PX)
+                        }
+                    }
+                } else {
+                    LRESULT(HTCLIENT_PX)
+                }
+            } else if shared.borrow().style.is_frameless() {
                 // Screen point packs as i16 pairs in lParam.
                 let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
                 let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;

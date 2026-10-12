@@ -266,12 +266,7 @@ pub fn run_windows<P: Props>(
     })
     .map_err(|e| format!("oppa-app: create window: {e}"))?;
     let hwnd = shell.hwnd();
-    fit_client_to_scene(
-        hwnd,
-        options.width,
-        options.height,
-        options.window_style.is_frameless(),
-    );
+    fit_client_to_scene(hwnd, options.width, options.height, options.window_style);
 
     // COM apartment for the TSF bridge (spike parity — the bridge
     // CoCreates on this thread). Failure keeps the IMM path, never

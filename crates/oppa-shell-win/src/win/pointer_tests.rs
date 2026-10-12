@@ -730,7 +730,6 @@ fn frameless_window_extends_glass_frame() {
     for style in [
         oppa::WindowStyle::Undecorated,
         oppa::WindowStyle::Transparent,
-        oppa::WindowStyle::Extended,
     ] {
         let shell = hidden_shell_with_style(style);
         assert!(
@@ -740,48 +739,88 @@ fn frameless_window_extends_glass_frame() {
     }
 }
 
-/// Decision 490 probe (locks the native-resize design): the OS does
-/// NOT route points just outside a frameless rect back to it
-/// (`WindowFromPoint` — the feed of `WM_NCHITTEST` delivery), so no
-/// invisible border ring exists to receive — outside pickup needs an
-/// owned transparent margin ring (window bigger than the scene with
-/// a glassed NC ring: NCCALCSIZE insets, per-resize blur regions —
-/// major surgery, explicitly deferred, never silently assumed).
-/// Inside-edge points keep answering through the proc below with
-/// genuine OS frame metrics (decision 490 def-deferral).
+/// Decision 492 positive OS delivery proof: the non-client frame
+/// negotiated via `WM_NCCALCSIZE` makes the HWND window rect extend
+/// into the drop shadow (`frame_x` left/right, `frame_y` bottom).
+/// Unlike synthesized SendMessageW calls, `WindowFromPoint` tests real
+/// OS pointer routing: points in the non-client margin ring route
+/// directly to our visible window, proving genuine OS outside-grab delivery.
 #[test]
-fn outside_points_do_not_route_to_frameless_window() {
-    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, WindowFromPoint};
-    use windows::Win32::Foundation::{POINT, RECT};
-    let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
-    let mut rect = RECT::default();
-    unsafe {
-        let _ = GetWindowRect(shell.hwnd(), &mut rect);
-    }
-    // A point far outside can never be ours (robust on every
-    // machine, no other window can own it... it owns nothing — the
-    // assertion is only that IT ISN'T US).
-    let far = unsafe {
-        WindowFromPoint(POINT {
-            x: rect.right + 200,
-            y: rect.bottom + 200,
-        })
+fn margin_ring_points_route_to_visible_extended_window() {
+    use ::windows::Win32::Foundation::POINT;
+    use ::windows::Win32::Foundation::RECT;
+    use ::windows::Win32::Graphics::Gdi::ClientToScreen;
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, SetWindowPos, ShowWindow, WindowFromPoint, HWND_TOPMOST, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW,
     };
-    assert_ne!(far, shell.hwnd(), "far points never route to the window");
-    // Near-edge points report for the record (informational only —
-    // DWM versions may differ, so no assertion pins them).
-    for (x, y, edge) in [
-        (rect.left - 3, (rect.top + rect.bottom) / 2, "left"),
-        (rect.right + 3, (rect.top + rect.bottom) / 2, "right"),
-        ((rect.left + rect.right) / 2, rect.top - 3, "top"),
-        ((rect.left + rect.right) / 2, rect.bottom + 3, "bottom"),
-    ] {
-        let hit = unsafe { WindowFromPoint(POINT { x, y }) };
-        eprintln!(
-            "oppa-shell-win: outside probe {edge}: routed={}",
-            hit == shell.hwnd()
+
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
+    unsafe {
+        let _ = ShowWindow(shell.hwnd(), SW_SHOW);
+        let _ = SetWindowPos(
+            shell.hwnd(),
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
         );
     }
+
+    let mut win_rect = RECT::default();
+    let mut client_origin = POINT { x: 0, y: 0 };
+    unsafe {
+        let _ = GetWindowRect(shell.hwnd(), &mut win_rect);
+        let _ = ClientToScreen(shell.hwnd(), &mut client_origin);
+    }
+
+    // Left margin ring (between win_rect.left and client_origin.x)
+    let left_pt = POINT {
+        x: win_rect.left + 2,
+        y: client_origin.y + 50,
+    };
+    assert_eq!(
+        unsafe { WindowFromPoint(left_pt) },
+        shell.hwnd(),
+        "OS routes left margin ring point to our window"
+    );
+
+    // Right margin ring (between client right and win_rect.right)
+    let right_pt = POINT {
+        x: win_rect.right - 2,
+        y: client_origin.y + 50,
+    };
+    assert_eq!(
+        unsafe { WindowFromPoint(right_pt) },
+        shell.hwnd(),
+        "OS routes right margin ring point to our window"
+    );
+
+    // Bottom margin ring (between client bottom and win_rect.bottom)
+    let bottom_pt = POINT {
+        x: client_origin.x + 50,
+        y: win_rect.bottom - 2,
+    };
+    assert_eq!(
+        unsafe { WindowFromPoint(bottom_pt) },
+        shell.hwnd(),
+        "OS routes bottom margin ring point to our window"
+    );
+
+    // Far point outside our window rect never routes to our window
+    let far_pt = POINT {
+        x: win_rect.right + 200,
+        y: win_rect.bottom + 200,
+    };
+    assert_ne!(
+        unsafe { WindowFromPoint(far_pt) },
+        shell.hwnd(),
+        "far points never route to our window"
+    );
+
+    shell.destroy_window();
 }
 
 /// Decision 484: the maximized frameless clamp pins the proposed
@@ -859,9 +898,8 @@ fn caption_button_at_maps_zones_in_order() {
 #[test]
 fn caption_zones_answer_htbutton_codes_through_proc() {
     use ::windows::Win32::Foundation::{LPARAM, WPARAM};
-    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SendMessageW, WM_NCHITTEST};
+    use ::windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCHITTEST};
     use oppa::CaptionButton;
-    use windows::Win32::Foundation::RECT;
     let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
     // Three 46x40 zones packed at the top-right of the 200x150
     // client area (the runner publishes these from the retained
@@ -872,12 +910,12 @@ fn caption_zones_answer_htbutton_codes_through_proc() {
         (CaptionButton::Close, [154.0, 0.0, 46.0, 40.0]),
     ]);
     assert_eq!(shell.caption_zones().len(), 3, "zones publish");
-    let mut rect = RECT::default();
+    let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
     unsafe {
-        let _ = GetWindowRect(shell.hwnd(), &mut rect);
+        let _ = ::windows::Win32::Graphics::Gdi::ClientToScreen(shell.hwnd(), &mut origin);
     }
     let hit = |cx: i32, cy: i32| unsafe {
-        let (sx, sy) = (rect.left + cx, rect.top + cy);
+        let (sx, sy) = (origin.x + cx, origin.y + cy);
         SendMessageW(
             shell.hwnd(),
             WM_NCHITTEST,
@@ -902,7 +940,7 @@ fn caption_zones_answer_htbutton_codes_through_proc() {
 fn title_bar_info_reports_real_geometry_in_screen_coords() {
     use ::windows::Win32::Foundation::LPARAM;
     use ::windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SendMessageW, TITLEBARINFOEX, WM_GETTITLEBARINFOEX,
+        SendMessageW, TITLEBARINFOEX, WM_GETTITLEBARINFOEX,
     };
     use oppa::CaptionButton;
     use windows::Win32::Foundation::RECT;
@@ -913,9 +951,9 @@ fn title_bar_info_reports_real_geometry_in_screen_coords() {
         (CaptionButton::Maximize, [108.0, 0.0, 46.0, 40.0]),
         (CaptionButton::Close, [154.0, 0.0, 46.0, 40.0]),
     ]);
-    let mut origin = RECT::default();
+    let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
     unsafe {
-        let _ = GetWindowRect(shell.hwnd(), &mut origin);
+        let _ = ::windows::Win32::Graphics::Gdi::ClientToScreen(shell.hwnd(), &mut origin);
     }
     let mut info = TITLEBARINFOEX::default();
     let handled = unsafe {
@@ -929,10 +967,10 @@ fn title_bar_info_reports_real_geometry_in_screen_coords() {
     };
     assert_ne!(handled, 0, "custom geometry claims the message");
     let at = |r: [f32; 4]| RECT {
-        left: origin.left + r[0] as i32,
-        top: origin.top + r[1] as i32,
-        right: origin.left + (r[0] + r[2]) as i32,
-        bottom: origin.top + (r[1] + r[3]) as i32,
+        left: origin.x + r[0] as i32,
+        top: origin.y + r[1] as i32,
+        right: origin.x + (r[0] + r[2]) as i32,
+        bottom: origin.y + (r[1] + r[3]) as i32,
     };
     assert_eq!(
         info.rcTitleBar,
@@ -975,23 +1013,20 @@ fn title_bar_info_reports_real_geometry_in_screen_coords() {
 #[test]
 fn nchittest_publishes_caption_hover_and_leave_clears() {
     use ::windows::Win32::Foundation::{LPARAM, WPARAM};
-    use ::windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SendMessageW, WM_NCHITTEST, WM_NCMOUSELEAVE,
-    };
+    use ::windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCHITTEST, WM_NCMOUSELEAVE};
     use oppa::CaptionButton;
-    use windows::Win32::Foundation::RECT;
     let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
     shell.set_caption_buttons(vec![
         (CaptionButton::Minimize, [62.0, 0.0, 46.0, 40.0]),
         (CaptionButton::Maximize, [108.0, 0.0, 46.0, 40.0]),
         (CaptionButton::Close, [154.0, 0.0, 46.0, 40.0]),
     ]);
-    let mut rect = RECT::default();
+    let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
     unsafe {
-        let _ = GetWindowRect(shell.hwnd(), &mut rect);
+        let _ = ::windows::Win32::Graphics::Gdi::ClientToScreen(shell.hwnd(), &mut origin);
     }
     let probe = |cx: i32, cy: i32| unsafe {
-        let (sx, sy) = (rect.left + cx, rect.top + cy);
+        let (sx, sy) = (origin.x + cx, origin.y + cy);
         SendMessageW(
             shell.hwnd(),
             WM_NCHITTEST,
@@ -1040,13 +1075,12 @@ fn nchittest_publishes_caption_hover_and_leave_clears() {
 /// (a maximized test window must never outlive its test).
 #[test]
 fn caption_clicks_act_and_double_clicks_swallow() {
-    use ::windows::Win32::Foundation::{LPARAM, WPARAM};
+    use ::windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
     use ::windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, IsIconic, IsZoomed, SendMessageW, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
+        IsIconic, IsZoomed, SendMessageW, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
     };
     use oppa::shell::PlatformShell;
     use oppa::CaptionButton;
-    use windows::Win32::Foundation::{HWND, RECT};
     fn zones() -> Vec<(CaptionButton, [f32; 4])> {
         vec![
             (CaptionButton::Minimize, [62.0, 0.0, 46.0, 40.0]),
@@ -1060,11 +1094,11 @@ fn caption_clicks_act_and_double_clicks_swallow() {
         shell
     }
     fn at(hwnd: HWND, cx: i32, cy: i32) -> LPARAM {
-        let mut rect = RECT::default();
+        let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
         unsafe {
-            let _ = GetWindowRect(hwnd, &mut rect);
+            let _ = ::windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut origin);
         }
-        LPARAM((((rect.top + cy) << 16) | ((rect.left + cx) & 0xFFFF)) as isize)
+        LPARAM((((origin.y + cy) << 16) | ((origin.x + cx) & 0xFFFF)) as isize)
     }
     // Minimize acts (taskbar button cleaned by destroy below).
     let shell = styled();
@@ -1124,5 +1158,205 @@ fn caption_clicks_act_and_double_clicks_swallow() {
         kinds.contains(&oppa::EventKind::CloseRequested),
         "close zone queues the veto consult, got {kinds:?}"
     );
+    shell.destroy_window();
+}
+
+/// Decision 492 (JavaFX EXTENDED architecture): Extended windows
+/// retain OS non-client frame metrics on left, right, and bottom while
+/// keeping the top flush with the window origin.
+/// Outside resize grabs (over the dropshadow / frame margin) route to the HWND
+/// and return genuine OS sizing codes (HTLEFT, HTRIGHT, HTBOTTOM, corners).
+/// Inside the client area: drag regions caption, top edge of drag regions
+/// resizes vertically (HTTOP), caption zones answer HT*BUTTON codes.
+#[test]
+fn extended_window_has_nonclient_frame_for_outside_resize_and_snap() {
+    use ::windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
+    use ::windows::Win32::Graphics::Gdi::ClientToScreen;
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetSystemMetrics, GetWindowRect, SendMessageW, SM_CXPADDEDBORDER,
+        SM_CXSIZEFRAME, SM_CYSIZEFRAME, WM_NCHITTEST,
+    };
+    use oppa::CaptionButton;
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
+    shell.set_drag_regions(vec![[0.0, 0.0, 100.0, 40.0]]);
+    shell.set_caption_buttons(vec![(CaptionButton::Maximize, [100.0, 0.0, 46.0, 40.0])]);
+
+    let mut win_rect = RECT::default();
+    let mut client_rect = RECT::default();
+    let mut client_origin = POINT { x: 0, y: 0 };
+    unsafe {
+        let _ = GetWindowRect(shell.hwnd(), &mut win_rect);
+        let _ = GetClientRect(shell.hwnd(), &mut client_rect);
+        let _ = ClientToScreen(shell.hwnd(), &mut client_origin);
+    }
+    let frame_x = unsafe { GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER) };
+    let frame_y = unsafe { GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER) };
+
+    // Top is flush with window top.
+    assert_eq!(
+        client_origin.y, win_rect.top,
+        "client top is flush with window rect"
+    );
+    // Left has non-client frame inset.
+    assert_eq!(
+        client_origin.x,
+        win_rect.left + frame_x,
+        "client left has frame_x margin"
+    );
+    // Dimensions reflect frame insets.
+    let win_w = win_rect.right - win_rect.left;
+    let win_h = win_rect.bottom - win_rect.top;
+    let client_w = client_rect.right - client_rect.left;
+    let client_h = client_rect.bottom - client_rect.top;
+    assert_eq!(win_w - client_w, 2 * frame_x, "width diff is 2 * frame_x");
+    assert_eq!(win_h - client_h, frame_y, "height diff is frame_y");
+
+    let hit_screen = |sx: i32, sy: i32| unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCHITTEST,
+            Some(WPARAM(0)),
+            Some(LPARAM(((sy << 16) | (sx & 0xFFFF)) as isize)),
+        )
+        .0
+    };
+    let hit_client = |cx: i32, cy: i32| hit_screen(client_origin.x + cx, client_origin.y + cy);
+
+    // 1. Outside grabs (over the frame margin / dropshadow outside the client area)
+    // Left margin (sx = win_rect.left + 2, which is < client_origin.x)
+    assert_eq!(
+        hit_screen(win_rect.left + 2, client_origin.y + 50),
+        HTLEFT_PX,
+        "outside left border resizes"
+    );
+    // Right margin (sx = win_rect.right - 2, which is >= client_origin.x + client_w)
+    assert_eq!(
+        hit_screen(win_rect.right - 2, client_origin.y + 50),
+        HTRIGHT_PX,
+        "outside right border resizes"
+    );
+    // Bottom margin (sy = win_rect.bottom - 2, which is >= client_origin.y + client_h)
+    assert_eq!(
+        hit_screen(client_origin.x + 50, win_rect.bottom - 2),
+        HTBOTTOM_PX,
+        "outside bottom border resizes"
+    );
+    // Bottom-left corner outside client area
+    assert_eq!(
+        hit_screen(win_rect.left + 2, win_rect.bottom - 2),
+        HTBOTTOMLEFT_PX,
+        "outside bottom-left corner resizes"
+    );
+    // Bottom-right corner outside client area
+    assert_eq!(
+        hit_screen(win_rect.right - 2, win_rect.bottom - 2),
+        HTBOTTOMRIGHT_PX,
+        "outside bottom-right corner resizes"
+    );
+    // Top-left outside corner (win_rect.left + 2, win_rect.top + 2)
+    assert_eq!(
+        hit_screen(win_rect.left + 2, win_rect.top + 2),
+        HTTOPLEFT_PX,
+        "outside top-left corner resizes"
+    );
+    // Top-right outside corner (win_rect.right - 2, win_rect.top + 2)
+    assert_eq!(
+        hit_screen(win_rect.right - 2, win_rect.top + 2),
+        HTTOPRIGHT_PX,
+        "outside top-right corner resizes"
+    );
+
+    // 2. Inside client area
+    // Top border of drag region (cy = 2 < top_border_height)
+    assert_eq!(
+        hit_client(50, 2),
+        HTTOP_PX,
+        "top edge of drag region resizes"
+    );
+    // Interior of drag region (cy = 20)
+    assert_eq!(
+        hit_client(50, 20),
+        HTCAPTION_PX,
+        "interior of drag region captions"
+    );
+    // Maximize caption button (cx = 120, cy = 20)
+    assert_eq!(
+        hit_client(120, 20),
+        HTMAXBUTTON_PX,
+        "maximize button answers HTMAXBUTTON"
+    );
+    // Decision 492: Button top sliver (cy = 0, 1, 2 inside top band height).
+    // The caption button zone MUST beat the top resizing band (HTTOP).
+    assert_eq!(
+        hit_client(120, 0),
+        HTMAXBUTTON_PX,
+        "maximize button top edge (cy=0) beats top band"
+    );
+    assert_eq!(
+        hit_client(120, 1),
+        HTMAXBUTTON_PX,
+        "maximize button top sliver (cy=1) beats top band"
+    );
+    assert_eq!(
+        hit_client(120, 2),
+        HTMAXBUTTON_PX,
+        "maximize button top sliver (cy=2) beats top band"
+    );
+    // Regular client interior
+    assert_eq!(hit_client(50, 80), HTCLIENT_PX, "content area is client");
+}
+
+/// Decision 492: for `WindowStyle::Extended`, maximizing the window
+/// expands the HWND so that the client area matches the monitor's work area exactly,
+/// keeping the taskbar visible and aligning the client origin with the work area origin.
+#[test]
+fn extended_window_maximized_client_rect_matches_work_area() {
+    use crate::win::shell_platform::monitor_work_rect;
+    use ::windows::Win32::Foundation::{POINT, RECT};
+    use ::windows::Win32::Graphics::Gdi::ClientToScreen;
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, IsZoomed, ShowWindow, SW_MAXIMIZE, SW_RESTORE,
+    };
+
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
+    let work = monitor_work_rect(shell.hwnd()).expect("monitor work area exists");
+
+    unsafe {
+        let _ = ShowWindow(shell.hwnd(), SW_MAXIMIZE);
+    }
+    assert!(
+        unsafe { IsZoomed(shell.hwnd()).as_bool() },
+        "window is maximized"
+    );
+
+    let mut client_rect = RECT::default();
+    let mut client_origin = POINT { x: 0, y: 0 };
+    unsafe {
+        let _ = GetClientRect(shell.hwnd(), &mut client_rect);
+        let _ = ClientToScreen(shell.hwnd(), &mut client_origin);
+    }
+
+    assert_eq!(
+        client_origin.x, work.left,
+        "maximized client left matches work area left"
+    );
+    assert_eq!(
+        client_origin.y, work.top,
+        "maximized client top matches work area top"
+    );
+    assert_eq!(
+        client_rect.right - client_rect.left,
+        work.right - work.left,
+        "maximized client width matches work area width"
+    );
+    assert_eq!(
+        client_rect.bottom - client_rect.top,
+        work.bottom - work.top,
+        "maximized client height matches work area height"
+    );
+
+    unsafe {
+        let _ = ShowWindow(shell.hwnd(), SW_RESTORE);
+    }
     shell.destroy_window();
 }

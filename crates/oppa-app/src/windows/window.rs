@@ -73,42 +73,54 @@ pub(crate) fn sync_cursor(loop_: &DesktopLoop, shell: &mut Win32Shell) {
 
 /// Grows the frame so the client area is exactly the scene size
 /// (`CreateWindowExW` takes outer dims — without this the client is
-/// smaller than the pixmap and every present clips). Frameless
-/// windows mask `WS_CAPTION | WS_SIZEBOX` out of the adjust math
-/// (decision 484 — the winit `adjust_rect` mirror: the creation
-/// style keeps the frame for snap, but the `WM_NCCALCSIZE` strip
-/// means no pixels go to it, so adjusting for it would oversize the
-/// client by the phantom frame).
+/// smaller than the pixmap and every present clips).
+/// Decorated windows adjust via `AdjustWindowRect`.
+/// Extended windows (decision 492) account for the `WM_NCCALCSIZE`
+/// non-client borders on left, right, and bottom (`2 * frame_x` width,
+/// `frame_y` height, flush top).
+/// Undecorated and Transparent windows have zero insets, so outer
+/// dimensions match the scene size directly.
 pub(crate) fn fit_client_to_scene(
     hwnd: windows::Win32::Foundation::HWND,
     w: u32,
     h: u32,
-    frameless: bool,
+    style: oppa::WindowStyle,
 ) {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
-        AdjustWindowRect, GetWindowLongW, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOZORDER, WINDOW_STYLE, WS_CAPTION, WS_SIZEBOX,
+        AdjustWindowRect, GetSystemMetrics, GetWindowLongW, SetWindowPos, GWL_STYLE,
+        SM_CXPADDEDBORDER, SM_CXSIZEFRAME, SM_CYSIZEFRAME, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOZORDER, WINDOW_STYLE,
     };
     unsafe {
-        let mut style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
-        if frameless {
-            style &= !(WS_CAPTION | WS_SIZEBOX);
-        }
-        let mut rc = RECT {
-            left: 0,
-            top: 0,
-            right: w as i32,
-            bottom: h as i32,
+        let (outer_w, outer_h) = match style {
+            oppa::WindowStyle::Decorated => {
+                let win_style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
+                let mut rc = RECT {
+                    left: 0,
+                    top: 0,
+                    right: w as i32,
+                    bottom: h as i32,
+                };
+                let _ = AdjustWindowRect(&mut rc, win_style, false);
+                (rc.right - rc.left, rc.bottom - rc.top)
+            }
+            oppa::WindowStyle::Extended => {
+                let frame_x =
+                    GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                let frame_y =
+                    GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                (w as i32 + 2 * frame_x, h as i32 + frame_y)
+            }
+            oppa::WindowStyle::Undecorated | oppa::WindowStyle::Transparent => (w as i32, h as i32),
         };
-        let _ = AdjustWindowRect(&mut rc, style, false);
         let _ = SetWindowPos(
             hwnd,
             None,
             0,
             0,
-            rc.right - rc.left,
-            rc.bottom - rc.top,
+            outer_w,
+            outer_h,
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
