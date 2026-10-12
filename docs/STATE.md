@@ -836,6 +836,13 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   clippy zero warnings, `oppa` 250/250, `oppa-app` 92/92,
   `oppa-controls` hover paint green, shell hover set/clear green.
   Awaiting user glow + snap-flyout proof.
+- True Win11 caption glyphs (decision 487, user-asked): Segoe-metric
+  strokes on a 16px box replace the ASCII approximations, baked per
+  palette at 4x (`CaptionIcons::deposit`, same-id replace) with the
+  close-hover white shared; the 46px button cell centers the 16px
+  leaf on both axes (center deltas < 1px, geometrically proven).
+  Gates: fmt clean, clippy zero warnings, `oppa-controls` 160/160
+  (incl. AA-fringe, centering, theme-swap tests), `stylebook` 5/5.
 
 ## Now (in progress)
 

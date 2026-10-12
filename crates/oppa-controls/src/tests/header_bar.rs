@@ -210,3 +210,100 @@ fn window_drag_rects_empty_without_header() {
         SharedString::from("oppa::HeaderBar")
     );
 }
+
+/// Decision 487: every deposited glyph carries an anti-aliased
+/// fringe (partial-alpha pixels — the baked-icon rule that keeps
+/// icons smooth on the un-antialiased GPU path), themed variants
+/// differ per palette, and the close-hover white is shared.
+#[test]
+fn caption_glyph_deposits_carry_aa_fringe_and_theme() {
+    use crate::header_bar::CaptionIcons;
+    use oppa::ThemeMode;
+    let host = ComponentHost::new();
+    let dark = CaptionIcons::deposit(&host.images(), ThemeMode::Dark);
+    let light = CaptionIcons::deposit(&host.images(), ThemeMode::Light);
+    assert_ne!(dark.minimize, light.minimize, "ink follows the palette");
+    assert_ne!(dark.maximize, light.maximize, "ink follows the palette");
+    assert_ne!(dark.close, light.close, "ink follows the palette");
+    assert_eq!(
+        dark.close_white, light.close_white,
+        "close hover shares one white"
+    );
+    for id in [dark.minimize, dark.maximize, dark.close, dark.close_white] {
+        let (_, _, rgba) = host
+            .images()
+            .pixels_of(id)
+            .expect("deposited glyph reads back");
+        assert!(
+            rgba.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255),
+            "{id:?} carries partial-alpha fringe"
+        );
+        assert!(
+            rgba.chunks_exact(4).any(|p| p[3] == 255),
+            "{id:?} carries a solid core"
+        );
+    }
+}
+
+/// Decision 487: each caption glyph renders as a 16px leaf exactly
+/// centered in its 46px button box (horizontal and vertical — the
+/// user's explicit centering requirement, proven geometrically, not
+/// by inspection).
+#[test]
+fn caption_glyphs_center_exactly_in_their_buttons() {
+    let (min, _) = press_count();
+    let (max, _) = press_count();
+    let (close, _) = press_count();
+    let mut props = HeaderBarProps::new("Centered").height(40.0);
+    props.on_minimize = Some(min);
+    props.on_maximize = Some(max);
+    props.on_close = Some(close);
+    let host = mount_bar(props);
+    for debug in ["header-min", "header-max", "header-close"] {
+        let button = node_by_debug(&host, debug);
+        let bbox = host.committed_box(button).expect("button laid out");
+        // Children collected inside the retained borrow; boxes read
+        // outside it (a host read inside would trip the borrow).
+        let kids =
+            host.with_retained_mut(|rec, _| rec.get(button).expect("live button").children.clone());
+        let leaf = kids
+            .into_iter()
+            .find(|id| host.committed_box(*id).is_some())
+            .expect("button carries a laid icon leaf");
+        let ibox = host.committed_box(leaf).expect("icon laid out");
+        assert!(
+            (ibox.w - CAPTION_ICON_PX).abs() < 1.0,
+            "{debug} glyph renders at {CAPTION_ICON_PX}px, got {ibox:?}"
+        );
+        let (bcx, bcy) = (bbox.x + bbox.w / 2.0, bbox.y + bbox.h / 2.0);
+        let (icx, icy) = (ibox.x + ibox.w / 2.0, ibox.y + ibox.h / 2.0);
+        assert!(
+            (bcx - icx).abs() < 1.0 && (bcy - icy).abs() < 1.0,
+            "{debug} glyph centers exactly ({icx:.1},{icy:.1} vs {bcx:.1},{bcy:.1})"
+        );
+    }
+}
+
+/// Decision 487: a theme toggle swaps the glyph variant (the
+/// control reads the tracked theme — inks follow the palette
+/// live, never stale across a toggle).
+#[test]
+fn caption_glyphs_follow_theme_toggles() {
+    let (min, _) = press_count();
+    let mut props = HeaderBarProps::new("Themed").height(40.0);
+    props.on_minimize = Some(min);
+    let host = mount_bar(props);
+    let leaf_of = |host: &ComponentHost| {
+        let button = node_by_debug(host, "header-min");
+        host.with_retained_mut(|rec, _| rec.get(button).expect("live button").children[0])
+    };
+    let before = host
+        .retained_image(leaf_of(&host))
+        .expect("glyph leaf carries an image");
+    host.set_theme(oppa::ThemeMode::Dark);
+    host.run_until_idle();
+    let after = host
+        .retained_image(leaf_of(&host))
+        .expect("glyph leaf carries an image");
+    assert_ne!(before, after, "toggle swaps the ink variant");
+}

@@ -132,7 +132,10 @@ contract test suite — not prose — defines sameness.
   `false`) — the shell answers `HTMINBUTTON` / `HTMAXBUTTON` /
   `HTCLOSE` over the `HeaderBar` caption-button boxes (zones align
   with the button visuals by construction), so the OS owns real
-  actions and Win11 snap layouts; hover glow paints in-scene from
+  actions and Win11 snap layouts; button glyphs are true Win11
+  caption shapes (decision 487 — 16px Segoe-metric strokes baked
+  per palette at 4x, centered exactly in their targets, close-hover
+  white on signal red); hover glow paints in-scene from
   the runner-drained hover signal (decision 486 — DWM draws no hover
   on a stripped frame); or app-bridged
   (minimize / maximize through `WindowControl`, quiet no-op with no

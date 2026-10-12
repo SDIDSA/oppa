@@ -1028,3 +1028,77 @@ fn resize_callback_skips_quietly_while_state_borrowed() {
         "free step resizes like before"
     );
 }
+
+/// Decision 485 publish-path proof (found live: native caption
+/// buttons never reacted — the proc answers the codes, so the
+/// suspect is runner→shell publishing): a headless `Extended` loop
+/// mounting a wired `HeaderBar`, synced into a hidden window,
+/// answers a real `WM_NCHITTEST` over the maximize button with
+/// `HTMAXBUTTON` end to end (mount → sync → OS message → code).
+/// A silent `HTCLIENT` here would mean the live arm has nothing to
+/// answer with.
+#[test]
+fn sync_publishes_caption_zones_from_header_buttons() {
+    use oppa_controls::{HeaderBar, HeaderBarProps};
+    use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SendMessageW, WM_NCHITTEST};
+    #[derive(Clone)]
+    struct HeaderCase {
+        props: HeaderBarProps,
+    }
+    impl Props for HeaderCase {}
+    fn header_root(ctx: &Ctx, p: &HeaderCase) -> VNode {
+        ctx.child("oppa::HeaderBar", 1, &p.props, HeaderBar)
+    }
+    let mut loop_ =
+        DesktopLoop::new(400, 300, Box::new(FakeText), "Test").expect("headless loop builds");
+    loop_.set_window_style(oppa::WindowStyle::Extended);
+    loop_.set_native_caption_buttons(true);
+    let props = HeaderBarProps::new("T")
+        .on_minimize(|| {})
+        .on_maximize(|| {})
+        .on_close(|| {});
+    loop_.mount("Header", HeaderCase { props }, header_root);
+    loop_.repaint().expect("warmup repaint works");
+    let shell = Win32Shell::new(ShellConfig {
+        title: "zones-test".to_string(),
+        width: 400,
+        height: 300,
+        record_messages: false,
+        suppress_os_composition_window: true,
+        visible: false,
+        style: oppa::WindowStyle::Extended,
+    })
+    .expect("hidden test window builds");
+    sync_drag_regions(&shell, &loop_);
+    // Center of the live maximize button box (committed layout —
+    // the same boxes the runner published as zones).
+    let max = loop_
+        .host()
+        .committed_box_by_debug("header-max")
+        .expect("maximize button laid out");
+    let mut rect = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(shell.hwnd(), &mut rect);
+    }
+    let (sx, sy) = (
+        rect.left + (max.x + max.w / 2.0) as i32,
+        rect.top + (max.y + max.h / 2.0) as i32,
+    );
+    let code = unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCHITTEST,
+            Some(WPARAM(0)),
+            Some(LPARAM(((sy << 16) | (sx & 0xFFFF)) as isize)),
+        )
+        .0
+    };
+    // `HTMAXBUTTON` is 9 (the shell's `HTMAXBUTTON_PX` — spelled out
+    // here because that const is crate-internal; the live proc test
+    // in the shell asserts the const itself).
+    assert_eq!(
+        code, 9,
+        "published maximize zone answers HTMAXBUTTON end to end"
+    );
+}
