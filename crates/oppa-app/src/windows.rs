@@ -5,8 +5,8 @@
 //! the only proven Win32→framework mapper lives in the spike rig
 //! (session-direct, not pipeline input), so this small layer is new
 //! code over proven endpoints (`inject_input`, `keys`). Swapchain
-//! bring-up probes Vulkan first, then DX12 (Immediate/Mailbox/Fifo
-//! pick).
+//! bring-up probes Vulkan first, then DX12 (vsync Fifo-first mode
+//! pick; benchmarks take the uncapped row explicitly).
 //!
 //! IME delivery (Round 2.1, decision 256): the shell snapshots
 //! `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` (result +
@@ -33,8 +33,8 @@ use oppa::{
     Ctx, EditSession, ImeCompositionEvent, ImeOps, InputEvent, KeyState, Modifiers, Props, VNode,
 };
 use oppa_shell_win::{
-    Cmd, ImeMessage, ShellConfig, WaitOutcome, Win32Clipboard, Win32FolderDialog, Win32SaveDialog,
-    Win32Shell, Win32SystemTheme, Win32WindowControl,
+    Cmd, ImeMessage, ShellConfig, WaitOutcome, Win32Clipboard, Win32FileDialog, Win32FolderDialog,
+    Win32SaveDialog, Win32Shell, Win32SystemTheme, Win32WindowControl,
 };
 use oppa_text_dwrite::DWriteTextService;
 
@@ -153,6 +153,15 @@ fn present_frame(
             eprintln!("oppa-app: gpu active without surface; CPU fallback");
         }
     }
+    // CPU fallback for this frame (decision 473): the pixmap may be
+    // opted out while GPU serves — refresh it once without leaving
+    // GPU mode (no-op when already painting), so the blit below
+    // reads fresh pixels and the next frame still retries the
+    // swapchain. Loud on failure (never a silent stale blit).
+    loop_
+        .scene_mut()
+        .refresh_cpu_pixmap()
+        .map_err(|e| format!("oppa-app: cpu catch-up repaint failed: {e}"))?;
     blit_rgba(loop_, hwnd)
 }
 
@@ -178,7 +187,7 @@ pub(crate) fn inject_recorded_faces(
         match dwrite.font_file_source(id) {
             Some((path, index)) => match std::fs::read(&path) {
                 Ok(bytes) => {
-                    loop_.set_font_for(id, bytes, index);
+                    loop_.set_font_for(id, bytes.into(), index);
                     fresh.push(id);
                 }
                 Err(e) => eprintln!("oppa-app: cpu face {id:?} unreadable: {e} (bars)"),
@@ -269,14 +278,23 @@ pub fn run_windows<P: Props>(
     // Native save + folder pickers (Round 16.1, decision 314 — COM
     // `IFileSaveDialog` / `IFileDialog+FOS_PICKFOLDERS`, modal to
     // this window; the STA apartment above covers them too).
-    loop_.set_save_dialog(Box::new(Win32SaveDialog::new(hwnd)));
-    loop_.set_folder_dialog(Box::new(Win32FolderDialog::new(hwnd)));
+    loop_.set_save_dialog(Rc::new(RefCell::new(Win32SaveDialog::new(hwnd))));
+    loop_.set_folder_dialog(Rc::new(RefCell::new(Win32FolderDialog::new(hwnd))));
+    // Native open dialog (decision 425 — the G12 shell seam's loop
+    // home: the same owner window as save/folder above; apps borrow
+    // the handle for request/poll through `open_dialog_handle`).
+    loop_.set_open_dialog(Rc::new(RefCell::new(Win32FileDialog::new(hwnd))));
     // OS theme at startup (Round 16.2, decision 315): install the
     // registry reader and sync before mount so the first paint
     // already matches the system (matching the app default stays a
     // quiet no-op, never a repaint spin).
     loop_.set_theme_source(Box::new(Win32SystemTheme));
     let _ = loop_.sync_system_theme()?;
+    // Selection handles are a mobile affordance (decision 474):
+    // mouse selections never grow touch bars/knobs, and drags near
+    // edges stay plain selection drags (the publication gate makes
+    // grabs miss exactly like a bare field).
+    loop_.host().set_selection_handles_visible(false);
     // Runtime window chrome (Round 16.3, decision 316): title,
     // min/max, and fullscreen forward into the live shell (the
     // close veto consults the loop-installed app handler on

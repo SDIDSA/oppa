@@ -53,6 +53,7 @@ emitter layer current, live-bus closed (M10/v1-closure). Sources:
   designed but not validated on Linux. Background probe started at
   M4 — deliberately never a tail item (M10 emitter-layer
   validation; live-bus closed in v1-closure, §5q).
+- **File pickers (decisions 422/425):** portal `OpenFile`/`SaveFile` + zenity fallback, all three on the `DesktopLoop` slots with shared handles (missing backends refuse as `PickError::Unsupported`); the kitchen-sink example forwards them, so its Platform tab drives native dialogs.
 - **Packaging:** release binary is the blessed path; `.deb`/tarball
   wrapping open — see [packaging](../packaging.md) (G4,
   decision 215).

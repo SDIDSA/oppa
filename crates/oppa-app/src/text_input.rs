@@ -177,7 +177,12 @@ impl DesktopLoop {
     /// on both. Best-effort by contract (callers warn, never die,
     /// when the face is unreadable). Always lands in both backends
     /// so a later `enable_gpu` never paints tofu.
-    pub fn set_font_for(&mut self, id: oppa::text::FontId, bytes: Vec<u8>, index: u32) {
+    pub fn set_font_for(
+        &mut self,
+        id: oppa::text::FontId,
+        bytes: std::sync::Arc<[u8]>,
+        index: u32,
+    ) {
         self.scene.set_font_for(id, bytes, index);
     }
 }

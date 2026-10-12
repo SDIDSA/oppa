@@ -290,6 +290,8 @@ pub fn DatePicker(ctx: &Ctx, props: &DatePickerProps) -> VNode {
         error_message: None,
         helper_text: None,
         borderless: true,
+        icon: None,
+        icon_size: 16.0,
     };
     let toggle = {
         let open = props.open.clone();
@@ -411,6 +413,8 @@ pub fn DatePicker(ctx: &Ctx, props: &DatePickerProps) -> VNode {
                             });
                         }
                     }),
+                    icon: None,
+                    icon_size: 16.0,
                 },
                 Button,
             )
@@ -438,6 +442,8 @@ pub fn DatePicker(ctx: &Ctx, props: &DatePickerProps) -> VNode {
                             });
                         }
                     }),
+                    icon: None,
+                    icon_size: 16.0,
                 },
                 Button,
             )

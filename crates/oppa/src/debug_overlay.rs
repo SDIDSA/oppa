@@ -46,6 +46,19 @@ pub(crate) const OVERLAY_BADGE_REFRESH_SECS: f64 = 0.25;
 /// the last live rate standing.
 pub(crate) const OVERLAY_IDLE_SKIP_SECS: f64 = 1.0;
 
+/// Publish window: continuous presents average into whole-second
+/// frames-per-elapsed (a fast per-frame EMA alone swings hundreds
+/// on uncapped cadences — the integer badge flickers instead of
+/// reading). Sparse windows never publish (see below).
+pub(crate) const OVERLAY_WINDOW_SECS: f64 = 1.0;
+
+/// Publish freshness: the badge shows the last windowed publish
+/// while one landed within this long; older than that (sparse
+/// event-paced taps, post-idle) it falls back to the EMA hold, so
+/// decision-395 behavior (held live rate, never gap-poisoned)
+/// survives the windowing.
+pub(crate) const OVERLAY_WINDOW_FRESH_SECS: f64 = 1.5;
+
 /// Configuration options for the debug FPS overlay.
 ///
 /// All options default to `false` (disabled) unless explicitly enabled
@@ -123,6 +136,14 @@ pub(crate) struct OverlayMeter {
     /// Last badge-text refresh (host clock secs): the badge re-runs
     /// at most every [`OVERLAY_BADGE_REFRESH_SECS`].
     pub last_refresh_secs: f64,
+    /// Publish-window state: start of the current whole-second
+    /// accumulation, frames inside it, and the last published pair.
+    /// `published_at` is `None` until the first window completes.
+    pub window_start: Option<f64>,
+    pub window_frames: u32,
+    pub published_fps: f64,
+    pub published_ms: f64,
+    pub published_at: Option<f64>,
 }
 
 impl Default for OverlayMeter {
@@ -136,6 +157,11 @@ impl Default for OverlayMeter {
             dirty_nodes: 0,
             presenter_name: None,
             last_refresh_secs: 0.0,
+            window_start: None,
+            window_frames: 0,
+            published_fps: 60.0,
+            published_ms: 16.6,
+            published_at: None,
         }
     }
 }
@@ -153,13 +179,52 @@ impl OverlayMeter {
         if let Some(prev) = self.last_time {
             let dt = (now_secs - prev).max(0.0001);
             if dt <= OVERLAY_IDLE_SKIP_SECS {
-                // Exponential moving average (alpha = 0.15) for smooth readings
+                // Fast EMA (alpha = 0.15): the sparse-cadence hold
+                // (taps, post-idle) — decision 395 keeps this path
+                // gap-proof.
                 self.ema_dt = 0.85 * self.ema_dt + 0.15 * dt;
-                self.frame_time_ms = dt * 1000.0;
-                self.fps = (1.0 / self.ema_dt).min(9999.0);
+                // Whole-second publish window: continuous presents
+                // average into frames-per-elapsed, so the badge
+                // steps at most 1 Hz instead of flickering per
+                // frame on jittery cadences.
+                let start = *self.window_start.get_or_insert(prev);
+                self.window_frames += 1;
+                if now_secs - start >= OVERLAY_WINDOW_SECS {
+                    let elapsed = (now_secs - start).max(0.0001);
+                    self.published_fps = (f64::from(self.window_frames) / elapsed).min(9999.0);
+                    self.published_ms = elapsed * 1000.0 / f64::from(self.window_frames);
+                    self.published_at = Some(now_secs);
+                    self.window_start = None;
+                    self.window_frames = 0;
+                }
+                self.refresh_displayed(now_secs);
+            } else {
+                // Idle skip: resync the baseline, drop the stale
+                // partial window (a few frames around a 20 s gap
+                // would otherwise publish a near-zero rate), and
+                // leave every readout standing.
+                self.window_start = None;
+                self.window_frames = 0;
             }
         }
         self.last_time = Some(now_secs);
+    }
+
+    /// Picks the displayed pair: the last windowed publish while
+    /// fresh, else the EMA hold (sparse event-paced cadences never
+    /// complete a window — they read the held live rate, and the
+    /// ms readout always agrees with the FPS by construction).
+    fn refresh_displayed(&mut self, now_secs: f64) {
+        let fresh = self
+            .published_at
+            .is_some_and(|at| now_secs - at <= OVERLAY_WINDOW_FRESH_SECS);
+        if fresh {
+            self.fps = self.published_fps;
+            self.frame_time_ms = self.published_ms;
+        } else {
+            self.fps = (1.0 / self.ema_dt).min(9999.0);
+            self.frame_time_ms = self.ema_dt * 1000.0;
+        }
     }
 
     /// Records a commit's dirty node count (the badge's dirty
@@ -276,6 +341,68 @@ mod tests {
         assert!(
             fps2 > 5.0 && fps2 < 40.0,
             "post-idle cadence ticks sane, got {fps2}"
+        );
+    }
+
+    #[test]
+    fn windowed_publish_steadies_jittery_cadence() {
+        // Uncapped-style jitter (alternating 8ms/25ms, ~60fps mean):
+        // the per-frame EMA would swing ~40-120, but the badge must
+        // step at most 1 Hz around the mean once a window completes.
+        let mut meter = OverlayMeter {
+            config: DebugOverlayConfig::all(),
+            ..OverlayMeter::default()
+        };
+        let mut t = 0.0;
+        for i in 0..200 {
+            t += if i % 2 == 0 { 0.008 } else { 0.025 };
+            meter.note_frame(t);
+        }
+        assert!(
+            meter.fps > 50.0 && meter.fps < 70.0,
+            "windowed rate reads the mean, got {}",
+            meter.fps
+        );
+        assert!(
+            meter.frame_time_ms > 14.0 && meter.frame_time_ms < 19.0,
+            "windowed ms agrees with the rate, got {}",
+            meter.frame_time_ms
+        );
+        // A second window lands in the same band (no flicker between
+        // publishes).
+        let first = meter.fps;
+        for i in 0..200 {
+            t += if i % 2 == 0 { 0.008 } else { 0.025 };
+            meter.note_frame(t);
+        }
+        assert!(
+            (meter.fps - first).abs() < 5.0,
+            "consecutive publishes agree: {first} vs {}",
+            meter.fps
+        );
+    }
+
+    #[test]
+    fn idle_skip_drops_the_partial_window() {
+        // Two frames banked, then a 20 s gap, then steady 60 fps:
+        // the stale partial window must not publish a near-zero
+        // rate once the gap closes the window.
+        let mut meter = OverlayMeter {
+            config: DebugOverlayConfig::all(),
+            ..OverlayMeter::default()
+        };
+        meter.note_frame(1.0);
+        meter.note_frame(1.05);
+        meter.note_frame(21.0);
+        let mut t = 21.0;
+        for _ in 0..70 {
+            t += 1.0 / 60.0;
+            meter.note_frame(t);
+        }
+        assert!(
+            meter.fps > 50.0,
+            "first post-gap window reads live, got {}",
+            meter.fps
         );
     }
 }

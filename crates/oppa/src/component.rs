@@ -228,10 +228,20 @@ impl ScrollOffset2D {
 /// body (tracked — toggling re-renders every themed control in place;
 /// instances, sessions, and signals survive, only colors re-derive).
 /// Anyone writes through `set` (tests, settings screens, platform
-/// dark-mode listeners).
+/// dark-mode listeners). Decision 477: per-mode custom palettes —
+/// `tokens()` prefers the host's override for the live mode when one
+/// is set (also tracked, so publishing re-renders like a toggle).
 #[derive(Clone)]
 pub struct Theme {
     signal: Signal<ThemeMode>,
+    overrides: Signal<[Option<ThemeTokens>; 2]>,
+}
+
+fn override_idx(mode: ThemeMode) -> usize {
+    match mode {
+        ThemeMode::Light => 0,
+        ThemeMode::Dark => 1,
+    }
 }
 
 impl Theme {
@@ -240,9 +250,11 @@ impl Theme {
         self.signal.get()
     }
 
-    /// Current palette (tracked read, like [`Theme::mode`]).
+    /// Current palette (tracked read, like [`Theme::mode`]): the
+    /// host's per-mode override when set, else the built-in palette.
     pub fn tokens(&self) -> ThemeTokens {
-        ThemeTokens::of(self.mode())
+        let mode = self.mode();
+        self.overrides.get()[override_idx(mode)].unwrap_or(ThemeTokens::of(mode))
     }
 
     /// True in dark mode (tracked read, like [`Theme::mode`]).
@@ -443,6 +455,51 @@ struct HostInner {
     /// Plain flag, never reactive (a signal write mid-render would
     /// schedule; close is a runner command, not state).
     close_requested_flag: Cell<bool>,
+    /// App-requested system-bars mode (Android screen-mode toggle):
+    /// `Ctx::set_system_bars_visible` writes the visible signal below
+    /// and arms this runner command (`take_system_bars_request`).
+    /// Plain flag beside the signal (the close-request precedent —
+    /// chrome is a runner command, and the signal write alone must
+    /// not schedule layout: the scene stays full-bleed either way).
+    system_bars_request: Cell<Option<bool>>,
+    /// Renderer-drawn selection handles policy (decision 474):
+    /// `true` = publish handle geometry for live selections (mobile
+    /// affordance — Android keeps this; the scene toolbar's touch
+    /// story assumes grabbable edges), `false` = publish none, so
+    /// neither bars/knobs paint nor grabs arm and drags near edges
+    /// stay plain selection drags. Plain flag, never reactive
+    /// (runners set it once at startup; flips take effect on the
+    /// next publish with no re-render owed — publication is
+    /// untracked). Default `true` (current behavior everywhere
+    /// until a runner opts out; desktop Windows/Linux do).
+    selection_handles_visible: Cell<bool>,
+    /// App-readable system-bars mode (Android screen-mode toggle):    /// `false` = hidden/immersive (the boot mode — the runner hides
+    /// at startup), `true` = status + navigation shown. Lazy like
+    /// `theme`/`lifecycle`; hosts that never toggle never allocate.
+    system_bars_visible_sig: RefCell<Option<Signal<bool>>>,
+    /// Per-mode custom palettes (decision 477): `[light, dark]`
+    /// overrides published by runners/apps through
+    /// [`ComponentHost::set_theme_tokens_override`]. `None` per slot
+    /// (the default) falls back to the built-in palette. Plain
+    /// registry beside the signals (the close-request precedent —
+    /// the signal write itself schedules; this never schedules
+    /// alone).
+    theme_token_overrides: RefCell<Option<Signal<[Option<ThemeTokens>; 2]>>>,
+    /// Runner-published scene toolbar (decision 455): the live
+    /// [`ToolbarModel`](crate::input::ToolbarModel) the root wrap
+    /// renders as a floating overlay, or `None` for no bar. Lazy
+    /// like the bars signal above; the runner publishes per pump
+    /// (change-only — repeats never re-run the root) and overlay
+    /// item taps drain through [`toolbar_actions`](Self::toolbar_actions below).
+    toolbar_model_sig: RefCell<Option<Signal<Option<crate::input::ToolbarModel>>>>,
+    /// Scene-toolbar taps by arrival order (decision 455): overlay
+    /// items are handlerless (never focus, never tab stops), so the
+    /// router resolves taps geometrically and queues them here; the
+    /// runner drains per pump and applies them through the loop
+    /// clipboard. Loop-thread only (router dispatches on the loop
+    /// thread — no cross-thread queue needed, unlike the Java
+    /// `MenuActionQueue` this retires).
+    toolbar_actions: RefCell<std::collections::VecDeque<crate::input::ToolbarAction>>,
     /// Long-press arms by pointer id (G11, decision 228): armed on
     /// Down, disarmed on Up/Cancel/move-past-slop, fired on the first
     /// host pump or matching input event at/after the deadline (never
@@ -536,6 +593,26 @@ struct InputState {
     /// 5.3 — the drag query backing `pointer_position`; cleared
     /// with the capture, never stale).
     positions: HashMap<u32, (f32, f32)>,
+    /// Collapsed-hold toolbar request (decision 459): a long-press
+    /// that lands on no word arms the Paste bar (useful for pasting
+    /// into empty/collapsed fields). Armed by `field_long_press`,
+    /// consumed once by the runner's snapshot build, cleared by every
+    /// new Down (a fresh gesture supersedes).
+    caret_toolbar_armed: Cell<bool>,
+    /// Live selection-handle drag candidates by pointer id (decision
+    /// 454): a Down landing on a renderer-drawn handle arms a
+    /// candidate edge drag. The first Move past tap slop confirms it
+    /// (the arm is marked consumed then, so the lift never taps,
+    /// holds, swipes, or drag-releases); a clean lift stays a normal
+    /// tap (a finger covers the drawn handle, so taps near a
+    /// selection edge must not die on the grab target). Moves stream
+    /// through the field's `on_drag` into the edge update. Cleared
+    /// with the capture on Up/Cancel/retire (never stale).
+    handle_drags: HashMap<u32, input::HandleEdge>,
+    /// Confirmed handle drags (decision 454 — candidates above that
+    /// moved past slop; only confirmed drags reroute `field_drag`
+    /// and suppress release dispatches).
+    handle_confirmed: HashSet<u32>,
     /// Last pointer-Up position that dispatched a tap `Press`, device px
     /// (Round 8.1, decision 297 — the tap-to-caret query: `on_press`
     /// handlers read this because the live `positions` map is already

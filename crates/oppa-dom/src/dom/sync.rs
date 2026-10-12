@@ -354,10 +354,7 @@ impl DomBackend {
                 .map(|b| b.content_h / self.dpr.max(f32::EPSILON)),
             _ => None,
         };
-        let (caret_rect, caret_ink) = match self.caret_decoration(id, origin) {
-            Some((r, hex)) => (Some(r), hex),
-            None => (None, String::new()),
-        };
+        let (handle_bars, handle_knobs, handle_ink) = self.handle_decorations(id, origin);
         // Stepped keyframe values (Phase 36 PR4): the live track's
         // evaluated paint, re-declared inline while it runs (empty
         // otherwise — unkeyframed markup byte-identical).
@@ -385,8 +382,9 @@ impl DomBackend {
             spacer_h,
             placeholder,
             sel_rects: self.selection_rects(rec, id, origin),
-            caret_rect,
-            caret_ink,
+            handle_bars,
+            handle_knobs,
+            handle_ink,
             // `derive` never sets the stamp itself: `sync` flags exactly
             // the touched set of the sync that consumed it (see above),
             // so the flag clears on the next re-derive by comparison.

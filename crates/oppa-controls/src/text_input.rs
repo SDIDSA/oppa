@@ -12,9 +12,15 @@ use std::rc::Rc;
 ///
 /// Form validation (Phase 38a, decision 366 — G7): `invalid` /
 /// `required` / `error_message` announce through [`Semantics`]
-/// (validators stay app-side); `helper_text` renders a dimmed caption
-/// under the field (visual-only). All four default off/empty —
+/// (validators stay app-side); `helper_text` renders a dimmed
+/// caption under the field (visual-only). All four default off/empty —
 /// `new` keeps the exact pre-38a shape.
+///
+/// Leading icon (decision 478): `icon` takes an [`ImageCache`](oppa::ImageCache)
+/// id (deposit SVGs once through [`deposit_svg_icon`](crate::deposit_svg_icon))
+/// painted at `icon_size` in a fixed leading slot; `None` (default)
+/// renders exactly the pre-478 tree — same box, same payload, same
+/// tab order (the icon is decorative and handlerless, never a stop).
 #[derive(Clone)]
 pub struct TextInputProps {
     pub label: SharedString,
@@ -32,6 +38,8 @@ pub struct TextInputProps {
     pub error_message: Option<SharedString>,
     pub helper_text: Option<SharedString>,
     pub borderless: bool,
+    pub icon: Option<oppa::ImageId>,
+    pub icon_size: f32,
 }
 
 impl Props for TextInputProps {}
@@ -54,6 +62,8 @@ impl TextInputProps {
             error_message: None,
             helper_text: None,
             borderless: false,
+            icon: None,
+            icon_size: 16.0,
         }
     }
 
@@ -87,6 +97,22 @@ impl TextInputProps {
         self.masked = masked;
         self
     }
+
+    /// Leading icon slot (decision 478): `ImageCache` id painted at
+    /// `icon_size` (default 16px — override with
+    /// [`icon_size`](Self::icon_size)); `None` (default) keeps the
+    /// exact pre-478 tree.
+    pub fn icon(mut self, image: oppa::ImageId) -> Self {
+        self.icon = Some(image);
+        self
+    }
+
+    /// Icon render size in px (only read when
+    /// [`icon`](Self::icon) is set).
+    pub fn icon_size(mut self, px: f32) -> Self {
+        self.icon_size = px;
+        self
+    }
 }
 
 /// Text input: bordered field box + [`TextField`](oppa::TextField) payload
@@ -100,7 +126,10 @@ impl TextInputProps {
 /// drag-selection and double/triple-click word/line selection (Round 8.2,
 /// decision 298 — Moves stream through `drag_x`, count 2 selects the word,
 /// count 3+ the hard line; keyboard activation falls back to
-/// `caret_to_end`). Disabled drops the handlers structurally
+/// `caret_to_end`) plus hold-to-select (decision 448 — a still hold
+/// past the long-press deadline word-selects exactly like a
+/// double-tap, raising the selection toolbar on device). Disabled drops
+/// the handlers structurally
 /// (decision 213 — no tab stop either).
 /// An empty value with a placeholder renders the placeholder as a plain
 /// dimmed `Text` span (never a `TextField`: the leaf's text is the
@@ -150,12 +179,22 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
         &props.error_message,
     );
     let raw_val = props.value.get();
-    let display_text = if props.masked && !raw_val.is_empty() {
+    // Live preedit (decision 461): composing sessions render the
+    // display composite (committed + composing, bullets when masked)
+    // and subscribe to the composition epoch, so soft-keyboard taps
+    // show inline instead of vanishing until commit. Idle sessions
+    // keep the exact old shape (byte-identical trees when nothing
+    // composes — web sessions never compose, so DOM output is
+    // untouched by construction).
+    let _composition_epoch = session.composition_epoch().get();
+    let display_text = if session.is_composing() {
+        SharedString::from(session.display_text())
+    } else if props.masked && !raw_val.is_empty() {
         SharedString::from("•".repeat(raw_val.chars().count()))
     } else {
         raw_val.clone()
     };
-    let payload: VNode = match (raw_val.is_empty(), &props.placeholder) {
+    let payload: VNode = match (display_text.is_empty(), &props.placeholder) {
         (true, Some(placeholder)) => with_ink(
             VNode::from(Text {
                 text: placeholder.clone(),
@@ -204,9 +243,14 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
         let tap_style = props.style;
         let drag_host = host.clone();
         let drag_session = tap_session.clone();
+        let hold_host = host.clone();
+        let hold_session = tap_session.clone();
         builder
             .on_press(move || {
                 field_press(&host, &tap_session, tap_style);
+            })
+            .on_long_press(move || {
+                field_long_press(&hold_host, &hold_session, tap_style);
             })
             .on_drag(move || {
                 field_drag(&drag_host, &drag_session, tap_style);
@@ -217,7 +261,52 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     // Phase 38a: footer stacks under the field only when a message
     // is present (the wrapper debug derives from the field debug).
     let debug = props.debug.clone();
-    let root = builder.child(payload);
+    // Decision 478: with an icon, the box holds a centered content
+    // row (fixed icon slot + fill remainder for the payload) instead
+    // of the bare payload — the payload keeps its session, handlers,
+    // and tab order (the icon is decorative and handlerless); without
+    // an icon this whole branch is skipped, byte-identical tree.
+    // The row carries the explicit content height (box minus the
+    // 4+4 vertical pads both paths share) rather than `fill_height`:
+    // parent-driven box growth never reflows a Row's children, so a
+    // filled row would leave the icon top-packed — the explicit
+    // height centers it during the row's own layout.
+    let content_h = (props.height - 8.0).max(props.icon_size);
+    let root = match props.icon {
+        Some(image) => {
+            let icon_leaf = crate::ImageView(
+                ctx,
+                &crate::ImageViewProps {
+                    image,
+                    size: props.icon_size,
+                    radius: 0.0,
+                    alt: SharedString::from(""),
+                },
+            );
+            builder.children([Row(format!("{}-iconrow", debug.as_ref()).as_str())
+                .style(
+                    Style::new()
+                        .fill_width()
+                        .h(content_h)
+                        .align_items(AlignItems::Center)
+                        .gap(8),
+                )
+                .children([
+                    Div(format!("{}-icon", debug.as_ref()).as_str())
+                        .style(
+                            Style::new()
+                                .size(props.icon_size, props.icon_size)
+                                .align_items(AlignItems::Center)
+                                .justify_content(JustifyContent::Center),
+                        )
+                        .child(icon_leaf),
+                    Div(format!("{}-iconfill", debug.as_ref()).as_str())
+                        .style(Style::new().fill_width())
+                        .child(payload),
+                ])])
+        }
+        None => builder.child(payload),
+    };
     with_validation_footer(
         root,
         ctx,
@@ -249,6 +338,8 @@ pub struct UncontrolledTextInputProps {
     pub required: bool,
     pub error_message: Option<SharedString>,
     pub helper_text: Option<SharedString>,
+    pub icon: Option<oppa::ImageId>,
+    pub icon_size: f32,
 }
 
 impl Props for UncontrolledTextInputProps {}
@@ -279,6 +370,8 @@ pub fn UncontrolledTextInput(ctx: &Ctx, props: &UncontrolledTextInputProps) -> V
             error_message: props.error_message.clone(),
             helper_text: props.helper_text.clone(),
             borderless: false,
+            icon: props.icon,
+            icon_size: props.icon_size,
         },
         TextInput,
     )

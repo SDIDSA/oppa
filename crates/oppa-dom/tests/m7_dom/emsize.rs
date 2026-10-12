@@ -158,7 +158,7 @@ fn gpu_face_table_holds_per_id_faces_with_default_fallback() {
     let mut table = FaceTable::default();
     assert!(table.face_for(FontId(0)).is_none());
     table.default = Some(FaceBytes {
-        bytes: Arc::new(vec![1, 2, 3]),
+        bytes: Arc::from([1, 2, 3]),
         index: 0,
     });
     assert!(table.face_for(FontId(0)).is_some(), "default serves id 0");
@@ -169,7 +169,7 @@ fn gpu_face_table_holds_per_id_faces_with_default_fallback() {
     table.explicit.insert(
         FontId(7),
         FaceBytes {
-            bytes: Arc::new(vec![4, 5, 6, 7]),
+            bytes: Arc::from([4, 5, 6, 7]),
             index: 1,
         },
     );

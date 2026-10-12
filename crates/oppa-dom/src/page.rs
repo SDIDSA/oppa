@@ -16,7 +16,14 @@
 //! UA inset border is not the framework's edge (its borders ride
 //! the inset box-shadow ring, never the `border` property), and
 //! being layout-affecting it desyncs committed geometry; kill it
-//! once, globally). `:root{color-scheme:light}` (the Light boot
+//! once, globally). `input,textarea{background:transparent}`
+//! (decision 471 — the UA field background (white, or dark-scheme
+//! gray under the theme-driven `color-scheme`) would blanket the
+//! wrapping `Div`'s own fill on every web field and clash with
+//! composite chrome (borderless fields ride their container's box
+//! with no fill of their own); the container owns the box on all
+//! backends, so the native element stays transparent, globally).
+//! `:root{color-scheme:light}` (the Light boot
 //! baseline — the theme stanza flips it per mode so native
 //! controls, field text, and scrollbars follow the app theme
 //! instead of the OS default).
@@ -40,7 +47,7 @@ pub fn render_page(title: &str, backend: &DomBackend, sheet: &StyleSheet) -> Str
     // Phase 36 PR3: registered `@font-face` blocks ride the same
     // `<style>` (once per page — the browser shapes display text
     // with the measured bytes, closing the decision-81 drift).
-    let tokens = oppa::ThemeTokens::of(backend.theme_mode());
+    let tokens = backend.resolved_tokens();
     let chrome = format!(
         "background:{};color:{};",
         dom_hex(tokens.background),
@@ -64,7 +71,7 @@ fn base_css() -> &'static str {
      :root{color-scheme:light;}\n\
      [data-slot]{overflow-anchor:none;}\n\
      .spacer{width:100%;}\n\
-     input,textarea{outline:none;border:0;}\n"
+     input,textarea{outline:none;border:0;background:transparent;}\n"
 }
 
 #[cfg(test)]
@@ -72,13 +79,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base_css_suppresses_native_focus_outlines() {
+    fn base_css_suppresses_native_field_chrome() {
         // Decision 392: the browser's default `:focus` outline on
         // verdict-(b) fields would double the framework's own
         // `focus_ring` — suppress it once, globally, in base CSS.
+        // Decision 471: the UA field background (white, or the
+        // dark-scheme gray under the theme `color-scheme`) would
+        // blanket the wrapping `Div` fill — transparent once,
+        // globally, so composite chrome shows through.
         assert!(
-            base_css().contains("input,textarea{outline:none;border:0;}"),
-            "base CSS owns field outlines+borders: {}",
+            base_css().contains("input,textarea{outline:none;border:0;background:transparent;}"),
+            "base CSS owns field outlines+borders+backgrounds: {}",
             base_css()
         );
         assert!(

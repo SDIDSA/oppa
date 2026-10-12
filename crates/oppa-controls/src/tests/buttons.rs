@@ -438,3 +438,60 @@ fn snap_value_rejects_zero_step() {
 fn snap_value_rejects_inverted_range() {
     let _ = snap_value(1.0, 10.0, 0.0, 1.0);
 }
+
+/// Decision 478: a set icon renders ahead of the label with the
+/// group centered as one unit — same outer box, same label
+/// semantics, press still activates (the icon is decorative and
+/// handlerless).
+#[test]
+fn button_icon_renders_and_still_activates() {
+    let host = ComponentHost::new();
+    let fired = host.runtime().signal(false);
+    let set = fired.clone();
+    let mut rgba = Vec::with_capacity(4 * 4 * 4);
+    for _ in 0..16 {
+        rgba.extend_from_slice(&[255, 0, 0, 255]);
+    }
+    let image = host.images().insert_pixels("btn-icon", 4, 4, rgba);
+    let props = ButtonProps::new("OK", move || set.set(true))
+        .icon(image)
+        .icon_size(18.0);
+    host.mount("BtnIcon", ButtonCase { props }, button_render);
+    host.run_until_idle();
+    // Same outer box as the iconless default.
+    let outer = host
+        .committed_box(node_by_debug(&host, "button"))
+        .expect("box");
+    assert!(
+        approx(outer.w, 96.0) && approx(outer.h, 32.0),
+        "outer box unchanged, got {}x{}",
+        outer.w,
+        outer.h
+    );
+    // Fixed 18px slot, left of the label, inside the box.
+    let icon = host
+        .committed_box(node_by_debug(&host, "button-icon"))
+        .expect("icon slot laid out");
+    assert!(
+        approx(icon.w, 18.0) && approx(icon.h, 18.0),
+        "icon slot 18x18, got {}x{}",
+        icon.w,
+        icon.h
+    );
+    assert!(
+        icon.x >= outer.x && icon.x + icon.w <= outer.x + outer.w,
+        "icon inside the box"
+    );
+    assert!(
+        approx(icon.y + icon.h / 2.0, outer.y + outer.h / 2.0),
+        "icon vertically centered, got {} vs {}",
+        icon.y + icon.h / 2.0,
+        outer.y + outer.h / 2.0
+    );
+    // Label semantics unchanged, press still activates.
+    let id = node_by_debug(&host, "button");
+    let sem = host.retained_semantics(id).expect("semantics");
+    assert_eq!(sem.label.as_deref(), Some("OK"));
+    press_node(&host, id);
+    assert!(fired.get(), "press activates with an icon set");
+}

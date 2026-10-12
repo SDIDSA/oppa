@@ -7,6 +7,10 @@ use crate::vertex::{PathVertex, QuadInstance, TexturedInstance, UnitQuadVertex, 
 
 pub struct Pipelines {
     pub target_format: wgpu::TextureFormat,
+    /// Adapter-probed multisample count every pipeline in this set
+    /// was compiled against (decision 479) — render passes using
+    /// this set must multisample-resolve at exactly this count.
+    pub sample_count: u32,
     pub uniform_bind_group_layout: wgpu::BindGroupLayout,
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
     pub quad_pipeline: wgpu::RenderPipeline,
@@ -19,7 +23,22 @@ pub struct Pipelines {
 }
 
 impl Pipelines {
-    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) -> Self {
+        // Decision 479: every pipeline rasterizes multisampled —
+        // the render pass resolves into its target, so tessellated
+        // path/curve edges carry real area coverage instead of hard
+        // staircases. `sample_count` rides the adapter probe (4 on
+        // all desktop rows, graceful less-or-1 elsewhere); `mask`
+        // stays full (no per-sample masking anywhere).
+        let multisample = wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        };
         // Uniform bind group layout (Group 0)
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -102,7 +121,7 @@ impl Pipelines {
                 ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample,
             multiview_mask: None,
             cache: None,
         });
@@ -148,7 +167,7 @@ impl Pipelines {
                 ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample,
             multiview_mask: None,
             cache: None,
         });
@@ -194,7 +213,7 @@ impl Pipelines {
                 ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample,
             multiview_mask: None,
             cache: None,
         });
@@ -237,7 +256,7 @@ impl Pipelines {
                 ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample,
             multiview_mask: None,
             cache: None,
         });
@@ -268,6 +287,7 @@ impl Pipelines {
 
         Self {
             target_format,
+            sample_count,
             uniform_bind_group_layout,
             texture_bind_group_layout,
             quad_pipeline,

@@ -39,6 +39,83 @@ impl ComponentHost {
         self.inner.close_requested_flag.replace(false)
     }
 
+    /// App-readable system-bars mode (Android screen-mode toggle):
+    /// `false` = hidden/immersive (the boot mode), `true` = status +
+    /// navigation shown. Tracked (mode chrome readers re-render on
+    /// flips); writing it via [`ComponentHost::set_system_bars_visible`]
+    /// never dirties layout (the scene stays full-bleed either way —
+    /// only the host bars show/hide).
+    pub fn system_bars_visible(&self) -> Signal<bool> {
+        let mut slot = self.inner.system_bars_visible_sig.borrow_mut();
+        if let Some(sig) = slot.clone() {
+            return sig;
+        }
+        let sig = self.inner.rt.signal(false);
+        *slot = Some(sig.clone());
+        sig
+    }
+
+    /// Requests the system-bars mode from component code (Android
+    /// screen-mode toggle): writes the visible signal on change and
+    /// arms the runner command (last write wins — rapid flips drain
+    /// once). Runners drain it per pump iteration
+    /// ([`ComponentHost::take_system_bars_request`]); hosts with no
+    /// runner drain (headless/desktop/Web) keep the signal update and
+    /// stay effect-free (advisory chrome, the cursor precedent).
+    pub fn set_system_bars_visible(&self, visible: bool) {
+        let sig = self.system_bars_visible();
+        if untrack(|| sig.get()) != visible {
+            sig.set(visible);
+        }
+        self.inner.system_bars_request.set(Some(visible));
+    }
+
+    /// Drains the app-requested system-bars mode (runner-side --
+    /// Android pumps call this once per iteration and apply the mode
+    /// through the bars JNI bridge; `None` means no request since the
+    /// last drain, never a default to apply).
+    pub fn take_system_bars_request(&self) -> Option<bool> {
+        self.inner.system_bars_request.take()
+    }
+
+    /// Runner-published scene toolbar (decision 455): the live model
+    /// the root wrap renders as a floating overlay. Tracked (the root
+    /// wrap reads it — publishing re-renders the root, clearing
+    /// reverts to the bare tree). Lazy like the bars signal above.
+    pub fn toolbar_model(&self) -> Signal<Option<crate::input::ToolbarModel>> {
+        let mut slot = self.inner.toolbar_model_sig.borrow_mut();
+        if let Some(sig) = slot.clone() {
+            return sig;
+        }
+        let sig = self.inner.rt.signal(None);
+        *slot = Some(sig.clone());
+        sig
+    }
+
+    /// Publishes the scene toolbar model (runner-side — the Android
+    /// pump calls this per decision from its input controller).
+    /// Change-only (an identical re-publish never re-runs the root —
+    /// per-pump `Update` frames with the same model stay free).
+    pub fn set_toolbar_model(&self, model: Option<crate::input::ToolbarModel>) {
+        let sig = self.toolbar_model();
+        if untrack(|| sig.get()) != model {
+            sig.set(model);
+        }
+    }
+
+    /// Queues one scene-toolbar tap (router-side — overlay items
+    /// resolve geometrically on the loop thread; the runner drains
+    /// per pump and applies through the loop clipboard).
+    pub fn push_toolbar_action(&self, action: crate::input::ToolbarAction) {
+        self.inner.toolbar_actions.borrow_mut().push_back(action);
+    }
+
+    /// Drains queued scene-toolbar taps in arrival order (runner-side —
+    /// one drain per pump; empty drains are empty, never an error).
+    pub fn drain_toolbar_actions(&self) -> Vec<crate::input::ToolbarAction> {
+        self.inner.toolbar_actions.borrow_mut().drain(..).collect()
+    }
+
     /// Starts a platform-driven fetch (round 4.1, web fetch — the
     /// wasm half of decision 221): sets the keyed `FetchState<String>`
     /// to `Loading` synchronously (first paint already shows it, the
@@ -168,6 +245,22 @@ impl ComponentHost {
     /// Sets the presenter badge name (e.g. "Gpu", "CPU", "DOM") for the debug overlay.
     pub fn set_presenter_name(&self, name: impl Into<String>) {
         self.inner.debug_overlay.borrow_mut().presenter_name = Some(name.into());
+    }
+
+    /// Whether renderer-drawn selection handles publish (decision
+    /// 474): `true` by default; desktop Windows/Linux runners set
+    /// `false` at startup (mouse selections never grow touch
+    /// handles), Android keeps `true`. Untracked (publication reads
+    /// it without scheduling; flips apply on the next publish).
+    pub fn selection_handles_visible(&self) -> bool {
+        self.inner.selection_handles_visible.get()
+    }
+
+    /// Hides or restores renderer-drawn selection handles
+    /// (runner-side — see
+    /// [`selection_handles_visible`](Self::selection_handles_visible)).
+    pub fn set_selection_handles_visible(&self, visible: bool) {
+        self.inner.selection_handles_visible.set(visible);
     }
 
     /// Formatted debug overlay badge text, if enabled and non-empty.

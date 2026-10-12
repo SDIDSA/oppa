@@ -8,22 +8,28 @@ impl oppa::SaveFileDialog for FailingSave {
     }
 }
 
-/// Round 16.1 (decision 314): save prompts return the scripted
-/// destination in order (each call reaches the backend — never
-/// a cached answer); dismissal and missing backends settle
-/// `None` without panic, and backend errors degrade loudly to
-/// `None` instead of killing the app.
+/// Round 16.1 (decision 314; decision 422 makes the missing
+/// case loud): save prompts return the scripted destination in
+/// order (each call reaches the backend — never a cached answer);
+/// dismissal settles `Ok(None)`, a missing backend refuses with
+/// `Err(PickError::Unsupported)`, and backend errors propagate as
+/// `Err` instead of degrading to `None`.
 #[test]
-fn save_file_dialog_returns_pick_and_graceful_none() {
-    use oppa::{FileDialogOptions, FileFilter, ScriptedSaveDialog};
+fn save_file_dialog_returns_pick_and_loud_missing() {
+    use oppa::{FileDialogOptions, FileFilter, PickError, ScriptedSaveDialog};
     let mut loop_ =
         DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
-    // No backend installed: graceful None (headless/web rule).
-    assert_eq!(loop_.save_file_dialog(FileDialogOptions::default()), None);
+    // No backend installed: loud Unsupported (never a silent None).
+    assert!(!loop_.has_save_dialog());
+    assert_eq!(
+        loop_.save_file_dialog(FileDialogOptions::default()),
+        Err(PickError::Unsupported("save dialog"))
+    );
     let mut scripted = ScriptedSaveDialog::new();
     scripted.push_response(Some(PathBuf::from("/tmp/a.txt")));
     scripted.push_response(Some(PathBuf::from("/tmp/b.txt")));
-    loop_.set_save_dialog(Box::new(scripted));
+    loop_.set_save_dialog(Rc::new(RefCell::new(scripted)));
+    assert!(loop_.has_save_dialog());
     let options = FileDialogOptions {
         title: "Save".to_string(),
         filters: vec![FileFilter {
@@ -35,46 +41,85 @@ fn save_file_dialog_returns_pick_and_graceful_none() {
     };
     assert_eq!(
         loop_.save_file_dialog(options),
-        Some(PathBuf::from("/tmp/a.txt"))
+        Ok(Some(PathBuf::from("/tmp/a.txt")))
     );
     assert_eq!(
         loop_.save_file_dialog(FileDialogOptions::default()),
-        Some(PathBuf::from("/tmp/b.txt")),
+        Ok(Some(PathBuf::from("/tmp/b.txt"))),
         "second call reaches the backend too"
     );
     // Exhausted script = dismissed.
-    assert_eq!(loop_.save_file_dialog(FileDialogOptions::default()), None);
-    // Backend failure degrades to None (loud on stderr, no panic).
-    loop_.set_save_dialog(Box::new(FailingSave));
-    assert_eq!(loop_.save_file_dialog(FileDialogOptions::default()), None);
+    assert_eq!(
+        loop_.save_file_dialog(FileDialogOptions::default()),
+        Ok(None)
+    );
+    // Backend failure propagates (loud, no silent None).
+    loop_.set_save_dialog(Rc::new(RefCell::new(FailingSave)));
+    assert_eq!(
+        loop_.save_file_dialog(FileDialogOptions::default()),
+        Err(PickError::Backend("boom".to_string()))
+    );
 }
 
-/// Round 16.1 (decision 314): folder prompts return the scripted
-/// directory; dismissal and missing backends settle `None`
-/// without panic.
+/// Round 16.1 (decision 314; decision 422): folder prompts return
+/// the scripted directory; dismissal settles `Ok(None)` and a
+/// missing backend refuses with `Err(PickError::Unsupported)`.
 #[test]
-fn pick_folder_dialog_returns_dir_and_graceful_none() {
-    use oppa::{FolderDialogOptions, ScriptedFolderDialog};
+fn pick_folder_dialog_returns_dir_and_loud_missing() {
+    use oppa::{FolderDialogOptions, PickError, ScriptedFolderDialog};
     let mut loop_ =
         DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    assert!(!loop_.has_folder_dialog());
     assert_eq!(
         loop_.pick_folder_dialog(FolderDialogOptions::default()),
-        None
+        Err(PickError::Unsupported("folder dialog"))
     );
     let mut scripted = ScriptedFolderDialog::new();
     scripted.push_response(Some(PathBuf::from("/tmp/out")));
-    loop_.set_folder_dialog(Box::new(scripted));
+    loop_.set_folder_dialog(Rc::new(RefCell::new(scripted)));
+    assert!(loop_.has_folder_dialog());
     assert_eq!(
         loop_.pick_folder_dialog(FolderDialogOptions {
             title: "Pick".to_string(),
             initial_dir: Some(PathBuf::from("/tmp")),
         }),
-        Some(PathBuf::from("/tmp/out"))
+        Ok(Some(PathBuf::from("/tmp/out")))
     );
     assert_eq!(
         loop_.pick_folder_dialog(FolderDialogOptions::default()),
-        None
+        Ok(None)
     );
+}
+
+/// Decision 425 (open slot): a missing open backend is loud,
+/// the installed handle is the shared live backend (controls
+/// drive the same instance the loop owns), and request/poll
+/// round-trips through it.
+#[test]
+fn open_dialog_handle_shares_live_backend() {
+    use oppa::{FilePickerOptions, ScriptedDialog};
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    assert!(!loop_.has_open_dialog());
+    assert!(loop_.open_dialog_handle().is_none());
+    let mut scripted = ScriptedDialog::new();
+    scripted.push_response(vec![PathBuf::from("/tmp/a.png")]);
+    loop_.set_open_dialog(Rc::new(RefCell::new(scripted)));
+    assert!(loop_.has_open_dialog());
+    let handle = loop_.open_dialog_handle().expect("handle shared");
+    handle
+        .borrow_mut()
+        .request_open(FilePickerOptions::default());
+    assert_eq!(
+        handle.borrow_mut().poll_open(),
+        Some(Ok(vec![PathBuf::from("/tmp/a.png")])),
+        "control drives the loop's own backend"
+    );
+    // Exhausted script = dismissed through the same handle.
+    handle
+        .borrow_mut()
+        .request_open(FilePickerOptions::default());
+    assert_eq!(handle.borrow_mut().poll_open(), Some(Ok(vec![])));
 }
 
 /// Round 16.2 (decision 315): a scripted OS reading flips the

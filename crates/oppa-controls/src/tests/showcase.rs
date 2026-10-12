@@ -247,7 +247,7 @@ fn value_loop_feeds_report_and_ticks_preserve() {
 fn kitchen_sink_views_tab_mounts_phase38_controls() {
     let host = ComponentHost::new();
     host.set_text_service(Box::new(FakeText));
-    host.mount("Sink", (), KitchenSinkApp);
+    host.mount("Sink", KitchenSinkProps::default(), KitchenSinkApp);
     host.run_until_idle();
     // Five tabs now (Form/Layout/Overlays/Platform/Views).
     let tabs = find_retained_by_debug(&host, "tab-item");

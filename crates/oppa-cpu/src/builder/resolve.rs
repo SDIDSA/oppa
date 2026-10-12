@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use oppa::{Interner, NodeId, Reconciler, Style, ThemeMode, ThemeTokens};
+use oppa::{Interner, NodeId, Reconciler, Style, ThemeTokens};
 
 /// Opacity of a style payload (v1: baked into every emitted op; the
 /// `PushLayer` stack exists for GPU-future plans and is honored by the
@@ -26,17 +26,19 @@ pub(super) fn resolve_radii(style: &Style, w: f32, h: f32, dpr: f32) -> Option<[
 
 /// Effective text ink for a text node (M5 `Style::ink` + the theme
 /// contract round): the node's own override, else the nearest
-/// ancestor's, else the build theme's `text_primary` (Light's is the
+/// ancestor's, else the build palette's `text_primary` (Light's is the
 /// contract [`oppa::render::INK`], so unset builds paint exactly the
-/// pre-contract plan). Inheritance (not per-leaf authoring — the
-/// `Text` leaf conversion carries no style slot) is the stated rule;
-/// the walk is presenter-side reads only.
+/// pre-contract plan). Decision 477: the palette arrives pre-resolved
+/// (built-in or custom override) instead of a mode — inheritance
+/// (not per-leaf authoring — the `Text` leaf conversion carries no
+/// style slot) is the stated rule; the walk is presenter-side reads
+/// only.
 pub(super) fn resolve_ink(
     rec: &Reconciler,
     styles: &Interner<Style>,
     id: NodeId,
     style: &Style,
-    theme: ThemeMode,
+    tokens: &ThemeTokens,
 ) -> oppa::Color {
     if let Some(ink) = style.ink {
         return ink;
@@ -52,7 +54,7 @@ pub(super) fn resolve_ink(
         }
         cur = rec.get(c).and_then(|n| n.parent);
     }
-    ThemeTokens::of(theme).text_primary
+    tokens.text_primary
 }
 
 /// sRGB channel lerp rounded to the nearest step (`Color` is opaque

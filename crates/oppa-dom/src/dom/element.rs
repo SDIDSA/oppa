@@ -95,19 +95,24 @@ pub struct DomElement {
     /// of content (background order). Non-empty only on the selected
     /// field's container.
     pub sel_rects: Vec<[f32; 4]>,
-    /// Caret bar rect (Round 15.1, decision 312): CSS-px box relative
-    /// to this element's positioned origin, rendered as a trailing
-    /// `caret` div (above the glyphs, after the `sel` divs). `Some`
-    /// only on the focused field's container while the blink phase is
-    /// visible — synced visibility (no CSS animation), so every
-    /// presenter blinks from the host clock by construction. The bar
-    /// paints in [`caret_ink`](Self::caret_ink) (snapshot together —
-    /// stale geometry must never meet a live color).
-    pub caret_rect: Option<[f32; 4]>,
-    /// Caret bar fill as `#rrggbb` (Round 15.1): the focused field's
-    /// text ink at derive time. Empty when [`caret_rect`](Self::caret_rect)
-    /// is `None` (absence is state, never leftover markup).
-    pub caret_ink: String,
+    /// Selection-handle rects (decision 454): CSS-px boxes relative
+    /// to this element's positioned origin — one bar rect per live
+    /// edge ([`handle_bars`](Self::handle_bars)) plus its grab knob
+    /// ([`handle_knobs`](Self::handle_knobs)), rendered as trailing
+    /// `handle` divs (bars above the glyphs, knobs below their
+    /// lines). Two entries each while a range is selected, empty
+    /// otherwise — synced with the highlight divs, so every presenter
+    /// agrees by construction.
+    pub handle_bars: Vec<[f32; 4]>,
+    /// Selection-handle knob rects (decision 454): the grab circles'
+    /// bounding boxes, parallel to
+    /// [`handle_bars`](Self::handle_bars) (same order, same length).
+    pub handle_knobs: Vec<[f32; 4]>,
+    /// Handle fill as `#rrggbb` (decision 454): the focused field's
+    /// text ink at derive time (the caret-ink rule — handles read as
+    /// caret furniture). Empty when both rect lists are empty
+    /// (absence is state, never leftover markup).
+    pub handle_ink: String,
     /// Native placeholder hint for fields (decision 293): the
     /// presentational text the control renders while the value is
     /// empty — raw, escaped at render into the `placeholder`

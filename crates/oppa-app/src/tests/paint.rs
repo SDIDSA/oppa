@@ -58,12 +58,89 @@ fn desktop_repaint_commits_selection_rects() {
         "highlight pins the selected bytes, got {:?} vs origin {origin_x}",
         sels[0]
     );
-    // One overlay at a time: the open range hides the caret bar.
+    // One overlay at a time: the open range hides the caret bar at
+    // the host query (the plan's 2px INK rects below are the
+    // decision-454 handle bars — caret furniture by design, pinned
+    // right after, never a caret).
     assert!(
-        !plan.ops.iter().any(|op| matches!(op,
-                oppa::DrawOp::Rect { w, color, .. }
-                    if (*w - oppa::CARET_WIDTH_PX).abs() < 1e-3 && *color == oppa::INK)),
-        "selected range paints no caret bar"
+        loop_.host().focused_caret_paint().is_none(),
+        "selected range publishes no caret"
+    );
+    let (start, end) = loop_.host().focused_handles_paint().expect("handle pair");
+    let bars: Vec<f32> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            oppa::DrawOp::Rect { x, w, color, .. }
+                if (*w - oppa::HANDLE_WIDTH_PX).abs() < 1e-3 && *color == oppa::INK =>
+            {
+                Some(*x)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bars.len(), 2, "one bar per live edge, got {bars:?}");
+    assert!(
+        bars.contains(&start.x) && bars.contains(&end.x),
+        "bars sit on the selection edges, got {bars:?} vs {}..{}",
+        start.x,
+        end.x
+    );
+    let knobs = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, oppa::DrawOp::Circle { .. }))
+        .count();
+    assert_eq!(knobs, 2, "one knob per live edge");
+}
+
+/// Decision 474: desktop runners hide renderer-drawn selection
+/// handles (mouse affordance) — disabling publishes nothing and
+/// paints no bars/knobs (grabs near edges miss back into plain
+/// selection drags through the same gate), and re-enabling
+/// republishes the pair.
+#[test]
+fn selection_handles_hide_and_restore_through_flag() {
+    let (mut loop_, _) = field_harness();
+    focus_field(&mut loop_);
+    loop_.type_text("hello world").expect("types");
+    loop_
+        .host()
+        .focused_field_session()
+        .expect("session")
+        .select_all();
+    loop_.repaint().expect("repaints");
+    assert!(
+        loop_.host().focused_handles_paint().is_some(),
+        "baseline publishes the pair"
+    );
+    loop_.host().set_selection_handles_visible(false);
+    loop_.repaint().expect("repaints");
+    assert!(
+        loop_.host().focused_handles_paint().is_none(),
+        "opt-out publishes nothing despite the live range"
+    );
+    let plan = loop_.last_plan().expect("committed plan");
+    let bars = plan
+        .ops
+        .iter()
+        .filter(|op| {
+            matches!(op, oppa::DrawOp::Rect { w, color, .. }
+            if (*w - oppa::HANDLE_WIDTH_PX).abs() < 1e-3 && *color == oppa::INK)
+        })
+        .count();
+    assert_eq!(bars, 0, "no handle bars paint while hidden");
+    let knobs = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, oppa::DrawOp::Circle { .. }))
+        .count();
+    assert_eq!(knobs, 0, "no handle knobs paint while hidden");
+    loop_.host().set_selection_handles_visible(true);
+    loop_.repaint().expect("repaints");
+    assert!(
+        loop_.host().focused_handles_paint().is_some(),
+        "restore republishes the pair"
     );
 }
 
@@ -146,5 +223,121 @@ fn blink_flip_demands_and_poll_repaints() {
     assert!(
         next > 0.3 && next <= 0.5,
         "wake points at the visible flip, got {next}"
+    );
+}
+
+/// Decision 477: a published palette override recolors themed
+/// controls end to end (host → session → builder): dark text
+/// resolves to the override's `text_primary` instead of the
+/// built-in one, with no remount and no instance loss.
+#[test]
+fn custom_tokens_recolor_themed_controls_end_to_end() {
+    let (mut loop_, _) = field_harness();
+    focus_field(&mut loop_);
+    loop_.type_text("hi").expect("types");
+    let custom = oppa::ThemeTokens {
+        text_primary: oppa::Color(0x12_34_56),
+        ..oppa::ThemeTokens::dark()
+    };
+    loop_.host().set_theme(oppa::ThemeMode::Dark);
+    loop_
+        .host()
+        .set_theme_tokens_override(oppa::ThemeMode::Dark, Some(custom));
+    loop_.repaint().expect("repaints");
+    let plan = loop_.last_plan().expect("committed plan");
+    let inks: Vec<oppa::Color> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            oppa::DrawOp::Text { ink, .. } => Some(*ink),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !inks.is_empty() && inks.iter().all(|c| *c == custom.text_primary),
+        "themed text resolves through the override, got {inks:?}"
+    );
+}
+
+/// Decision 475: selected glyphs invert to SELECTION_INK against
+/// the light-blue highlight on every pixel backend. Proved in dark
+/// mode on purpose: dark `text_primary` (near-white) on the fixed
+/// light-blue fill has no contrast, while light-mode ink already
+/// matches — so dark mode is where the inversion is load-bearing.
+/// Full-range selection paints every text op inverted; collapsing
+/// restores the resolved ink (no SELECTION_INK op survives); a
+/// partial range splits ops (inverted + resolved side by side).
+#[test]
+fn selected_text_inverts_ink_against_highlight() {
+    let (mut loop_, _) = field_harness();
+    focus_field(&mut loop_);
+    loop_.type_text("hello world").expect("types");
+    // Dark mode: resolved ink (~white) differs from SELECTION_INK
+    // (near-black), so inversion is observable.
+    loop_.host().theme().set(oppa::ThemeMode::Dark);
+    loop_.repaint().expect("repaints");
+    let dark_ink = oppa::ThemeTokens::of(oppa::ThemeMode::Dark).text_primary;
+    assert_ne!(
+        dark_ink,
+        oppa::SELECTION_INK,
+        "dark resolved ink must differ from the inversion ink"
+    );
+    let session = loop_.host().focused_field_session().expect("session");
+    session.select_all();
+    loop_.repaint().expect("repaints");
+    let plan = loop_.last_plan().expect("committed plan");
+    let inks: Vec<oppa::Color> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            oppa::DrawOp::Text { ink, .. } => Some(*ink),
+            _ => None,
+        })
+        .collect();
+    assert!(!inks.is_empty(), "selected field paints text ops");
+    assert!(
+        inks.iter().all(|c| *c == oppa::SELECTION_INK),
+        "full selection inverts every text op, got {inks:?}"
+    );
+    // Collapse: inversion leaves with the range.
+    session.caret_to_end();
+    loop_.repaint().expect("repaints");
+    let plan = loop_.last_plan().expect("committed plan");
+    let inks: Vec<oppa::Color> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            oppa::DrawOp::Text { ink, .. } => Some(*ink),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !inks.is_empty() && inks.iter().all(|c| *c == dark_ink),
+        "collapsed caret restores the resolved ink, got {inks:?}"
+    );
+    assert!(
+        !plan.ops.iter().any(|op| matches!(op,
+                oppa::DrawOp::Text { ink, .. } if *ink == oppa::SELECTION_INK)),
+        "collapsed caret paints no inverted text"
+    );
+    // Partial range: both inks paint side by side.
+    session.select_range(0, 5);
+    loop_.repaint().expect("repaints");
+    let plan = loop_.last_plan().expect("committed plan");
+    let inks: Vec<oppa::Color> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            oppa::DrawOp::Text { ink, .. } => Some(*ink),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        inks.contains(&oppa::SELECTION_INK),
+        "partial selection inverts the covered runs, got {inks:?}"
+    );
+    assert!(
+        inks.iter().any(|c| *c != oppa::SELECTION_INK),
+        "uncovered runs keep their resolved ink, got {inks:?}"
     );
 }

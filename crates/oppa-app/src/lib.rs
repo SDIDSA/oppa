@@ -32,6 +32,8 @@ use oppa::{ComponentHost, DebugOverlayConfig};
 // Desktop/pixel-present glue: deliberately absent from the wasm build
 // (no surface/wgpu/readout code path may compile into oppa-web).
 #[cfg(not(target_arch = "wasm32"))]
+use std::cell::RefCell;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
 use std::rc::Rc;
@@ -42,10 +44,10 @@ use oppa::input::keys;
 use oppa::text::TextService;
 #[cfg(not(target_arch = "wasm32"))]
 use oppa::{
-    dispatch_ime_event, Clipboard, Clock, Ctx, FileDialogOptions, FolderDialog,
+    dispatch_ime_event, Clipboard, Clock, Ctx, FileDialog, FileDialogOptions, FolderDialog,
     FolderDialogOptions, FramePlan, ImeCompositionEvent, InMemoryClipboard, InputEvent, KeyState,
-    LayoutTextConfig, Modifiers, MountHandle, PasteOutcome, Props, RendererBackend, SaveFileDialog,
-    SurfaceDesc, SurfaceId, SystemClock, SystemThemeSource, ThemeTokens, VNode, WindowControl,
+    LayoutTextConfig, Modifiers, MountHandle, PasteOutcome, PickError, Props, RendererBackend,
+    SaveFileDialog, SurfaceDesc, SurfaceId, SystemClock, SystemThemeSource, VNode, WindowControl,
     WindowIcon,
 };
 
@@ -58,6 +60,8 @@ mod windows;
 mod frame;
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu;
+#[cfg(not(target_arch = "wasm32"))]
+mod ladder;
 #[cfg(not(target_arch = "wasm32"))]
 mod presenter_rgb;
 #[cfg(not(target_arch = "wasm32"))]
@@ -72,6 +76,16 @@ mod text_input;
 #[cfg(not(target_arch = "wasm32"))]
 mod wiring;
 
+/// The ordered presenter ladder (decision 432): one first-suitable-
+/// presenter-wins rule for every runner — row tables + the walk.
+/// Platforms supply only their surface factory and row tail.
+#[cfg(not(target_arch = "wasm32"))]
+pub use ladder::{
+    presenter_rows, presenter_rows_for, walk_presenter_rows, BuiltSurface, GpuApplied, GpuRow,
+    GpuRowAttempt, LadderFailure, LadderOutcome, PresenterRow, RowFail, SurfaceFactory,
+    ANDROID_GPU_ORDER_GL_FIRST, ANDROID_GPU_ORDER_VULKAN_FIRST, GPU_DX12_ROW, GPU_GL_ROW,
+    GPU_VULKAN_ROW, LINUX_GPU_ORDER, WINDOWS_GPU_ORDER,
+};
 /// The unified platform-free loop engine (decision 397): shared by
 /// `DesktopLoop` and the Android runner.
 #[cfg(not(target_arch = "wasm32"))]
@@ -397,14 +411,28 @@ pub struct DesktopLoop {
     /// X11 one — copy/paste then work system-wide, stated in the
     /// round logs).
     clipboard: Box<dyn Clipboard>,
-    /// Save-dialog backend (Round 16.1, decision 314): `None` until
-    /// a runner installs the OS backend (headless stays graceful —
-    /// [`DesktopLoop::save_file_dialog`] answers `None` with no
-    /// backend, never a panic).
-    save_dialog: Option<Box<dyn SaveFileDialog>>,
-    /// Folder-picker backend (Round 16.1, decision 314 — same
-    /// install/graceful rule as the save slot).
-    folder_dialog: Option<Box<dyn FolderDialog>>,
+    /// Save-dialog backend (Round 16.1, decision 314; decision 422
+    /// makes the missing-backend case loud; decision 425 shares the
+    /// handle): `None` until a runner installs the OS backend.
+    /// [`DesktopLoop::save_file_dialog`] answers
+    /// `Err(PickError::Unsupported)` with no backend (never a
+    /// silent `None`), `Ok(None)` on dismissal, `Ok(Some)` on pick.
+    /// Held as `Rc` so runners forward the same live backend to app
+    /// controls (the `FilePicker` handle rule) instead of a second
+    /// instance racing the loop's slot.
+    save_dialog: Option<Rc<RefCell<dyn SaveFileDialog>>>,
+    /// Folder-picker backend (Round 16.1, decision 314; decisions
+    /// 422 + 425 — same loud-missing + shared-handle rules as the
+    /// save slot).
+    folder_dialog: Option<Rc<RefCell<dyn FolderDialog>>>,
+    /// Open-dialog backend (decision 425 — the G12 shell seam's
+    /// loop home): `None` until a runner installs the OS backend
+    /// (Win32 modal / Linux portal-zenity). Apps borrow the handle
+    /// for `request_open` / `poll_open` through
+    /// [`DesktopLoop::open_dialog_handle`]; `None` means
+    /// unsupported (the decision-422 `Unsupported` rule, never a
+    /// silent button — the `FilePicker` control refuses loudly).
+    open_dialog: Option<Rc<RefCell<dyn FileDialog>>>,
     /// OS theme reader (Round 16.2, decision 315): `None` until a
     /// runner installs the platform source (headless keeps the app
     /// default — [`DesktopLoop::sync_system_theme`] is a quiet
@@ -448,9 +476,12 @@ impl DesktopLoop {
         &self.scene
     }
 
-    /// Mutable engine access (tests flip renderer state directly —
-    /// the old `active` field writes moved here with the field).
-    #[cfg(test)]
+    /// Mutable engine access (desktop runners hand it to the
+    /// shared presenter ladder; tests flip renderer state directly
+    /// — the old `active` field writes moved here with the field).
+    /// Unused on targets without a desktop runner (Android drives
+    /// `SceneCore` itself) — allowed, never removed.
+    #[allow(dead_code)]
     pub(crate) fn scene_mut(&mut self) -> &mut SceneCore {
         &mut self.scene
     }
@@ -458,6 +489,11 @@ impl DesktopLoop {
     /// CPU retained op count (test symmetry with the GPU twin).
     pub fn cpu_retained_op_count(&self) -> Option<usize> {
         self.scene.cpu_retained_op_count()
+    }
+
+    /// Total CPU paints executed (decision 436 test seam).
+    pub fn cpu_paints_total(&self) -> u64 {
+        self.scene.cpu_paints_total()
     }
 
     pub fn host(&self) -> &ComponentHost {
@@ -471,3 +507,39 @@ impl DesktopLoop {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+
+/// Standard desktop entry: generates `fn main` mounting `root`
+/// through [`run_desktop`], so app crates name their window once
+/// instead of hand-wiring options + error exit (the web twin is
+/// [`export_app`](oppa_web::export_app)).
+///
+/// ```rust,ignore
+/// use oppa_app::desktop_main;
+/// desktop_main!("Sign in", 400, 420, app::login_root);
+/// ```
+///
+/// Native-only by construction: the real entry runs the desktop
+/// loop, and a loud wasm stub keeps whole-target checks honest
+/// (serve builds `--lib`, so web runs never compile the bin — the
+/// stub is the backstop if they ever do).
+#[macro_export]
+macro_rules! desktop_main {
+    ($title:literal, $width:literal, $height:literal, $root:path) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        fn main() {
+            if let Err(e) = ::oppa_app::run_desktop(
+                ::oppa_app::WindowOptions::new($title, $width, $height),
+                (),
+                $root,
+            ) {
+                eprintln!("oppa: FATAL: {e}");
+                std::process::exit(1);
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        fn main() {
+            panic!("desktop entry is native-only — run the web leg with `cargo oppa serve`");
+        }
+    };
+}

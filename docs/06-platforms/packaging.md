@@ -13,6 +13,13 @@ box), **manual** (ran once by hand, follow the steps exactly),
 
 ## Android
 
+- **Per-app release (proven host-side): `cargo oppa build
+  --android`** in the app dir — shell sync (manifest + java) +
+  NDK `.so` set + aapt2/javac/d8/zipalign/apksigner into
+  `android/<name>-release.apk` (align + signature + badging
+  verified by the command itself). Proven on `apps/login`
+  (21 MB). Install/launch needs hardware (`adb install -r`,
+  then launch — on-device boot proven on RMX3370 for the login runner).
 - **Dev/test (manual): `cargo-apk` 0.10.** Requires
   `[package.metadata.android.sdk]` min/target (34–37 installed here;
   the default 30 is not) and `--lib` for the cdylib (`--bin`
@@ -52,10 +59,13 @@ box), **manual** (ran once by hand, follow the steps exactly),
 
 ## Web
 
-- **Blessed (proven):** `cargo build --release --target
+- **Blessed (proven):** `cargo oppa serve` in the project (wasm
+  build + CLI-pinned wasm-bindgen + no-store serve + browser open;
+  `--no-browser` serves without rebuilding). Manual form:
+  `cargo build --release --target
   wasm32-unknown-unknown -p <app>`, then `wasm-bindgen --target web`
-  (CLI pinned 0.2.128 to match the lockfile, machine-local install),
-  serve the app dir (raw `python -m http.server` suffices). `web/pkg/`
+  (CLI pinned to match the lockfile, machine-local install), then
+  serve the app dir. `web/pkg/`
   (generated bundle) is deliberately untracked — regenerate
   per above, never commit. Verified on this box 2026-10-01
   (`hello-web`): raw `hello_web.wasm` 3,445,522 bytes (~3.29 MiB);
@@ -67,10 +77,10 @@ box), **manual** (ran once by hand, follow the steps exactly),
   `templates/hello-web/web/` ships `manifest.json` (name, shell
   colors, `standalone` display — icons are app branding, none
   ships) + `sw.js` (cache-first for `index.html` + `manifest.json`
-  + `bootstrap.js` + `pkg/`, versioned `CACHE` bump per release,
+  + `oppa-bootstrap.js` + `pkg/`, versioned `CACHE` bump per release,
   bundle names following the package stem through `cargo oppa
   new`) with the one-line `serviceWorker.register` in the
-  template `bootstrap.js` and the manifest link in `index.html`.
+  template `index.html` (via `bootOppa({pwa})`) and the manifest link in `index.html`.
   The dev rig (`crates/oppa-web/web/`) links its own manifest for
   smoke but registers no worker (it stays network-fresh by
   design — stale caches would mask dev builds). Verify by hand:

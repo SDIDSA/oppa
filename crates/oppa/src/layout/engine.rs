@@ -235,12 +235,20 @@ fn run_layout(
         root_style_w = root_style.w.map(|p| p.get() * dpr);
         root_style_h = root_style.h.map(|p| p.get() * dpr);
         let gw = root_style_w.or(Some(viewport_w));
+        // Decision 476: the root lays out against the live viewport
+        // height exactly like it already does for width — a root
+        // carrying `fill_height` resolves viewport-tall, so flex
+        // shares and justification engage with real leftover (true
+        // centering without a Portal). Roots without `fill_height`
+        // are byte-identical (the hint is gated on the fill flag,
+        // never a silent size invention — the portal-height rule).
+        let gh = Some(viewport_h);
         ctx.layout_node(
             root,
             0.0,
             0.0,
             gw,
-            None,
+            gh,
             0.0,
             0.0,
             inherited,

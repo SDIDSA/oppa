@@ -414,7 +414,8 @@ fn test_oracle_text_rendering() {
     let shaped = svc.shape("Oppa GPU", &style).expect("shape text");
     let fid = shaped.runs[0].font_id;
     let (font_path, font_index) = svc.font_file_source(fid).expect("font file");
-    let font_bytes = std::fs::read(&font_path).expect("read font bytes");
+    let font_bytes: std::sync::Arc<[u8]> =
+        std::fs::read(&font_path).expect("read font bytes").into();
 
     let mut cpu = CpuBackend::new();
     let mut gpu = GpuBackend::new();
@@ -500,4 +501,29 @@ fn test_oracle_text_rendering() {
             "ink counts should closely match: cpu={cpu_ink_count}, gpu={gpu_ink_count}"
         );
     }
+}
+
+/// Decision 479: the caps flag agrees with the probed count on any
+/// adapter (4x desktop rows down to headless `None`) — MSAA is
+/// reported if and only if a multisampling context exists. Skips
+/// loudly without hardware, like every oracle row here.
+#[test]
+fn msaa_caps_agrees_with_probed_count() {
+    let mut backend = GpuBackend::new();
+    assert_eq!(backend.sample_count(), None, "headless has no count");
+    assert!(!backend.caps().msaa, "headless reports no MSAA");
+    if backend.ensure_gpu().is_err() {
+        eprintln!("SKIP msaa_caps_agrees_with_probed_count: no GPU context");
+        return;
+    }
+    let count = backend.sample_count().expect("context probes a count");
+    assert!(
+        (1..=4).contains(&count),
+        "probed count is 1/2/4, got {count}"
+    );
+    assert_eq!(
+        backend.caps().msaa,
+        count > 1,
+        "caps honesty: MSAA iff multisampling"
+    );
 }

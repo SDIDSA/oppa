@@ -59,8 +59,9 @@ pub use component::{
 pub use debug_overlay::DebugOverlayConfig;
 pub use diag::{LogEntry, LogLevel, RingLog};
 pub use dialog::{
-    FileDialog, FileDialogOptions, FileFilter, FilePickerOptions, FolderDialog,
-    FolderDialogOptions, PickError, SaveFileDialog, ScriptedDialog, ScriptedFolderDialog,
+    FileDialog, FileDialogOptions, FileFilter, FileOpener, FilePickerOptions, FolderDialog,
+    FolderDialogOptions, OpenOutcome, PickBackend, PickError, PickPress, PickRegistry, PickSession,
+    PickedFile, SaveFileDialog, ScriptedDialog, ScriptedFolderDialog, ScriptedOpener,
     ScriptedSaveDialog,
 };
 pub use editing::{EditSession, EditState, PasteOutcome, CARET_BLINK_PERIOD_SECS, EDIT_UNDO_DEPTH};
@@ -72,9 +73,12 @@ pub use hash::SymbolHash;
 pub use ime::{
     dispatch_ime_event, ImeCompositionEvent, ImeCompositionFeed, ImeCompositionHandler, ImeOps,
 };
+pub use input::actions::{action_for_key, apply_edit_action, text_for_hardware_key, EditAction};
 pub use input::{
     handler_of, hit_test, is_within, press_handler_of, press_owner_node, scroll_owner_node,
-    tab_order, InputEvent, KeyState, Modifiers, PointerAction, PointerButton,
+    tab_order, HandleEdge, InputEvent, KeyState, Modifiers, PointerAction, PointerButton,
+    ToolbarAction, ToolbarItem, ToolbarModel, HANDLE_HIT_SLOP_PX, TOOLBAR_EST_W_PX,
+    TOOLBAR_ROW_H_PX,
 };
 pub use interner::{Interner, StyleId};
 pub use layout::{
@@ -90,9 +94,9 @@ pub use reconciler::{DiffOp, Reconciler, RetainedNode, TreeDiff};
 pub use reload::{AdoptPropsFn, ComponentDesc, DrainPropsFn, DrainedProps, ManifestView};
 pub use render::{
     compute_semantics_diff, BackendError, Caps, CaretPaint, DamageRect, DrawOp, FontRun, FramePlan,
-    PaintStats, PlacedGlyph, PlanStats, PresenterKind, RendererBackend, SelectionPaint,
-    SemanticsDiff, SemanticsEntry, SemanticsSnapshot, SurfaceDesc, SurfaceId, CARET_WIDTH_PX, INK,
-    SELECTION_FILL,
+    HandlePaint, PaintStats, PlacedGlyph, PlanStats, PresenterKind, RendererBackend,
+    SelectionPaint, SemanticsDiff, SemanticsEntry, SemanticsSnapshot, SurfaceDesc, SurfaceId,
+    CARET_WIDTH_PX, HANDLE_KNOB_R_PX, HANDLE_WIDTH_PX, INK, SELECTION_FILL, SELECTION_INK,
 };
 pub use semantics::{Num, Role, Semantics};
 pub use shell::{AppLifecycleState, Event, EventKind, PlatformShell};

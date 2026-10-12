@@ -40,6 +40,8 @@ fn validation_marks_announce_and_footer_stacks() {
         error_message: Some(SharedString::from("err-age")),
         helper_text: Some(SharedString::from("Years, digits only")),
         borderless: false,
+        icon: None,
+        icon_size: 16.0,
     };
     host.mount(
         "Val",
@@ -82,6 +84,8 @@ fn validation_marks_announce_and_footer_stacks() {
         error_message: None,
         helper_text: Some(SharedString::from("Years, digits only")),
         borderless: false,
+        icon: None,
+        icon_size: 16.0,
     };
     host2.mount(
         "ValHelp",

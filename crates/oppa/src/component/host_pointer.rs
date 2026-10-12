@@ -16,6 +16,14 @@ impl ComponentHost {
                 self.set_hover_node(hit);
                 if let Some(id) = id {
                     self.disarm_longpress_on_move(id, x, y);
+                    // Decision 454: the first Move past tap slop
+                    // confirms a handle candidate (the arm is marked
+                    // consumed then, so the lift never taps, holds,
+                    // swipes, or drag-releases — the edge owns the
+                    // gesture from here). Moves inside slop leave the
+                    // candidate unconfirmed, so a clean lift stays a
+                    // normal tap.
+                    self.confirm_handle_drag_if_past_slop(id, x, y);
                     // Drift-within-slop past the deadline fires the
                     // hold (the while-held case on pumping loops).
                     self.fire_arm_if_due(id, rt.now_secs());
@@ -44,6 +52,21 @@ impl ComponentHost {
                 // native grab rule, any button, any target, before any
                 // capture work below).
                 self.inner.flings.borrow_mut().clear();
+                // Decision 459: a fresh Down supersedes any armed
+                // collapsed-hold toolbar (the hold that armed it is
+                // long gone — stale arms must never fire the bar
+                // under a new gesture).
+                self.inner.input.borrow().caret_toolbar_armed.set(false);
+                // Decision 455: scene-toolbar taps resolve here —
+                // geometrically, before hit-testing — and never touch
+                // focus/capture/press state (overlay items are
+                // handlerless presentational nodes: no focus steal, no
+                // tab stop, no press flag). The runner drains the queue
+                // per pump and applies through the loop clipboard.
+                if let Some(action) = self.toolbar_hit(x, y) {
+                    self.push_toolbar_action(action);
+                    return;
+                }
                 let hit = self.hit_test(x, y);
                 self.set_hover_node(hit);
                 let Some(hit) = hit else { return };
@@ -65,14 +88,21 @@ impl ComponentHost {
                 }
                 self.inner.input.borrow_mut().captures.insert(id, owner);
                 self.inner.input.borrow_mut().positions.insert(id, (x, y));
+                // Decision 454: a Down landing on a renderer-drawn
+                // handle arms an edge drag instead of a tap (handles
+                // exist only on the focused field, so focus is already
+                // home — the capture/focus path below runs unchanged).
+                let handle_edge = self.handle_hit(x, y);
+                if let Some(edge) = handle_edge {
+                    self.inner.input.borrow_mut().handle_drags.insert(id, edge);
+                }
                 self.set_flag_for_node(owner, FlagKind::Pressed, true);
                 // Focus follows click (standard control behavior).
                 self.set_focus_node(Some(owner));
                 // Round 23.2: pointer-driven focus hides rings.
-                self.set_focus_visible(false);
-                // Long-press arm (G11, decision 228): a second Down on
-                // the same id re-arms (platforms pair Down/Up; a dup
-                // restarts the hold — stated, not silently stacked).
+                self.set_focus_visible(false); // Long-press arm (G11, decision 228): a second Down on
+                                               // the same id re-arms (platforms pair Down/Up; a dup
+                                               // restarts the hold — stated, not silently stacked).
                 let hid = self
                     .press_handler(owner)
                     .expect("capture target lost its Press handler mid-press");
@@ -103,6 +133,9 @@ impl ComponentHost {
                         scrolling: false,
                     },
                 );
+                // Decision 454: the arm stays live (a clean lift off
+                // a handle is a normal tap — the confirmation below
+                // decides, never the Down).
             }
             input::PointerAction::Up { button } => {
                 let Some(id) = id else {
@@ -127,11 +160,17 @@ impl ComponentHost {
                     self.inner.longpress.borrow_mut().remove(&id);
                     self.inner.input.borrow_mut().capture_instances.remove(&id);
                     self.inner.input.borrow_mut().positions.remove(&id);
+                    self.inner.input.borrow_mut().handle_drags.remove(&id);
+                    self.inner.input.borrow_mut().handle_confirmed.remove(&id);
                     self.inner.scroll_drags.borrow_mut().remove(&id);
                     return;
                 };
                 self.inner.input.borrow_mut().capture_instances.remove(&id);
                 self.inner.input.borrow_mut().positions.remove(&id);
+                // Decision 454: the handle drag closes with its pointer
+                // (the edge already streamed move-to-move above).
+                self.inner.input.borrow_mut().handle_drags.remove(&id);
+                self.inner.input.borrow_mut().handle_confirmed.remove(&id);
                 // Round 10.1/10.2: the drag state closes with the
                 // pointer (its deltas already streamed move-to-move
                 // above); a fast release keeps scrolling as momentum

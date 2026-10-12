@@ -17,9 +17,10 @@ use std::rc::Rc;
 use oppa::store::KvStore;
 use oppa::{
     AlignItems, CanvasOp, Color, Column, Ctx, Div, Ease, FetchState, FileDialog, FilePickerOptions,
-    FlexWrap, FontWeight, GridTrack, JustifyContent, KeyframeMode, KeyframeStop, Keyframes, Px,
-    Row, ScriptedDialog, SharedString, Signal, Style, Text, TextSpan, ThemeMode, ThemeTokens,
-    VNode,
+    FlexWrap, FolderDialog, FontWeight, GridTrack, JustifyContent, KeyframeMode, KeyframeStop,
+    Keyframes, OpenOutcome, PickRegistry, PickSession, Px, Row, SaveFileDialog, ScriptedDialog,
+    ScriptedFolderDialog, ScriptedSaveDialog, SharedString, Style, Text, TextSpan, ThemeMode,
+    ThemeTokens, VNode,
 };
 
 use crate::{
@@ -33,12 +34,57 @@ use crate::{
     Toolbar, ToolbarProps, Tree, TreeNode, TreeProps,
 };
 
-/// Unit props: `KitchenSinkApp` takes `&KitchenSinkProps` while the
-/// runners pass `()` — the alias unifies both spellings (`()`
-/// satisfies `Props`, the showcase precedent), so the brief's
-/// `run_desktop(..., (), KitchenSinkApp)` and
-/// `fn KitchenSinkApp(ctx, &KitchenSinkProps)` are one signature.
-pub type KitchenSinkProps = ();
+/// Sink dialog handles (decision 425): the three backends the
+/// Platform tab drives. Always present — the desktop runner
+/// forwards the live loop handles (native dialogs) through the
+/// example's configure closure; everyone else keeps the scripted
+/// default (headless/Android/Web demo + tests). Interior-shared
+/// (`Rc`) so a runner fills them after mount and every trigger
+/// sees the swap on its next render.
+pub struct SinkDialogs {
+    pub open: Rc<RefCell<dyn FileDialog>>,
+    /// The unified pick session driving `open` (decision 429 — same
+    /// one-press-series law as the `FilePicker` control, so the
+    /// scripted `demo-pick.png` and the Android SAF rendezvous settle
+    /// through identical captions).
+    pub open_session: Rc<RefCell<PickSession>>,
+    /// Per-loop pick drain (decision 431): app loops tick
+    /// `poll_all` once per iteration so an async settlement
+    /// publishes into the signals below without another press.
+    pub registry: Rc<RefCell<PickRegistry>>,
+    pub save: Rc<RefCell<dyn SaveFileDialog>>,
+    pub folder: Rc<RefCell<dyn FolderDialog>>,
+}
+
+impl Default for SinkDialogs {
+    fn default() -> Self {
+        // One scripted pick queued (the Edge/headless "Pick a file"
+        // expectation — the first press picks `demo-pick.png`,
+        // later presses dismiss); save/folder dismiss by default.
+        let open = Rc::new(RefCell::new(ScriptedDialog::new()));
+        open.borrow_mut()
+            .push_response(vec![PathBuf::from("demo-pick.png")]);
+        Self {
+            open,
+            open_session: Rc::new(RefCell::new(PickSession::new())),
+            registry: Rc::new(RefCell::new(PickRegistry::new())),
+            save: Rc::new(RefCell::new(ScriptedSaveDialog::new())),
+            folder: Rc::new(RefCell::new(ScriptedFolderDialog::new())),
+        }
+    }
+}
+
+/// Unit props: `KitchenSinkApp` takes `&KitchenSinkProps` — the
+/// dialog handles above (default scripted; the desktop example
+/// overwrites them with the live loop handles in its configure
+/// closure). Every other runner mounts
+/// `KitchenSinkProps::default()`.
+#[derive(Clone, Default)]
+pub struct KitchenSinkProps {
+    pub dialogs: Rc<RefCell<SinkDialogs>>,
+}
+
+impl oppa::Props for KitchenSinkProps {}
 
 /// Tab identity (the `Tabs` proof target — exactly one panel shows).
 #[derive(Clone, PartialEq)]
@@ -137,7 +183,7 @@ fn card(debug: String, style: Style, caption: &str) -> VNode {
 
 /// The unified showcase: four tabs over root-owned signals. See the
 /// module docs for the state/identity rules.
-pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
+pub fn KitchenSinkApp(ctx: &Ctx, props: &KitchenSinkProps) -> VNode {
     // ---- Form state (Tab 1) ----
     let name = ctx.signal(SharedString::from(""));
     let bio = ctx.signal(SharedString::from(""));
@@ -184,8 +230,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
     let download = ctx.signal(35.0f32);
     // ---- Platform state (Tab 4) ----
     let file_status = ctx.signal(SharedString::from("no file picked"));
-    let dialog: Signal<Rc<RefCell<ScriptedDialog>>> =
-        ctx.signal(Rc::new(RefCell::new(ScriptedDialog::new())));
+    let dialogs = props.dialogs.clone();
     let count = ctx.signal(0u32);
     let kv = ctx.signal(oppa::InMemoryKv::new());
     // ---- Tab identity ----
@@ -336,6 +381,8 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                         error_message: Some(SharedString::from("Enter a valid email")),
                         helper_text: Some(SharedString::from("We never share it")),
                         borderless: false,
+                        icon: None,
+                        icon_size: 16.0,
                     },
                     TextInput,
                 ),
@@ -610,32 +657,52 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
         })
     };
     let platform = {
-        let (file_status, dialog, count, kv) = (
+        let (file_status, dialogs, count, kv) = (
             file_status.clone(),
-            dialog.clone(),
+            dialogs.clone(),
             count.clone(),
             kv.clone(),
         );
         let picked = picked.clone();
         Rc::new(move |ctx: &Ctx| {
-            // File picker trigger (decision 230): scripted dialog
-            // stands in for the OS backend headlessly; each press
-            // scripts one response, then requests + polls it.
-            let pick_dialog = dialog.clone();
+            // File picker trigger (decisions 230 + 425 + 429 + 431):
+            // one press series through the unified session over the
+            // props' open handle — scripted `demo-pick.png` by
+            // default, the native modal on desktop (blocking shells
+            // settle in-press; async shells report "still open…"
+            // until the settlement is consumed). The drain entry
+            // below publishes async settlements without another
+            // press: app loops tick the shared registry per
+            // iteration, and re-tracking here is latest-wins
+            // (renders pass equivalent handles — never duplicates).
+            let pick_dialogs = dialogs.clone();
             let pick_status = file_status.clone();
+            let pick_picked = picked.clone();
+            let drain_dialogs = dialogs.clone();
+            let drain_status = file_status.clone();
+            let drain_picked = picked.clone();
+            drain_dialogs.borrow().registry.borrow_mut().track_open(
+                &drain_dialogs.borrow().open_session,
+                &drain_dialogs.borrow().open,
+                Rc::new(move |outcome| {
+                    if let Some(first) = outcome.path_text() {
+                        drain_picked.set(Some(SharedString::from(first)));
+                    }
+                    drain_status.set(SharedString::from(outcome.status()));
+                }),
+            );
             let pick = Rc::new(move || {
-                let handle = pick_dialog.get();
-                let mut dlg = handle.borrow_mut();
-                dlg.push_response(vec![PathBuf::from("demo-pick.png")]);
-                dlg.request_open(FilePickerOptions::default());
-                let out = dlg.poll_open();
+                let handles = pick_dialogs.borrow();
+                let mut dlg = handles.open.borrow_mut();
+                let mut session = handles.open_session.borrow_mut();
+                let outcome =
+                    OpenOutcome::of(session.press(&mut *dlg, FilePickerOptions::default()));
+                drop(session);
                 drop(dlg);
-                pick_status.set(match out {
-                    Some(Ok(paths)) if paths.is_empty() => SharedString::from("dismissed"),
-                    Some(Ok(paths)) => SharedString::from(format!("picked {}", paths[0].display())),
-                    Some(Err(e)) => SharedString::from(format!("picker failed: {e}")),
-                    None => SharedString::from("still open..."),
-                });
+                if let Some(first) = outcome.path_text() {
+                    pick_picked.set(Some(SharedString::from(first)));
+                }
+                pick_status.set(SharedString::from(outcome.status()));
             });
             // Persistent counter (decision 216): author-owned signal
             // mirrored into the `KvStore` on every press.
@@ -727,13 +794,18 @@ pub fn KitchenSinkApp(ctx: &Ctx, _props: &KitchenSinkProps) -> VNode {
                     text: SharedString::from(fetch_status),
                     style: Text::body_secondary,
                 }),
-                // FilePicker control (Phase 38c, G21): the same
-                // scripted backend behind one trigger — pick sets
-                // the controlled path, dismissal keeps it.
+                // FilePicker control (Phase 38c, G21; decision 425):
+                // the props' open handle behind one trigger — pick
+                // sets the controlled path, dismissal keeps it.
+                // Desktop runners forward the native backend here.
+                // The session is the shared `SinkDialogs` one
+                // (decision 431 — one session per backend, so the
+                // loop drain and both triggers consume together).
                 ctx.child_auto(
                     &{
                         let mut fp = FilePickerProps::new(picked.clone(), FilePickerMode::Open);
-                        fp.open_dialog = Some(dialog.get());
+                        fp.open_dialog = Some(dialogs.borrow().open.clone());
+                        fp.open_session = dialogs.borrow().open_session.clone();
                         fp.debug = SharedString::from("sink::Platform::Files");
                         fp
                     },

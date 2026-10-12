@@ -265,6 +265,22 @@ impl Ctx {
         self.host.request_close();
     }
 
+    /// App-readable system-bars mode (Android screen-mode toggle):
+    /// tracked signal, `false` = hidden/immersive (boot mode),
+    /// `true` = status + navigation shown.
+    pub fn system_bars_visible(&self) -> Signal<bool> {
+        self.host.system_bars_visible()
+    }
+
+    /// Requests the system-bars mode from a component (Android
+    /// screen-mode toggle): forwards to the host signal + runner
+    /// command; the scene stays full-bleed either way (only the
+    /// host status + navigation bars show/hide). No-op effect on
+    /// non-Android runners (signal still updates).
+    pub fn set_system_bars_visible(&self, visible: bool) {
+        self.host.set_system_bars_visible(visible);
+    }
+
     /// Product editing session over an author-owned content signal (G1,
     /// decision 205): `let field = ctx.edit_session(ctx.signal("".into()))`.
     /// Per-instance, keyed by call-site (same re-seed rule as

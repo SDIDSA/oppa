@@ -8,11 +8,12 @@ impl DomBackend {
         self.selection = sel;
     }
 
-    /// Sets the caret bar overlay for the next [`sync`](Self::sync)
-    /// (Round 15.1 — the host's focused caret; `None` derives
-    /// byte-identical markup to pre-15.1).
-    pub fn set_caret(&mut self, caret: Option<oppa::CaretPaint>) {
-        self.caret = caret;
+    /// Sets the selection-handle overlay for the next [`sync`](Self::sync)
+    /// (decision 454 — the host's live handle pair, painted as bar +
+    /// knob divs on the field container; `None` derives byte-identical
+    /// markup to pre-454).
+    pub fn set_handles(&mut self, handles: Option<(oppa::HandlePaint, oppa::HandlePaint)>) {
+        self.handles = handles;
     }
 
     /// Sets the page-chrome theme for the next [`sync`](Self::sync)
@@ -22,6 +23,19 @@ impl DomBackend {
     pub fn set_theme_mode(&mut self, mode: ThemeMode) {
         if mode != self.theme {
             self.theme = mode;
+            self.theme_dirty = true;
+        }
+    }
+
+    /// Sets the page-chrome palette override for the next
+    /// [`sync`](Self::sync) (decision 477 — the host's
+    /// override-honoring tokens, published per frame beside the
+    /// mode). Change-only by value like the mode above: repeats are
+    /// free, a real change arms one touched-work unit so its stanza
+    /// emits; unset resolves through the mode exactly as before.
+    pub fn set_theme_tokens(&mut self, tokens: oppa::ThemeTokens) {
+        if self.theme_tokens != Some(tokens) {
+            self.theme_tokens = Some(tokens);
             self.theme_dirty = true;
         }
     }
@@ -110,8 +124,9 @@ impl RendererBackend for DomBackend {
                             spacer_h: None,
                             placeholder: String::new(),
                             sel_rects: Vec::new(),
-                            caret_rect: None,
-                            caret_ink: String::new(),
+                            handle_bars: Vec::new(),
+                            handle_knobs: Vec::new(),
+                            handle_ink: String::new(),
                             no_transition: false,
                             inline_kf: String::new(),
                         },

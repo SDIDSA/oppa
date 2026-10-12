@@ -90,3 +90,39 @@ fn row_fill_children_split_remainder() {
     assert!(approx(b2.w, 56.0), "f2 share, got {}", b2.w);
     assert!(approx(b2.x, b1.x + 56.0 + 4.0), "gap between fills");
 }
+
+/// Decision 476: Div is block-lite and ignores flex shares — a
+/// flow child carrying `flex_grow` under a Div refuses loudly
+/// (previously it silently sized intrinsically). Use a Column for
+/// flex children.
+#[test]
+#[should_panic(expected = "Div is block-lite")]
+fn div_flex_grow_child_refuses_loudly() {
+    let (fake, calls) = FakeText::new();
+    let mut rig = Rig::new(fake, calls);
+    let tree: VNode = Div("root").child(
+        Div("d").child(
+            Div("k")
+                .style(Style::new().size(100, 10).flex_grow(1.0))
+                .build(),
+        ),
+    );
+    rig.layout(tree);
+}
+
+/// Decision 476: same loud rule for `flex_shrink` (Div ignores the
+/// whole shrink arm too).
+#[test]
+#[should_panic(expected = "Div is block-lite")]
+fn div_flex_shrink_child_refuses_loudly() {
+    let (fake, calls) = FakeText::new();
+    let mut rig = Rig::new(fake, calls);
+    let tree: VNode = Div("root").child(
+        Div("d").child(
+            Div("k")
+                .style(Style::new().size(100, 10).flex_shrink(1.0))
+                .build(),
+        ),
+    );
+    rig.layout(tree);
+}

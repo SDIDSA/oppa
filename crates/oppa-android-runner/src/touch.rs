@@ -159,12 +159,29 @@ impl TouchDriver {
                     ActivityInput::KeyEvent(key) => {
                         stats.keys += 1;
                         let code = u32::from(key.key_code());
+                        // Modifier state at event time (decision 442 —
+                        // the runner's shortcut/nav matrix needs
+                        // shift/ctrl; alt/meta ride along so the
+                        // router sees the true chord).
+                        let meta = key.meta_state();
+                        let modifiers = oppa::input::Modifiers {
+                            shift: meta.shift_on(),
+                            ctrl: meta.ctrl_on(),
+                            alt: meta.alt_on(),
+                            meta: meta.meta_on(),
+                        };
                         match key.action() {
                             KeyAction::Down | KeyAction::Multiple => {
-                                shell.push_event(AndroidEvent::KeyDown { keycode: code });
+                                shell.push_event(AndroidEvent::KeyDown {
+                                    keycode: code,
+                                    modifiers,
+                                });
                             }
                             KeyAction::Up => {
-                                shell.push_event(AndroidEvent::KeyUp { keycode: code });
+                                shell.push_event(AndroidEvent::KeyUp {
+                                    keycode: code,
+                                    modifiers,
+                                });
                             }
                             _ => {
                                 stats.ignored_unknown_action += 1;

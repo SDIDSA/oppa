@@ -312,9 +312,11 @@ fn column_flex_grow_splits_height_by_weight() {
 }
 
 #[test]
+#[should_panic(expected = "Div is block-lite")]
 fn div_ignores_flex_shares() {
-    // Block-lite spans every child to the content width — flex adds
-    // nothing: the flex child matches its plain sibling exactly.
+    // Decision 476: block-lite Divs ignore flex shares, so a flow
+    // child carrying them refuses loudly instead of silently
+    // sizing intrinsically (use a Column for flex children).
     let mut rig = Rig::new();
     let tree: VNode = Div("root").child(
         Div("d").style(Style::new().size(400, 100)).children([
@@ -325,12 +327,6 @@ fn div_ignores_flex_shares() {
         ]),
     );
     rig.layout(tree);
-    let (_, _, wp, _) = rig.geom("plain");
-    let (_, _, w, _) = rig.geom("flex");
-    assert!(
-        approx(wp, 400.0) && approx(w, 400.0),
-        "flex adds nothing: {wp} {w}"
-    );
 }
 
 // ---------------------------------------------------------------------------

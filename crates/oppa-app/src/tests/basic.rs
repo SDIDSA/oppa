@@ -1,5 +1,5 @@
 use super::*;
-use oppa::{DrawOp, ThemeMode};
+use oppa::{DrawOp, ThemeMode, ThemeTokens};
 
 #[test]
 fn loop_mounts_and_paints_pixels() {

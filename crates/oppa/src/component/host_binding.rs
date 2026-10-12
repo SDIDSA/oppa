@@ -348,8 +348,8 @@ impl ComponentHost {
                 // future multi-line fields resolve here too); geometry
                 // rides the session's own shaper rect, whose
                 // baseline-relative y the line baseline converts to
-                // box space.
-                let (li, _) = b.caret_position(session.caret());
+                // box space. Display-space caret (decision 458).
+                let (li, _) = b.caret_position(session.composite_byte_to_display(session.caret()));
                 let line = b.lines.get(li)?;
                 Some([
                     b.x + rect.x,

@@ -44,6 +44,7 @@ impl DesktopLoop {
             clipboard: Box::new(InMemoryClipboard::new()),
             save_dialog: None,
             folder_dialog: None,
+            open_dialog: None,
             theme_source: None,
             window_control: None,
             close_handler: None,
@@ -121,9 +122,11 @@ impl DesktopLoop {
 
     /// Drops back to the CPU pixmap (loud GPU failure path): later
     /// repaints skip the GPU twin again; its retained scene stays
-    /// for a later re-enable (refit keeps sizes in lockstep).
-    pub fn disable_gpu(&mut self) {
-        self.scene.disable_gpu();
+    /// for a later re-enable (refit keeps sizes in lockstep). Repaints
+    /// once immediately when the CPU paint was opted out (decision
+    /// 436 catch-up) — loud `Err`, never silent old pixels.
+    pub fn disable_gpu(&mut self) -> Result<(), String> {
+        self.scene.disable_gpu()
     }
 
     /// Ensures a live GPU context on an adapter compatible with
@@ -156,9 +159,9 @@ impl DesktopLoop {
             .configure_gpu_surface(surface, width, height, mode)
     }
 
-    /// Picks the present mode: uncapped Immediate first, then
-    /// Mailbox, then vsync Fifo (throughput leg first). Loud either
-    /// way, with the offered list for blank-window diagnosis.
+    /// Picks the present mode, vsync-first (product default —
+    /// benchmarks take the uncapped row). Loud either way, with the
+    /// offered list for blank-window diagnosis.
     pub fn pick_gpu_mode(&self, surface: &wgpu::Surface<'_>) -> wgpu::PresentMode {
         self.scene.pick_gpu_mode(surface)
     }

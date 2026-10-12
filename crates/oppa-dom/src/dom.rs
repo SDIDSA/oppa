@@ -35,7 +35,7 @@ use std::collections::{HashMap, HashSet};
 
 use oppa::{
     BackendError, Caps, ImageCache, Interner, NodeId, PaintStats, PresenterKind, Reconciler,
-    RendererBackend, Role, Style, SurfaceDesc, SurfaceId, Tag, ThemeMode, ThemeTokens, TreeDiff,
+    RendererBackend, Role, Style, SurfaceDesc, SurfaceId, Tag, ThemeMode, TreeDiff,
 };
 
 use crate::aria::aria_attrs;
@@ -93,12 +93,12 @@ pub struct DomBackend {
     /// container (same shared `selection_rects` rule as the rasterizers;
     /// `None` derives byte-identical markup to pre-8.2).
     selection: Option<oppa::SelectionPaint>,
-    /// Caret bar overlay (Round 15.1, decision 312): the host's
-    /// focused caret, painted as a `caret` div on the field
-    /// container (same absolute device-px space as the plan's caret
-    /// `Rect`, converted to CSS px here; `None` derives
-    /// byte-identical markup to pre-15.1).
-    caret: Option<oppa::CaretPaint>,
+    /// Selection-handle overlay (decision 454): the host's live
+    /// handle pair, painted as bar + knob `handle` divs on the field
+    /// container (same absolute device-px space as the plan's handle
+    /// ops, converted to CSS px here; `None` derives byte-identical
+    /// markup to pre-454).
+    handles: Option<(oppa::HandlePaint, oppa::HandlePaint)>,
     /// Page chrome theme (theme contract round): the runner's host
     /// mode, published per frame like the overlays above. Drives
     /// the full-page `<body>` style and the change-only patch
@@ -106,6 +106,12 @@ pub struct DomBackend {
     /// node — no per-node patch, explicit `color:` still wins).
     /// Light default: pre-contract markup byte-identical.
     theme: ThemeMode,
+    /// Page chrome palette override (decision 477): custom tokens
+    /// published beside the mode; `None` resolves through the mode
+    /// exactly as before. Compared by value for the change-only
+    /// stanza (a tokens publish that changes nothing emits nothing
+    /// extra — same quiet rule as a same-mode set).
+    theme_tokens: Option<oppa::ThemeTokens>,
     /// Pending page-chrome flip (set by [`set_theme_mode`](Self::set_theme_mode)
     /// on change, consumed by [`sync`](Self::sync) as touched work —
     /// a bare toggle on an unthemed tree still emits its stanza).
@@ -115,6 +121,10 @@ pub struct DomBackend {
     /// empty, exactly like pre-contract; the first take on a Dark
     /// tree still emits its stanza).
     last_patched_theme: Option<ThemeMode>,
+    /// Last palette the patch channel carried (decision 477 twin of
+    /// the mode marker above — starts `None`, i.e. built-in Light,
+    /// the same implicit baseline).
+    last_patched_tokens: Option<oppa::ThemeTokens>,
     /// Stylesheet rules the patch channel already shipped (decision
     /// 392): `take_patch` drains `sheet.render_from(shipped_rules)`
     /// into the patch and advances this to the current count, so
@@ -167,10 +177,15 @@ impl DomBackend {
             pending_touched: 0,
             paints: 0,
             selection: None,
-            caret: None,
+            handles: None,
             theme: ThemeMode::Light,
+            theme_tokens: None,
             theme_dirty: false,
             last_patched_theme: Some(ThemeMode::Light),
+            // Decision 477 twin of the mode marker above: the
+            // implicit baseline is built-in Light (a settled Light
+            // tree takes empty, exactly like pre-477).
+            last_patched_tokens: Some(oppa::ThemeTokens::light()),
             shipped_rules: 0,
             snap: HashMap::new(),
             snap_roots: Vec::new(),
@@ -182,6 +197,13 @@ impl DomBackend {
 
     pub fn dpr(&self) -> f32 {
         self.dpr
+    }
+
+    /// Override-honoring palette for page chrome (decision 477):
+    /// custom tokens when published, else the built-in mode palette.
+    pub fn resolved_tokens(&self) -> oppa::ThemeTokens {
+        self.theme_tokens
+            .unwrap_or(oppa::ThemeTokens::of(self.theme))
     }
 
     /// Shares the app's image-key registry (round 4.4 — the same

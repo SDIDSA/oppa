@@ -23,14 +23,24 @@ pub enum FilePickerMode {
 /// dialogs leave it untouched, never clear it). Backends are
 /// runner-owned handles (the KitchenSink `ScriptedDialog` precedent
 /// — the shell seam returns `&mut` per pump, so runners hold and
-/// forward the handle; the control only wraps the request/poll
-/// protocol). Options ride per mode (each mode reads its own —
-/// `open_options` / `save_options` / `folder_options`).
+/// forward the handle; the control drives them through its own
+/// render-stable [`oppa::PickSession`] signal). Options ride per
+/// mode (each mode reads its own — `open_options` / `save_options`
+/// / `folder_options`).
 #[derive(Clone, Props)]
 pub struct FilePickerProps {
     pub path: Signal<Option<SharedString>>,
     pub mode: FilePickerMode,
     pub open_dialog: Option<std::rc::Rc<std::cell::RefCell<dyn oppa::FileDialog>>>,
+    /// The unified pick session driving `open_dialog` (decision
+    /// 429/431): one shared session per backend — apps forward the
+    /// stable handle beside the backend (the sink forwards
+    /// `SinkDialogs::open_session`), never a fresh one per render
+    /// (props rebuild every render; a fresh session resets to idle
+    /// and every press requests over the awaiting settlement).
+    /// `new()` seeds a fresh session, which suffices for
+    /// synchronously-settling backends.
+    pub open_session: std::rc::Rc<std::cell::RefCell<oppa::PickSession>>,
     pub save_dialog: Option<std::rc::Rc<std::cell::RefCell<dyn oppa::SaveFileDialog>>>,
     pub folder_dialog: Option<std::rc::Rc<std::cell::RefCell<dyn oppa::FolderDialog>>>,
     pub open_options: oppa::FilePickerOptions,
@@ -47,6 +57,7 @@ impl FilePickerProps {
             path,
             mode,
             open_dialog: None,
+            open_session: std::rc::Rc::new(std::cell::RefCell::new(oppa::PickSession::new())),
             save_dialog: None,
             folder_dialog: None,
             open_options: oppa::FilePickerOptions::default(),
@@ -61,25 +72,31 @@ impl FilePickerProps {
 
 /// Browse/save/folder trigger wrapping the dialog request/poll
 /// protocol (the ~30-lines-of-glue gap, closed): one Browse button,
-/// the controlled path line, and an instance-owned status caption.
-/// Press requests then polls (blocking shells settle synchronously
-/// — modal behavior, documented; async shells poll `None` as
-/// "still open…" and the next press re-polls — the
-/// level-triggered rule, so a dropped poll self-heals).
-/// `Some(Ok)` sets the path (open takes the first path and names
-/// the count past one); dismissal (`Ok(vec![])` / `Ok(None)`) and
-/// refusals surface in the caption and leave the path untouched
-/// (dismissal is data — decision 230, never a clear). A missing
-/// backend for the chosen mode refuses loudly (wiring bug, never a
-/// silent button). Disabled drops the trigger structurally
-/// (decision 213).
+/// the picked-path display, and an instance-owned status caption.
+/// The display is filename-first two-line (decision 430): the file
+/// name on line one, the parent directory wrapping beneath in
+/// secondary ink under the row's remaining width — a single
+/// absolute-path line overflows on phones. Bare names and `(none)`
+/// render one line.
+/// The open mode drives the unified [`oppa::PickSession`] (decision
+/// 429 — one press series per dialog on every platform: a press
+/// consumes an awaiting settlement instead of requesting over it,
+/// requests only when idle, and consumes each settlement once, so
+/// blocking shells settle in-press while async shells settle across
+/// presses with the same observable captions). Dismissal
+/// (`Ok(vec![])` / `Ok(None)`) and refusals surface in the caption
+/// and leave the path untouched (dismissal is data — decision 230,
+/// never a clear). A missing backend for the chosen mode refuses
+/// loudly (wiring bug, never a silent button). Disabled drops the
+/// trigger structurally (decision 213).
 pub fn FilePicker(ctx: &Ctx, props: &FilePickerProps) -> VNode {
     let status = ctx.signal(SharedString::from(""));
     let browse = {
         let (path, status) = (props.path.clone(), status.clone());
         let mode = props.mode;
-        let (open_dlg, save_dlg, folder_dlg) = (
+        let (open_dlg, open_session, save_dlg, folder_dlg) = (
             props.open_dialog.clone(),
+            props.open_session.clone(),
             props.save_dialog.clone(),
             props.folder_dialog.clone(),
         );
@@ -94,23 +111,12 @@ pub fn FilePicker(ctx: &Ctx, props: &FilePickerProps) -> VNode {
                     panic!("file picker in Open mode without an open backend — refused, never a silent button");
                 };
                 let mut dlg = dlg.borrow_mut();
-                dlg.request_open(open_opts.clone());
-                match dlg.poll_open() {
-                    None => status.set(SharedString::from("still open…")),
-                    Some(Ok(paths)) if paths.is_empty() => {
-                        status.set(SharedString::from("dismissed"))
-                    }
-                    Some(Ok(paths)) => {
-                        let first = paths[0].to_string_lossy().into_owned();
-                        path.set(Some(SharedString::from(first)));
-                        status.set(SharedString::from(if paths.len() > 1 {
-                            format!("picked {} files (first shown)", paths.len())
-                        } else {
-                            format!("picked {}", paths[0].display())
-                        }));
-                    }
-                    Some(Err(e)) => status.set(SharedString::from(format!("picker failed: {e}"))),
+                let mut session = open_session.borrow_mut();
+                let outcome = oppa::OpenOutcome::of(session.press(&mut *dlg, open_opts.clone()));
+                if let Some(first) = outcome.path_text() {
+                    path.set(Some(SharedString::from(first)));
                 }
+                status.set(SharedString::from(outcome.status()));
             }
             FilePickerMode::Save => {
                 let Some(dlg) = save_dlg.clone() else {
@@ -150,19 +156,49 @@ pub fn FilePicker(ctx: &Ctx, props: &FilePickerProps) -> VNode {
             height: 32.0,
             debug: SharedString::from(format!("{}-browse", props.debug.as_ref())),
             on_press: browse,
+            icon: None,
+            icon_size: 16.0,
         },
         Button,
     );
-    let path_text = match props.path.get() {
-        Some(p) => p,
-        None => SharedString::from("(none)"),
-    };
+    // Path display (decision 430): filename-first two lines — the
+    // file name (what was picked) on line one, the parent directory
+    // (where it lives) wrapping beneath in secondary ink. A single
+    // absolute-path line overflows the row on phones (observed
+    // `/data/user/0/…tapme.txt` running off-screen); the name is
+    // short by construction while the directory wraps under the
+    // row's remaining width (`fill_width` gives the text its finite
+    // wrap constraint — unconstrained text measures one overflowing
+    // line). `(none)` stays one line, as before.
+    let mut path_lines = vec![VNode::from(Text {
+        text: match props.path.get() {
+            Some(p) => {
+                let s: &str = &p;
+                let name = std::path::Path::new(s)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|n| !n.is_empty());
+                SharedString::from(name.unwrap_or(s))
+            }
+            None => SharedString::from("(none)"),
+        },
+        style: Text::body_secondary,
+    })];
+    if let Some(p) = props.path.get() {
+        let s: &str = &p;
+        if let Some(dir) = std::path::Path::new(s)
+            .parent()
+            .and_then(|d| d.to_str())
+            .filter(|d| !d.is_empty())
+        {
+            path_lines.push(VNode::from(Text::new(dir).size(12)));
+        }
+    }
     let mut row_children = vec![
         browse_btn,
-        VNode::from(Text {
-            text: path_text,
-            style: Text::body_secondary,
-        }),
+        Column::new()
+            .style(Style::new().fill_width())
+            .children(path_lines),
     ];
     if !status.get().to_string().is_empty() {
         row_children.push(with_ink(

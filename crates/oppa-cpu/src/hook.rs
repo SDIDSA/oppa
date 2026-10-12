@@ -47,8 +47,10 @@ pub fn install_paint_hook(
         // session (computed outside the retained borrow below).
         // Round 15.1: the caret bar rides the same hook (one overlay
         // rule — every presenter blinks from the host clock).
+        // Decision 454: the handle pair rides the same hook.
         builder.set_selection(host2.focused_selection_paint());
         builder.set_caret(host2.focused_caret_paint());
+        builder.set_handles(host2.focused_handles_paint());
         let plan = host2.with_retained_mut(|rec, styles| {
             host2.with_evaluator(|ev| builder.build_incremental_evaluated(rec, styles, ev, now))
         });

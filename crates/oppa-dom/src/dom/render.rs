@@ -183,33 +183,51 @@ impl DomBackend {
         out
     }
 
-    /// Caret bar div (Round 15.1): one absolutely-positioned `caret`
-    /// div trailing the `sel` divs (above the glyphs). The class list
-    /// carries `sel` too, so the bootstrap's trailing-`.sel` sweep
-    /// replaces stale carets through the unchanged `sels` patch
-    /// channel (no applier change, no new patch kind). Empty unless
-    /// this element is the focused field with a visible blink phase.
-    fn render_caret(&self, el: &DomElement) -> String {
-        let Some(r) = el.caret_rect else {
-            return String::new();
-        };
-        format!(
-            "<div class=\"sel caret\" style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;background:{};\"></div>",
-            css_num(r[0]),
-            css_num(r[1]),
-            css_num(r[2] - r[0]),
-            css_num(r[3] - r[1]),
-            esc(&el.caret_ink),
-        )
-    }
-
-    /// Trailing field decorations (Round 15.1): highlights first, then
-    /// the caret bar (background order, then the bar) — the single
-    /// HTML payload the `sels` patch channel carries, so selection
-    /// edits and blink toggles flow through one marker-class update.
+    /// Trailing field decorations (Round 15.1): highlights first,
+    /// then the handle pair (decision 454, topmost — the grab targets
+    /// paint above everything they anchor) — the single HTML payload
+    /// the `sels` patch channel carries, so selection edits flow
+    /// through one marker-class update. Decision 472: no caret bar —
+    /// verdict-(b) (locked #5) leaves the caret to the browser, so a
+    /// framework bar would double the native one (and misplace it:
+    /// wasm-measured geometry vs browser layout); the channel keeps
+    /// its shape, minus the bar.
     pub(crate) fn render_decorations(&self, el: &DomElement) -> String {
         let mut out = self.render_sel_rects(el);
-        out.push_str(&self.render_caret(el));
+        out.push_str(&self.render_handles(el));
+        out
+    }
+
+    /// Selection-handle divs (decision 454): one bar + one knob div
+    /// per live edge, in the field's text ink (the caret-ink rule).
+    /// Knobs are round via `border-radius:50%` (the plan `Circle` op's
+    /// CSS twin). Classes carry `sel` too, so the bootstrap's
+    /// trailing-`.sel` sweep replaces stale handles through the
+    /// unchanged `sels` patch channel (the caret-div precedent — no
+    /// applier change, no new patch kind). Empty unless this element
+    /// is the selected field's container.
+    fn render_handles(&self, el: &DomElement) -> String {
+        let mut out = String::new();
+        for bar in &el.handle_bars {
+            out.push_str(&format!(
+                "<div class=\"sel handle\" style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;background:{};\"></div>",
+                css_num(bar[0]),
+                css_num(bar[1]),
+                css_num(bar[2] - bar[0]),
+                css_num(bar[3] - bar[1]),
+                esc(&el.handle_ink),
+            ));
+        }
+        for knob in &el.handle_knobs {
+            out.push_str(&format!(
+                "<div class=\"sel handle\" style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;background:{};border-radius:50%;\"></div>",
+                css_num(knob[0]),
+                css_num(knob[1]),
+                css_num(knob[2] - knob[0]),
+                css_num(knob[3] - knob[1]),
+                esc(&el.handle_ink),
+            ));
+        }
         out
     }
 
@@ -244,34 +262,55 @@ impl DomBackend {
         out
     }
 
-    /// Caret bar decoration for the field `id` itself (Round 15.1):
-    /// the host-resolved absolute caret converted into the same
-    /// origin-relative CSS-px space as the highlight divs, plus its
-    /// text-ink fill. `None` unless `id` is the focused field with a
-    /// visible blink phase.
-    pub(crate) fn caret_decoration(
+    /// Selection-handle decorations for the field `id` itself
+    /// (decision 454): the host-resolved absolute handle pair
+    /// converted into the same origin-relative CSS-px space as the
+    /// highlight divs (bars `HANDLE_WIDTH_PX` wide, knobs round with
+    /// radius `HANDLE_KNOB_R_PX` below each line), plus the text-ink
+    /// fill. Empty unless `id` is the selected field with a
+    /// non-collapsed range.
+    pub(crate) fn handle_decorations(
         &self,
         id: NodeId,
         origin: (f32, f32),
-    ) -> Option<([f32; 4], String)> {
-        let c = self.caret?;
-        if c.field != id || c.h <= 0.0 {
-            return None;
+    ) -> (Vec<[f32; 4]>, Vec<[f32; 4]>, String) {
+        let Some((start, end)) = self.handles else {
+            return (Vec::new(), Vec::new(), String::new());
+        };
+        if start.field != id || end.field != id {
+            return (Vec::new(), Vec::new(), String::new());
         }
         let dpr = self.dpr.max(f32::EPSILON);
-        let w = oppa::CARET_WIDTH_PX / dpr;
-        if w <= 0.0 {
-            return None;
+        let w = oppa::HANDLE_WIDTH_PX / dpr;
+        let r = oppa::HANDLE_KNOB_R_PX / dpr;
+        if w <= 0.0 || r <= 0.0 {
+            return (Vec::new(), Vec::new(), String::new());
         }
-        Some((
-            [
-                (c.x - origin.0) / dpr,
-                (c.y - origin.1) / dpr,
-                (c.x - origin.0) / dpr + w,
-                (c.y + c.h - origin.1) / dpr,
-            ],
-            dom_hex(c.color),
-        ))
+        let mut bars = Vec::with_capacity(2);
+        let mut knobs = Vec::with_capacity(2);
+        for h in [start, end] {
+            if h.h <= 0.0 {
+                continue;
+            }
+            bars.push([
+                (h.x - origin.0) / dpr,
+                (h.y - origin.1) / dpr,
+                (h.x - origin.0) / dpr + w,
+                (h.y + h.h - origin.1) / dpr,
+            ]);
+            knobs.push([
+                (h.x - origin.0) / dpr - r,
+                (h.y + h.h + oppa::HANDLE_KNOB_R_PX - origin.1) / dpr - r,
+                (h.x - origin.0) / dpr + r,
+                (h.y + h.h + oppa::HANDLE_KNOB_R_PX - origin.1) / dpr + r,
+            ]);
+        }
+        let ink = if bars.is_empty() {
+            String::new()
+        } else {
+            dom_hex(start.color)
+        };
+        (bars, knobs, ink)
     }
 
     /// Highlight rects for the field `id` itself (Round 8.2): the

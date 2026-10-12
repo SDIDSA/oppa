@@ -33,6 +33,30 @@ impl DesktopLoop {
         handle
     }
 
+    /// Installs the open-dialog backend (decision 425 — the G12
+    /// shell seam's loop home: the platform glue calls this with
+    /// the OS backend; see the field docs for the headless
+    /// default).
+    pub fn set_open_dialog(&mut self, dialog: Rc<RefCell<dyn FileDialog>>) {
+        self.open_dialog = Some(dialog);
+    }
+
+    /// Borrows the open-dialog handle for app controls (decision
+    /// 425 — the `FilePicker` handle rule: runners forward this
+    /// `Rc` into control props so the trigger drives the same live
+    /// backend the loop owns). `None` means unsupported (never a
+    /// silent button).
+    pub fn open_dialog_handle(&self) -> Option<Rc<RefCell<dyn FileDialog>>> {
+        self.open_dialog.clone()
+    }
+
+    /// Whether an open-dialog backend is installed (decision 425 —
+    /// probe before prompting so apps can disable open UI on
+    /// platforms with no backend).
+    pub fn has_open_dialog(&self) -> bool {
+        self.open_dialog.is_some()
+    }
+
     /// Installs the shortcut clipboard (decision 246 — the platform
     /// glue calls this with the OS backend; see the field docs for
     /// the default).
@@ -48,50 +72,79 @@ impl DesktopLoop {
 
     /// Installs the save-dialog backend (Round 16.1, decision 314 —
     /// the platform glue calls this with the OS backend; see the
-    /// field docs for the headless default).
-    pub fn set_save_dialog(&mut self, dialog: Box<dyn SaveFileDialog>) {
+    /// field docs for the headless default). Stored shared (decision
+    /// 425) so [`DesktopLoop::save_dialog_handle`] forwards the live
+    /// backend to app controls.
+    pub fn set_save_dialog(&mut self, dialog: Rc<RefCell<dyn SaveFileDialog>>) {
         self.save_dialog = Some(dialog);
     }
 
     /// Installs the folder-picker backend (Round 16.1, decision 314
     /// — same glue rule as the save slot).
-    pub fn set_folder_dialog(&mut self, dialog: Box<dyn FolderDialog>) {
+    pub fn set_folder_dialog(&mut self, dialog: Rc<RefCell<dyn FolderDialog>>) {
         self.folder_dialog = Some(dialog);
     }
 
+    /// Borrows the save-dialog handle for app controls (decision 425
+    /// — same forwarding rule as
+    /// [`DesktopLoop::open_dialog_handle`]).
+    pub fn save_dialog_handle(&self) -> Option<Rc<RefCell<dyn SaveFileDialog>>> {
+        self.save_dialog.clone()
+    }
+
+    /// Borrows the folder-picker handle for app controls (decision
+    /// 425 — same forwarding rule as
+    /// [`DesktopLoop::open_dialog_handle`]).
+    pub fn folder_dialog_handle(&self) -> Option<Rc<RefCell<dyn FolderDialog>>> {
+        self.folder_dialog.clone()
+    }
+
+    /// Whether a save-dialog backend is installed (decision 422 —
+    /// probe before prompting so apps can disable save UI on
+    /// platforms with no backend instead of conflating "no backend"
+    /// with "user dismissed").
+    pub fn has_save_dialog(&self) -> bool {
+        self.save_dialog.is_some()
+    }
+
+    /// Whether a folder-picker backend is installed (decision 422 —
+    /// same probe rule as [`DesktopLoop::has_save_dialog`]).
+    pub fn has_folder_dialog(&self) -> bool {
+        self.folder_dialog.is_some()
+    }
+
     /// Prompts the user for a save destination (Round 16.1, decision
-    /// 314): blocks on the native modal dialog and returns the
-    /// picked path, or `None` when dismissed — or when no backend is
-    /// installed (headless/web stay graceful, never a panic).
-    /// Backend failures log loudly to stderr and settle `None` (the
-    /// clipboard-transient precedent — a wedged picker must not kill
-    /// the app; callers needing the reason drive the backend
-    /// directly).
-    pub fn save_file_dialog(&mut self, options: FileDialogOptions) -> Option<PathBuf> {
-        let dialog = self.save_dialog.as_mut()?;
-        match dialog.save(options) {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("oppa-app: save dialog failed: {e}");
-                None
-            }
-        }
+    /// 314; decision 422 makes the missing-backend case loud):
+    /// blocks on the native modal dialog and returns `Ok(Some)`
+    /// with the picked path, `Ok(None)` when dismissed, and
+    /// `Err` when no backend is installed
+    /// (`PickError::Unsupported` — headless/Web/Android, never a
+    /// silent `None`) or the backend fails (`PickError::Backend`,
+    /// propagated, never swallowed to `None`). Callers needing the
+    /// pre-422 graceful shape match `Ok(path)` explicitly.
+    pub fn save_file_dialog(
+        &mut self,
+        options: FileDialogOptions,
+    ) -> Result<Option<PathBuf>, PickError> {
+        let Some(dialog) = self.save_dialog.as_ref() else {
+            return Err(PickError::Unsupported("save dialog"));
+        };
+        dialog.borrow_mut().save(options)
     }
 
     /// Prompts the user for a destination directory (Round 16.1,
-    /// decision 314 — same settle rules as
-    /// [`DesktopLoop::save_file_dialog`]: picked path, dismissal
-    /// `None`, graceful headless `None`, loud-stderr backend
-    /// failures).
-    pub fn pick_folder_dialog(&mut self, options: FolderDialogOptions) -> Option<PathBuf> {
-        let dialog = self.folder_dialog.as_mut()?;
-        match dialog.pick(options) {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("oppa-app: folder dialog failed: {e}");
-                None
-            }
-        }
+    /// decision 314; decision 422 — same loud-missing rule as
+    /// [`DesktopLoop::save_file_dialog`]: picked path is
+    /// `Ok(Some)`, dismissal is `Ok(None)`, missing backend and
+    /// backend failures are `Err`).
+    pub fn pick_folder_dialog(
+        &mut self,
+        options: FolderDialogOptions,
+    ) -> Result<Option<PathBuf>, PickError> {
+        let Some(dialog) = self.folder_dialog.as_ref() else {
+            return Err(PickError::Unsupported("folder dialog"));
+        };
+        dialog.borrow_mut().pick(options)
     }
 
     /// Installs the OS theme reader (Round 16.2, decision 315 —

@@ -72,7 +72,7 @@ mod browser {
                 .unwrap_or_else(|| panic!("font file for {:?}", run.font_id));
             let bytes = std::fs::read(&face_path).expect("read font file");
             assert!(!bytes.is_empty());
-            let face = FaceBytes::checked(bytes, index, "m7 real face");
+            let face = FaceBytes::checked(bytes.into(), index, "m7 real face");
             if seen_ids.len() == 1 {
                 table.default = Some(face);
             } else {

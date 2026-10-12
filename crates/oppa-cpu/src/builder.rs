@@ -45,7 +45,9 @@ pub const FRAME_MASK: PassMask = PassMask::from_bits(
 /// session; `None` paints exactly the pre-8.2 plan, so every existing
 /// caller and oracle row is untouched until it opts in). The caret bar
 /// ([`CaretPaint`]) rides the same rule (Round 15.1, decision 312 —
-/// `None` paints exactly the pre-15.1 plan). The build theme
+/// `None` paints exactly the pre-15.1 plan). The selection handles
+/// ([`HandlePaint`](oppa::HandlePaint)) ride the same rule again
+/// (decision 454 — `None` paints exactly the pre-454 plan). The build theme
 /// ([`ThemeMode`]) rides the same rule again (theme contract round —
 /// unset paints exactly the pre-contract plan: Light's `text_primary`
 /// IS the contract [`oppa::render::INK`], so every existing caller
@@ -54,7 +56,9 @@ pub struct FramePlanBuilder {
     dpr: f32,
     selection: std::cell::Cell<Option<oppa::SelectionPaint>>,
     caret: std::cell::Cell<Option<CaretPaint>>,
+    handles: std::cell::Cell<Option<(oppa::HandlePaint, oppa::HandlePaint)>>,
     theme: std::cell::Cell<ThemeMode>,
+    theme_tokens: std::cell::Cell<Option<oppa::ThemeTokens>>,
 }
 
 impl FramePlanBuilder {
@@ -63,7 +67,9 @@ impl FramePlanBuilder {
             dpr: dpr.max(f32::EPSILON),
             selection: std::cell::Cell::new(None),
             caret: std::cell::Cell::new(None),
+            handles: std::cell::Cell::new(None),
             theme: std::cell::Cell::new(ThemeMode::Light),
+            theme_tokens: std::cell::Cell::new(None),
         }
     }
 
@@ -97,6 +103,19 @@ impl FramePlanBuilder {
         self.caret.get()
     }
 
+    /// Sets the build-scoped selection handles (decision 454 — the
+    /// host's focused handle pair; `None` disables handle emission).
+    /// Takes `&self` so paint hooks set it per frame without
+    /// re-creating the builder.
+    pub fn set_handles(&self, handles: Option<(oppa::HandlePaint, oppa::HandlePaint)>) {
+        self.handles.set(handles);
+    }
+
+    /// The current build-scoped handles (diagnostics/tests).
+    pub fn handles(&self) -> Option<(oppa::HandlePaint, oppa::HandlePaint)> {
+        self.handles.get()
+    }
+
     /// Sets the build theme (theme contract round — the runner's host
     /// theme mode, published per frame like the overlays above; unset
     /// means Light, which paints exactly the pre-contract plan).
@@ -104,6 +123,26 @@ impl FramePlanBuilder {
     /// re-creating the builder.
     pub fn set_theme_mode(&self, mode: ThemeMode) {
         self.theme.set(mode);
+    }
+
+    /// Sets the build palette override (decision 477 — the host's
+    /// override-honoring tokens, published per frame beside the mode;
+    /// `None` resolves through the mode exactly as before, so every
+    /// existing caller and oracle row is untouched until a runner
+    /// publishes custom tokens). Takes `&self` like every other
+    /// per-frame publish.
+    pub fn set_theme_tokens(&self, tokens: oppa::ThemeTokens) {
+        self.theme_tokens.set(Some(tokens));
+    }
+
+    /// Clears the build palette override (diagnostics/tests).
+    pub fn clear_theme_tokens(&self) {
+        self.theme_tokens.set(None);
+    }
+
+    /// The current build palette override (diagnostics/tests).
+    pub fn theme_tokens(&self) -> Option<oppa::ThemeTokens> {
+        self.theme_tokens.get()
     }
 
     /// The current build theme (diagnostics/tests).
@@ -205,7 +244,14 @@ impl FramePlanBuilder {
             open,
             eval,
             caret: self.caret(),
-            theme: self.theme_mode(),
+            handles: self.handles(),
+            // Decision 477: the palette snapshot rides beside the
+            // mode (override when a runner published custom tokens,
+            // else the built-in palette — unset paints exactly the
+            // pre-477 plan).
+            tokens: self
+                .theme_tokens()
+                .unwrap_or(oppa::ThemeTokens::of(self.theme_mode())),
             portal_phase: false,
             plan: &mut plan,
         };
@@ -240,10 +286,15 @@ struct Walker<'a> {
     /// Build-scoped caret bar (Round 15.1): snapshotted per build so
     /// the walk emits one bar even if the hook re-sets mid-build.
     caret: Option<CaretPaint>,
-    /// Build theme (theme contract round): snapshotted per build so
-    /// the default-ink fallback is one mode for the whole plan even
-    /// if the hook re-sets mid-build.
-    theme: ThemeMode,
+    /// Build-scoped selection handles (decision 454): snapshotted per
+    /// build like the caret above (one pair per plan, never doubled).
+    handles: Option<(oppa::HandlePaint, oppa::HandlePaint)>,
+    /// Build palette (decision 477): snapshotted per build
+    /// (override when published, else the built-in mode palette),
+    /// so custom tokens apply atomically to the whole plan even if
+    /// the hook re-sets mid-build; unset paints exactly the
+    /// pre-477 plan.
+    tokens: oppa::ThemeTokens,
     /// Overlay phase (Round 1.4): false walks the app tree skipping
     /// portal subtrees; true walks portal layers (top z-layer).
     portal_phase: bool,
@@ -319,7 +370,8 @@ impl<'a> Walker<'a> {
                         self.eval,
                         self.builder.selection(),
                         self.caret,
-                        self.theme,
+                        self.handles,
+                        self.tokens,
                     );
                     for child in &children {
                         self.walk(*child);

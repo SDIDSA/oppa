@@ -106,7 +106,14 @@ pub(crate) struct SessionInner {
     /// it — Shift+arrows accumulate natively instead of
     /// re-anchoring every press.
     pub(crate) shift_anchor: RefCell<Option<usize>>,
-    /// Multi-line wrap width in device px (Round 22.2, decision
+    /// Composition epoch (decision 461): bumped on every
+    /// composition-state change that carries no content signal
+    /// (begin/update/cancel — commits re-render through
+    /// `on_change`). Controls read it while rendering so live
+    /// preedit re-renders inline like committed text; sessions
+    /// that never compose never bump it, so idle fields render
+    /// exactly once.
+    pub(crate) composition_epoch: Signal<u64>,
     /// 332): `None` = single-line; `Some(w)` = multi-line with
     /// wrap width `w` (published per render by `TextArea` as
     /// `width - padding`; `TextInput` never sets it). Gates the
@@ -141,6 +148,7 @@ impl EditSession {
     /// the headless/test path.
     pub fn new(rt: Runtime, content: Signal<SharedString>) -> Self {
         let epoch = rt.now_secs();
+        let composition_epoch = rt.signal(0u64);
         Self {
             inner: Rc::new(SessionInner {
                 rt,
@@ -148,6 +156,7 @@ impl EditSession {
                 caret: RefCell::new(0),
                 sel: RefCell::new((0, 0)),
                 composition: RefCell::new(None),
+                composition_epoch,
                 undo: RefCell::new(Vec::new()),
                 redo: RefCell::new(Vec::new()),
                 last_op: RefCell::new(LastOp::Other),
@@ -227,6 +236,56 @@ impl EditSession {
         }
     }
 
+    /// Display text: what the laid leaf actually shows. Masked fields
+    /// render one bullet per composite char (decision 331 — the leaf
+    /// binds `display_text`, never content), so pointer-mapped
+    /// geometry must shape THIS, not the composite: cleartext byte
+    /// offsets never line up with bullet bytes (one bullet is 3
+    /// bytes) and cleartext advances never match bullet advances.
+    /// Unmasked sessions return the composite unchanged.
+    pub fn display_text(&self) -> String {
+        if !self.is_masked() {
+            return self.composite_text();
+        }
+        "•".repeat(self.composite_text().chars().count())
+    }
+
+    /// Display byte → composite byte (decision 458): char-index
+    /// mapping (masking is 1 char per char, composition included, so
+    /// both spaces share char ordinals). Identity when unmasked.
+    /// Out-of-range/mid-char inputs floor onto boundaries — platform
+    /// offsets never panic.
+    pub fn display_byte_to_composite(&self, byte: usize) -> usize {
+        if !self.is_masked() {
+            return caret::clamp_byte(&self.composite_text(), byte);
+        }
+        let display = self.display_text();
+        let byte = caret::clamp_byte(&display, byte);
+        let idx = display[..byte].chars().count();
+        self.composite_text()
+            .char_indices()
+            .nth(idx)
+            .map(|(b, _)| b)
+            .unwrap_or_else(|| self.composite_text().len())
+    }
+
+    /// Composite byte → display byte (decision 458): the reverse
+    /// mapping for host paint queries resolving caret/handles against
+    /// laid (display) clusters. Identity when unmasked.
+    pub fn composite_byte_to_display(&self, byte: usize) -> usize {
+        if !self.is_masked() {
+            return caret::clamp_byte(&self.composite_text(), byte);
+        }
+        let composite = self.composite_text();
+        let byte = caret::clamp_byte(&composite, byte);
+        let idx = composite[..byte].chars().count();
+        self.display_text()
+            .char_indices()
+            .nth(idx)
+            .map(|(b, _)| b)
+            .unwrap_or_else(|| self.display_text().len())
+    }
+
     /// Caret byte in composite coordinates.
     pub fn composite_caret_byte(&self) -> usize {
         match self.inner.composition.borrow().as_ref() {
@@ -291,6 +350,21 @@ impl EditSession {
         self.inner.composition.borrow().is_some()
     }
 
+    /// Composition epoch handle (decision 461): controls read (and
+    /// subscribe to) this while rendering so live preedit shows
+    /// inline. Bumped on begin/update/cancel — commits re-render
+    /// through `on_change`, so they never bump.
+    pub fn composition_epoch(&self) -> Signal<u64> {
+        self.inner.composition_epoch.clone()
+    }
+
+    /// Bumps the composition epoch (decision 461 — see
+    /// [`EditSession::composition_epoch`]).
+    pub(crate) fn bump_composition_epoch(&self) {
+        let next = self.inner.composition_epoch.get() + 1;
+        self.inner.composition_epoch.set(next);
+    }
+
     pub fn observable(&self) -> EditState {
         self.ensure_clamped();
         EditState {
@@ -313,32 +387,38 @@ impl EditSession {
 
     /// The candidate-window anchor for the current state, shaped through
     /// the installed shaper (device px). `None` for empty composites or
-    /// with no shaper installed (decision 207).
+    /// with no shaper installed (decision 207). Masked sessions shape
+    /// the display text (decision 458 — the laid leaf shows bullets).
     pub fn caret_rect(&self) -> Option<CaretRect> {
-        let composite = self.composite_text();
-        if composite.is_empty() {
+        let text = self.display_text();
+        if text.is_empty() {
             return None;
         }
-        let run = self.shape_cached(&composite)?;
-        Some(run.caret_rect(self.composite_caret_byte()))
+        let run = self.shape_cached(&text)?;
+        let caret = match self.is_masked() {
+            true => self.composite_byte_to_display(self.composite_caret_byte()),
+            false => self.composite_caret_byte(),
+        };
+        Some(run.caret_rect(caret))
     }
 
-    /// Leading-edge x (device px, composite-relative) of char `index` in
+    /// Leading-edge x (device px, display-relative) of char `index` in
     /// the current composite. `0.0` for empty composites or with no
-    /// shaper installed (spike parity, decision 207).
+    /// shaper installed (spike parity, decision 207). Masked sessions
+    /// resolve through the display text (decision 458).
     pub fn cluster_leading_x(&self, index: usize) -> f32 {
-        let composite = self.composite_text();
-        if composite.is_empty() {
+        let text = self.display_text();
+        if text.is_empty() {
             return 0.0;
         }
-        let Some(run) = self.shape_cached(&composite) else {
+        let Some(run) = self.shape_cached(&text) else {
             return 0.0;
         };
-        let byte = composite
+        let byte = text
             .char_indices()
             .nth(index)
             .map(|(b, _)| b)
-            .unwrap_or(composite.len());
+            .unwrap_or(text.len());
         run.caret_x(byte)
     }
 }

@@ -5,6 +5,13 @@ use oppa::*;
 // ---------------------------------------------------------------------------
 
 /// Button props (stateless — activation rides `on_press`).
+///
+/// Leading icon (decision 478): `icon` takes an [`ImageCache`](oppa::ImageCache)
+/// id (deposit SVGs once through [`deposit_svg_icon`](crate::deposit_svg_icon))
+/// painted at `icon_size` ahead of the label; the icon+label group
+/// stays centered as one unit. `None` (default) renders exactly the
+/// pre-478 tree — same box, same label, same tab order (the icon is
+/// decorative and handlerless, never a stop).
 #[derive(Clone)]
 pub struct ButtonProps {
     pub label: SharedString,
@@ -16,6 +23,8 @@ pub struct ButtonProps {
     /// stepper separately).
     pub debug: SharedString,
     pub on_press: Action,
+    pub icon: Option<oppa::ImageId>,
+    pub icon_size: f32,
 }
 
 impl Props for ButtonProps {}
@@ -29,6 +38,8 @@ impl ButtonProps {
             height: 32.0,
             debug: SharedString::from("button"),
             on_press: action(on_press),
+            icon: None,
+            icon_size: 16.0,
         }
     }
 
@@ -45,6 +56,22 @@ impl ButtonProps {
 
     pub fn debug(mut self, debug: &str) -> Self {
         self.debug = SharedString::from(debug);
+        self
+    }
+
+    /// Leading icon slot (decision 478): `ImageCache` id painted at
+    /// `icon_size` (default 16px — override with
+    /// [`icon_size`](Self::icon_size)); `None` (default) keeps the
+    /// exact pre-478 tree.
+    pub fn icon(mut self, image: oppa::ImageId) -> Self {
+        self.icon = Some(image);
+        self
+    }
+
+    /// Icon render size in px (only read when
+    /// [`icon`](Self::icon) is set).
+    pub fn icon_size(mut self, px: f32) -> Self {
+        self.icon_size = px;
         self
     }
 }
@@ -95,17 +122,44 @@ pub fn Button(ctx: &Ctx, props: &ButtonProps) -> VNode {
         Some(press) => builder.on_press(move || press()),
         None => builder,
     };
+    // Decision 478: with an icon, the label row centers the
+    // icon+label group as one unit (the icon is decorative and
+    // handlerless); without one this whole branch is skipped —
+    // same box, same label, same tab order.
+    let mut label_style = Style::new()
+        .size(props.width, props.height)
+        .justify_content(JustifyContent::Center)
+        .align_items(AlignItems::Center);
+    if props.icon.is_some() {
+        label_style = label_style.gap(8);
+    }
     builder.child(
-        Row("button-label")
-            .style(
-                Style::new()
-                    .size(props.width, props.height)
-                    .justify_content(JustifyContent::Center)
-                    .align_items(AlignItems::Center),
-            )
-            .child(VNode::from(Text {
-                text: props.label.clone(),
-                style: Text::body_secondary,
-            })),
+        Row("button-label").style(label_style).children(
+            props
+                .icon
+                .map(|image| {
+                    Div(format!("{}-icon", props.debug.as_ref()).as_str())
+                        .style(
+                            Style::new()
+                                .size(props.icon_size, props.icon_size)
+                                .align_items(AlignItems::Center)
+                                .justify_content(JustifyContent::Center),
+                        )
+                        .child(crate::ImageView(
+                            ctx,
+                            &crate::ImageViewProps {
+                                image,
+                                size: props.icon_size,
+                                radius: 0.0,
+                                alt: SharedString::from(""),
+                            },
+                        ))
+                })
+                .into_iter()
+                .chain([VNode::from(Text {
+                    text: props.label.clone(),
+                    style: Text::body_secondary,
+                })]),
+        ),
     )
 }

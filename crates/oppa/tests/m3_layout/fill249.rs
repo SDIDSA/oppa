@@ -80,3 +80,61 @@ fn margins_offset_child_and_expand_container() {
     assert!(approx(bb.w, 126.0), "width carries margins, got {}", bb.w);
     assert!(approx(bb.h, 52.0), "height carries margins, got {}", bb.h);
 }
+
+/// Decision 476: a root carrying `fill_height` resolves
+/// viewport-tall (the engine hands the root the live viewport
+/// height, mirroring the width channel) — flex shares and
+/// justification engage with real leftover, so a SpaceBetween
+/// page centers its middle child on the true viewport center
+/// without a Portal. Rig viewport is 800x600: top 50 + mid 100 +
+/// bottom 50 → mid y = 50 + (600-200)/2 = 250, center 300.
+#[test]
+fn root_fill_height_centers_against_viewport() {
+    let (fake, calls) = FakeText::new();
+    let mut rig = Rig::new(fake, calls);
+    let tree: VNode = Column::new()
+        .style(
+            Style::new()
+                .fill_width()
+                .fill_height()
+                .align_items(AlignItems::Center)
+                .justify_content(JustifyContent::SpaceBetween),
+        )
+        .children([
+            Div("top").style(Style::new().size(100, 50)).build(),
+            Div("mid").style(Style::new().size(100, 100)).build(),
+            Div("bot").style(Style::new().size(100, 50)).build(),
+        ]);
+    rig.layout(tree);
+    let m = LayoutLedger::committed(&rig.rec, rig.only("mid")).expect("mid");
+    assert!(approx(m.y, 250.0), "middle centered, got {}", m.y);
+    assert!(
+        approx(m.y + m.h / 2.0, 300.0),
+        "middle center is viewport center, got {}",
+        m.y + m.h / 2.0
+    );
+}
+
+/// Decision 476 pin: a root WITHOUT `fill_height` keeps the old
+/// packing (content height, zero leftover) — the hint is gated on
+/// the fill flag, never a silent size invention.
+#[test]
+fn root_without_fill_height_packs_top() {
+    let (fake, calls) = FakeText::new();
+    let mut rig = Rig::new(fake, calls);
+    let tree: VNode = Column::new()
+        .style(
+            Style::new()
+                .fill_width()
+                .align_items(AlignItems::Center)
+                .justify_content(JustifyContent::SpaceBetween),
+        )
+        .children([
+            Div("top").style(Style::new().size(100, 50)).build(),
+            Div("mid").style(Style::new().size(100, 100)).build(),
+            Div("bot").style(Style::new().size(100, 50)).build(),
+        ]);
+    rig.layout(tree);
+    let m = LayoutLedger::committed(&rig.rec, rig.only("mid")).expect("mid");
+    assert!(approx(m.y, 50.0), "middle packs under top, got {}", m.y);
+}

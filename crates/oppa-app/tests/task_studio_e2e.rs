@@ -6,6 +6,7 @@
 //! CPU paint, GPU-twin retention, and DOM parity along the way
 //! with 0 errors.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use oppa::{
@@ -353,7 +354,7 @@ fn task_studio_end_to_end() {
     let path = dir.join("tasks.json");
     let mut dialog = oppa::ScriptedSaveDialog::new();
     dialog.push_response(Some(path.clone()));
-    rig.loop_.set_save_dialog(Box::new(dialog));
+    rig.loop_.set_save_dialog(Rc::new(RefCell::new(dialog)));
     let picked = rig
         .loop_
         .save_file_dialog(oppa::FileDialogOptions {
@@ -361,6 +362,7 @@ fn task_studio_end_to_end() {
             default_name: h.export_name.get().to_string(),
             ..Default::default()
         })
+        .expect("dialog backend present")
         .expect("dialog settles");
     assert_eq!(picked, path);
     std::fs::write(&path, h.export_out.get().to_string()).expect("writes");

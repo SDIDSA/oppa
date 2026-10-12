@@ -129,6 +129,8 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
         height: 32.0,
         debug: SharedString::from("modal-cancel"),
         on_press: dismiss_action.clone(),
+        icon: None,
+        icon_size: 16.0,
     };
     let confirm_props = ButtonProps {
         label: props.confirm_label.clone(),
@@ -137,6 +139,8 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
         height: 32.0,
         debug: SharedString::from("modal-confirm"),
         on_press: confirm_action,
+        icon: None,
+        icon_size: 16.0,
     };
     let mut card_style = Style::new()
         .bg(t.surface)

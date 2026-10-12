@@ -145,6 +145,7 @@ mod basic;
 mod dpr_gpu;
 mod editing;
 mod ime;
+mod ladder;
 mod paint;
 mod repaint;
 mod scroll;

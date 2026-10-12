@@ -21,8 +21,31 @@ pub fn gpu_caps() -> Caps {
     Caps {
         max_layers: 64,
         blur_backdrop: false,
+        // Decision 479: honest per-context — a fresh backend with no
+        // device reports no MSAA; `caps()` below upgrades this once a
+        // multisampling context exists (the DOM `true` precedent).
         msaa: false,
         text_as_paths: false,
+    }
+}
+
+/// Preferred multisample count (decision 479): 4x area coverage on
+/// every adapter whose render format supports it, stepping down
+/// through 2x to 1 (direct rendering, pre-479 pixels) where the
+/// driver offers less — SwiftShader-class adapters stay functional
+/// instead of failing texture creation loudly.
+pub const MSAA_PREFERRED_SAMPLES: u32 = 4;
+
+fn msaa_sample_count(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> u32 {
+    use wgpu::TextureFormatFeatureFlags as F;
+    let flags = adapter.get_texture_format_features(format).flags;
+    let resolve = flags.contains(F::MULTISAMPLE_RESOLVE);
+    if resolve && flags.contains(F::MULTISAMPLE_X4) {
+        4
+    } else if resolve && flags.contains(F::MULTISAMPLE_X2) {
+        2
+    } else {
+        1
     }
 }
 
@@ -48,6 +71,10 @@ pub struct GpuCtx {
     pub pipelines_present: Option<Pipelines>,
     pub atlas: GlyphAtlas,
     pub adapter_info: String,
+    /// Single-slot MSAA resolve source (decision 479): recreated
+    /// when the extent/format moves; presents hit it every frame,
+    /// so steady state allocates nothing.
+    pub msaa: Option<(wgpu::Texture, u32, u32, wgpu::TextureFormat)>,
 }
 
 pub struct GpuBackend {
@@ -79,14 +106,22 @@ impl GpuBackend {
         }
     }
 
-    pub fn set_font_bytes(&mut self, bytes: Vec<u8>, index: u32) {
+    pub fn set_font_bytes(&mut self, bytes: std::sync::Arc<[u8]>, index: u32) {
         self.faces.default = Some(FaceBytes::checked(bytes, index, "default"));
     }
 
-    pub fn set_font_for(&mut self, id: FontId, bytes: Vec<u8>, index: u32) {
+    pub fn set_font_for(&mut self, id: FontId, bytes: std::sync::Arc<[u8]>, index: u32) {
         self.faces
             .explicit
             .insert(id, FaceBytes::checked(bytes, index, "explicit"));
+    }
+
+    /// Active multisample count once a context exists (decision 479
+    /// — adapter-probed per render format: 4 on desktop rows,
+    /// graceful less-or-1 elsewhere; `None` headless).
+    /// Diagnostics/tests.
+    pub fn sample_count(&self) -> Option<u32> {
+        self.gpu.as_ref().map(|g| g.pipelines_rgba.sample_count)
     }
 
     pub fn insert_image(&mut self, id: ImageId, width: u32, height: u32, rgba_straight: Vec<u8>) {
@@ -240,7 +275,8 @@ impl GpuBackend {
         adapter: wgpu::Adapter,
         info: String,
     ) -> Result<String, BackendError> {
-        let pipelines_rgba = Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let sample_count = msaa_sample_count(&adapter, wgpu::TextureFormat::Rgba8Unorm);
+        let pipelines_rgba = Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm, sample_count);
         let atlas = GlyphAtlas::new(&device, &pipelines_rgba.texture_bind_group_layout);
 
         let mut gpu_images = HashMap::new();
@@ -266,6 +302,7 @@ impl GpuBackend {
             pipelines_present: None,
             atlas,
             adapter_info: info.clone(),
+            msaa: None,
         });
         Ok(info)
     }
@@ -278,7 +315,8 @@ impl GpuBackend {
         let (device, queue, adapter, info) =
             pollster::block_on(init_gpu_for_surface(instance, surface))
                 .map_err(BackendError::UnsupportedOp)?;
-        let pipelines_rgba = Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let sample_count = msaa_sample_count(&adapter, wgpu::TextureFormat::Rgba8Unorm);
+        let pipelines_rgba = Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm, sample_count);
         let atlas = GlyphAtlas::new(&device, &pipelines_rgba.texture_bind_group_layout);
 
         let mut gpu_images = HashMap::new();
@@ -304,6 +342,7 @@ impl GpuBackend {
             pipelines_present: None,
             atlas,
             adapter_info: info.clone(),
+            msaa: None,
         });
         Ok(info)
     }
@@ -353,7 +392,8 @@ impl GpuBackend {
         );
 
         if format != wgpu::TextureFormat::Rgba8Unorm {
-            gpu.pipelines_present = Some(Pipelines::new(&gpu.device, format));
+            let sample_count = msaa_sample_count(&gpu.adapter, format);
+            gpu.pipelines_present = Some(Pipelines::new(&gpu.device, format, sample_count));
         }
 
         Ok(format)
@@ -409,11 +449,18 @@ impl GpuBackend {
         });
         let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let count = gpu.pipelines_rgba.sample_count;
+        let msaa_view = msaa_render_view(gpu, w, h, wgpu::TextureFormat::Rgba8Unorm, count);
+        let (render_view, resolve_view) = match &msaa_view {
+            Some(v) => (v, Some(&target_view)),
+            None => (&target_view, None),
+        };
         execute_render(
             &gpu.device,
             &gpu.queue,
             &gpu.pipelines_rgba,
-            &target_view,
+            render_view,
+            resolve_view,
             &gpu.atlas,
             &self.gpu_images,
             &self.collector,
@@ -481,11 +528,18 @@ impl GpuBackend {
         });
         let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let count = gpu.pipelines_rgba.sample_count;
+        let msaa_view = msaa_render_view(gpu, w, h, wgpu::TextureFormat::Rgba8Unorm, count);
+        let (render_view, resolve_view) = match &msaa_view {
+            Some(v) => (v, Some(&target_view)),
+            None => (&target_view, None),
+        };
         execute_render(
             &gpu.device,
             &gpu.queue,
             &gpu.pipelines_rgba,
-            &target_view,
+            render_view,
+            resolve_view,
             &gpu.atlas,
             &self.gpu_images,
             &self.collector,
@@ -541,6 +595,23 @@ impl GpuBackend {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Decision 479: the resolve texture matches the bound
+        // pipelines' count and the swapchain format (resolve
+        // demands both equalities — mismatches fail pass
+        // validation loudly, never render silently wrong).
+        let count = if dst_format == wgpu::TextureFormat::Rgba8Unorm {
+            gpu.pipelines_rgba.sample_count
+        } else {
+            gpu.pipelines_present
+                .as_ref()
+                .unwrap_or(&gpu.pipelines_rgba)
+                .sample_count
+        };
+        let msaa_view = msaa_render_view(gpu, desc.width_px, desc.height_px, dst_format, count);
+        let (render_view, resolve_view) = match &msaa_view {
+            Some(v) => (v, Some(&dst_view)),
+            None => (&dst_view, None),
+        };
         let pipelines = if dst_format == wgpu::TextureFormat::Rgba8Unorm {
             &gpu.pipelines_rgba
         } else {
@@ -566,7 +637,8 @@ impl GpuBackend {
             &gpu.device,
             &gpu.queue,
             pipelines,
-            &dst_view,
+            render_view,
+            resolve_view,
             &gpu.atlas,
             &self.gpu_images,
             &self.collector,
@@ -602,7 +674,18 @@ impl RendererBackend for GpuBackend {
     }
 
     fn caps(&self) -> Caps {
-        gpu_caps()
+        let mut caps = gpu_caps();
+        // Decision 479: report live MSAA once a multisampling
+        // context exists (fresh backends stay `false`, so the
+        // pre-479 caps test pins unchanged).
+        if self
+            .gpu
+            .as_ref()
+            .is_some_and(|g| g.pipelines_rgba.sample_count > 1)
+        {
+            caps.msaa = true;
+        }
+        caps
     }
 
     fn create_surface(&mut self, desc: SurfaceDesc) -> Result<SurfaceId, BackendError> {
@@ -773,12 +856,54 @@ async fn init_gpu_for_surface(
     Ok((device, queue, adapter, info_str))
 }
 
+/// Multisampled render view for one frame (decision 479):
+/// `None` when `count` is 1 (direct rendering, pre-479 pixels —
+/// the graceful-less-or-1 probe arm); otherwise the single-slot
+/// cache (recreated on extent/format moves, reused on hits) in the
+/// resolve target's own format (resolve demands format equality).
+/// Unsupported counts fail texture creation loudly (never a
+/// silent direct render under an MSAA pipeline — that mismatch
+/// would fail pass validation instead).
+fn msaa_render_view(
+    gpu: &mut GpuCtx,
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    count: u32,
+) -> Option<wgpu::TextureView> {
+    if count <= 1 {
+        return None;
+    }
+    let reuse = matches!(&gpu.msaa, Some((_, cw, ch, cf)) if *cw == w && *ch == h && *cf == format);
+    if !reuse {
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("oppa_msaa_resolve_src"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: count,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        gpu.msaa = Some((texture, w, h, format));
+    }
+    gpu.msaa
+        .as_ref()
+        .map(|(texture, ..)| texture.create_view(&wgpu::TextureViewDescriptor::default()))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipelines: &Pipelines,
-    target_view: &wgpu::TextureView,
+    render_view: &wgpu::TextureView,
+    resolve_view: Option<&wgpu::TextureView>,
     atlas: &GlyphAtlas,
     gpu_images: &HashMap<ImageId, GpuImage>,
     collector: &BatchCollector,
@@ -872,8 +997,8 @@ fn execute_render(
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("oppa_main_render_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target_view,
-                resolve_target: None,
+                view: render_view,
+                resolve_target: resolve_view,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu_color(background)),
                     store: wgpu::StoreOp::Store,

@@ -1,0 +1,34 @@
+[package]
+name = "login"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Portable login demo: one UI (src/app.rs) on desktop + web (+ Android mount)"
+
+[[bin]]
+name = "login-desktop"
+path = "src/main.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+oppa = { path = "../../crates/oppa" }
+oppa-controls = { path = "../../crates/oppa-controls" }
+
+# Browser binding only (wasm-bindgen emits JS imports that cannot
+# link into native binaries — Android/desktop builds never see it).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+oppa-web = { path = "../../crates/oppa-web" }
+wasm-bindgen = "=0.2.128"
+
+# Android entry only (NativeActivity lifecycle + engine loop live in
+# the runner — desktop/web builds never see it).
+[target.'cfg(target_os = "android")'.dependencies]
+oppa-android-runner = { path = "../../crates/oppa-android-runner" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+oppa-app = { path = "../../crates/oppa-app" }
+
+[workspace]

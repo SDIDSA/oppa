@@ -273,6 +273,130 @@ fn plain_app(_ctx: &Ctx, _props: &PlainProps) -> VNode {
         )
 }
 
+/// Opting out of the CPU paint skips the pixmap while the GPU twin
+/// keeps encoding (decision 436): after `set_cpu_paint(false)` a
+/// damaging remount leaves the pixmap bytes untouched and the paint
+/// counter still (the twin encodes regardless — it has no opt-out);
+/// `disable_gpu` repaints the CPU catch-up so the fallback never
+/// serves stale pixels.
+#[test]
+fn cpu_paint_opt_out_skips_pixmap_keeps_twin() {
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    loop_.mount("Plain", PlainProps, plain_app);
+    loop_.enable_gpu(wgpu::PresentMode::Fifo);
+    let damage = loop_.repaint().expect("gpu repaint works");
+    assert!(damage > 0);
+    assert!(loop_.gpu_retained_op_count().unwrap_or(0) > 0);
+    let pixmap_before = loop_.rgba8().expect("pixels").to_vec();
+    let paints_before = loop_.cpu_paints_total();
+    assert!(paints_before > 0);
+    // Same root name, red plate: reconciler updates in place (dirty).
+    loop_.mount("Plain", PlainProps, red_app);
+    loop_.scene_mut().set_cpu_paint(false);
+    let damage = loop_.repaint().expect("repaint with cpu opted out works");
+    assert!(damage > 0, "the recolor damages");
+    assert_eq!(
+        loop_.cpu_paints_total(),
+        paints_before,
+        "opted-out repaint never reaches CpuBackend::paint"
+    );
+    assert_eq!(
+        loop_.rgba8().expect("pixels"),
+        pixmap_before.as_slice(),
+        "skipped paint leaves the pixmap bytes untouched"
+    );
+    assert!(
+        loop_.gpu_retained_op_count().unwrap_or(0) > 0,
+        "twin still holds an encoded scene"
+    );
+    loop_
+        .disable_gpu()
+        .expect("disable repaints the cpu catch-up");
+    assert_eq!(
+        loop_.cpu_paints_total(),
+        paints_before + 1,
+        "fallback repaints the pixmap exactly once"
+    );
+    assert_ne!(
+        loop_.rgba8().expect("pixels"),
+        pixmap_before.as_slice(),
+        "catch-up repaint picks up the red plate"
+    );
+}
+
+/// Desktop GPU-serving runs skip the CPU pixmap too (decision
+/// 473 — the decision-436 opt-out extended past Android): after the
+/// bring-up shape (`enable_gpu` + `set_cpu_paint(false)`) damaging
+/// repaints leave the pixmap bytes and the paint counter still, and
+/// `refresh_cpu_pixmap` repaints the fallback exactly once without
+/// leaving GPU mode (counter +1, bytes catch up, still GPU-active
+/// so the next frame retries the swapchain).
+#[test]
+fn desktop_cpu_paint_opt_out_skips_and_refreshes_once() {
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    loop_.mount("Plain", PlainProps, plain_app);
+    loop_.enable_gpu(wgpu::PresentMode::Fifo);
+    loop_.repaint().expect("gpu repaint works");
+    let pixmap_before = loop_.rgba8().expect("pixels").to_vec();
+    let paints_before = loop_.cpu_paints_total();
+    assert!(paints_before > 0);
+    // Bring-up shape: GPU primary takes over, CPU pixmap retires.
+    loop_.scene_mut().set_cpu_paint(false);
+    loop_.mount("Plain", PlainProps, red_app);
+    loop_.repaint().expect("repaint with cpu opted out works");
+    assert_eq!(
+        loop_.cpu_paints_total(),
+        paints_before,
+        "opted-out repaint never reaches CpuBackend::paint"
+    );
+    assert_eq!(
+        loop_.rgba8().expect("pixels"),
+        pixmap_before.as_slice(),
+        "skipped paint leaves the pixmap bytes untouched"
+    );
+    // Transient-failure shape: one fresh blit source, GPU mode kept.
+    loop_
+        .scene_mut()
+        .refresh_cpu_pixmap()
+        .expect("catch-up repaint works");
+    assert_eq!(
+        loop_.cpu_paints_total(),
+        paints_before + 1,
+        "refresh repaints the pixmap exactly once"
+    );
+    assert_ne!(
+        loop_.rgba8().expect("pixels"),
+        pixmap_before.as_slice(),
+        "catch-up repaint picks up the red plate"
+    );
+    assert!(loop_.is_gpu(), "refresh never leaves GPU mode");
+    // Second refresh with the paint back on is a quiet no-op.
+    loop_.scene_mut().set_cpu_paint(true);
+    loop_
+        .scene_mut()
+        .refresh_cpu_pixmap()
+        .expect("no-op refresh works");
+    assert_eq!(
+        loop_.cpu_paints_total(),
+        paints_before + 1,
+        "refresh with the paint on touches nothing"
+    );
+}
+
+/// Red-plate twin of [`plain_app`] (same node names, so remounting
+/// over it updates in place instead of rebuilding).
+fn red_app(_ctx: &Ctx, _props: &PlainProps) -> VNode {
+    Div("root")
+        .style(Style::new().size(200, 150).bg(Color(0xFF_FF_FF)))
+        .child(
+            Div("plate")
+                .style(Style::new().size(96, 32).bg(Color(0xCC_22_22)))
+                .build(),
+        )
+}
+
 /// Enabling GPU paints the same frame plan into both backends
 /// (CPU pixmap stays the fallback source); disabling returns to
 /// CPU-only without losing the viewport. A bare `enable_gpu` with
@@ -295,7 +419,9 @@ fn enable_gpu_paints_both_backends_then_disables() {
         "GPU twin encodes the same plan"
     );
     assert_eq!(loop_.rgba8().expect("pixels").len(), 200 * 150 * 4);
-    loop_.disable_gpu();
+    loop_
+        .disable_gpu()
+        .expect("disable repaints the cpu catch-up");
     assert!(!loop_.is_gpu());
     assert_eq!(loop_.gpu_present_mode(), None);
     loop_.repaint().expect("cpu repaint after disable works");
@@ -317,7 +443,9 @@ fn enable_gpu_paints_and_retains() {
         loop_.gpu_retained_op_count().unwrap_or(0) > 0,
         "GPU backend encodes and retains ops"
     );
-    loop_.disable_gpu();
+    loop_
+        .disable_gpu()
+        .expect("disable repaints the cpu catch-up");
     assert!(!loop_.is_gpu());
     assert_eq!(loop_.renderer_name(), "cpu");
 }

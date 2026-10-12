@@ -114,6 +114,7 @@ impl ImeCompositionHandler for EditSession {
         *self.inner.sel.borrow_mut() = (start, start);
         self.break_run();
         self.note_caret_activity();
+        self.bump_composition_epoch();
     }
 
     fn composition_updated(&mut self, composition: &str, caret_byte: usize) {
@@ -134,6 +135,7 @@ impl ImeCompositionHandler for EditSession {
         *self.inner.shaped_cache.borrow_mut() = None;
         self.break_run();
         self.note_caret_activity();
+        self.bump_composition_epoch();
     }
 
     fn composition_committed(&mut self, committed: &str) {
@@ -150,6 +152,7 @@ impl ImeCompositionHandler for EditSession {
             *self.inner.caret.borrow_mut() = c.start;
             *self.inner.sel.borrow_mut() = (c.start, c.start);
             self.note_caret_activity();
+            self.bump_composition_epoch();
         }
         self.break_run();
     }

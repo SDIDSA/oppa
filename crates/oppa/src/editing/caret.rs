@@ -674,6 +674,67 @@ impl EditSession {
         self.note_caret_activity();
     }
 
+    /// Absolute range set in committed bytes (decision 449): the
+    /// proxy-selection report path (Android selection handles move
+    /// the proxy buffer, and the session follows so copy/cut read the
+    /// visible span). Ordered like `drag_x` with the caret on the
+    /// reported end (handle-drag direction tracks); OOB/mid-char
+    /// inputs floor onto boundaries (the `clamp_byte` rule — platform
+    /// offsets never panic). No undo push (selection-only, like every
+    /// caret op). Quiet no-op while composing (the composition owns
+    /// the field — a handle move then self-heals on commit through
+    /// the normal mirror, stated).
+    pub fn select_range(&self, start_byte: usize, end_byte: usize) {
+        if self.is_composing() {
+            return;
+        }
+        self.ensure_clamped();
+        let text = self.content_text();
+        let (a, b) = (clamp_byte(&text, start_byte), clamp_byte(&text, end_byte));
+        *self.inner.sel.borrow_mut() = (a.min(b), a.max(b));
+        *self.inner.caret.borrow_mut() = b;
+        self.clear_caret_anchors();
+        self.break_run();
+        self.note_caret_activity();
+        self.inner.rt.request_frame();
+    }
+
+    /// Renderer-drawn handle drag (decision 454): moves one selection
+    /// edge to `byte` (floored to a char boundary — platform offsets
+    /// never panic), keeping the other edge anchored; the caret
+    /// follows the dragged edge (unlike `select_range`, which parks
+    /// it on the reported end). Edges never cross: dragging past the
+    /// anchor collapses onto it. No undo push (selection-only).
+    /// Quiet no-op while composing or with a collapsed selection
+    /// (handles don't exist then — the Down could never have armed
+    /// one, so this is the stale-gesture guard, never a live path).
+    pub fn move_handle_edge(&self, edge: crate::input::HandleEdge, byte: usize) {
+        if self.is_composing() {
+            return;
+        }
+        self.ensure_clamped();
+        let (a, b) = ordered(*self.inner.sel.borrow());
+        if a == b {
+            return;
+        }
+        let text = self.content_text();
+        let byte = clamp_byte(&text, byte);
+        let anchor = match edge {
+            crate::input::HandleEdge::Start => b,
+            crate::input::HandleEdge::End => a,
+        };
+        let byte = match edge {
+            crate::input::HandleEdge::Start => byte.min(anchor),
+            crate::input::HandleEdge::End => byte.max(anchor),
+        };
+        *self.inner.sel.borrow_mut() = (byte.min(anchor), byte.max(anchor));
+        *self.inner.caret.borrow_mut() = byte;
+        self.clear_caret_anchors();
+        self.break_run();
+        self.note_caret_activity();
+        self.inner.rt.request_frame();
+    }
+
     /// Shapes `text` through the installed shaper. `None` with no shaper
     /// (graceful — decision 207); panics loudly when an installed shaper
     /// fails on non-empty text (backend contract violation).
@@ -694,15 +755,29 @@ impl EditSession {
         Some(run)
     }
 
-    /// x (device px, composite-relative) → composite byte via the
+    /// x (device px, display-relative) → composite byte via the
     /// cluster-midpoint leading-edge rule. `None` with no shaper.
+    /// Masked sessions shape the display text and map back to
+    /// composite bytes (decision 458 — the laid leaf shows bullets,
+    /// so cleartext bytes never line up with laid clusters).
     pub(crate) fn hit_test(&self, x: f32) -> Option<usize> {
-        let composite = self.composite_text();
-        if composite.is_empty() {
+        let display = self.display_text();
+        if display.is_empty() {
             return Some(0);
         }
-        let run = self.shape_cached(&composite)?;
-        Some(run.byte_offset_for_x(x))
+        let run = self.shape_cached(&display)?;
+        Some(self.display_byte_to_composite(run.byte_offset_for_x(x)))
+    }
+
+    /// Display-relative x → composite byte for handle drags
+    /// (decision 454): the public twin of the crate-internal
+    /// `hit_test` (controls map the capture point into session-local
+    /// x, then stream the edge through `move_handle_edge`). `None`
+    /// with no shaper (graceful — pointer ops never panic setup
+    /// state); out-of-range x clamps to the nearest edge through the
+    /// shaper's offset rule, never `None`.
+    pub fn byte_at_x(&self, x: f32) -> Option<usize> {
+        self.hit_test(x)
     }
 
     /// The spike's word rule (spike parity, OQ-G1-3): contiguous

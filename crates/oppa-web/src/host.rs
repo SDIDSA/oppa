@@ -14,8 +14,8 @@
 use std::rc::Rc;
 
 use oppa::{
-    CaretPaint, Color, ComponentHost, Ctx, ImageCache, MockClock, RendererBackend, SelectionPaint,
-    SurfaceDesc, ThemeMode,
+    CaretPaint, Color, ComponentHost, Ctx, FilePickerOptions, HandlePaint, ImageCache, MockClock,
+    PickError, PickedFile, RendererBackend, SelectionPaint, SurfaceDesc, ThemeMode,
 };
 use oppa_app::{ScenePresenter, SceneSession};
 use oppa_cpu::FramePlanBuilder;
@@ -66,9 +66,16 @@ impl ScenePresenter for DomPresenter {
         self.dom.set_selection(sel);
     }
 
-    /// The caret bar rides the same glue (Round 15.1: the DOM half).
-    fn set_caret(&mut self, caret: Option<CaretPaint>) {
-        self.dom.set_caret(caret);
+    /// No caret twin (decision 472): verdict-(b) leaves the caret
+    /// to the browser, so a framework bar would double the native
+    /// one — this leg of the shared overlay publish is a quiet
+    /// no-op (the pixel adapters still paint through the shared
+    /// builder).
+    fn set_caret(&mut self, _caret: Option<CaretPaint>) {}
+
+    /// The handle pair rides the same glue (decision 454: the DOM half).
+    fn set_handles(&mut self, handles: Option<(HandlePaint, HandlePaint)>) {
+        self.dom.set_handles(handles);
     }
 
     /// The page chrome follows the host mode every frame (startup
@@ -79,16 +86,22 @@ impl ScenePresenter for DomPresenter {
         Ok(())
     }
 
+    /// The page chrome follows the host palette every frame
+    /// (decision 477 — custom tokens recolor the body chrome and
+    /// the theme stanza like a toggle; unset stays built-in).
+    fn set_theme_tokens(&mut self, tokens: oppa::ThemeTokens) {
+        self.dom.set_theme_tokens(tokens);
+    }
+
     fn set_images(&mut self, cache: &ImageCache) {
         self.dom.set_images(cache.clone());
     }
 
     /// The shared refit contract (resize/DPR/theme rebase): recreate
     /// the DOM surface at the new extent and replay the scene from
-    /// zero, byte-identical to the pixel adapters' rebase rule. The
-    /// web loop never resizes today (fixed 800x600 viewport), so
-    /// this arm proves unreachable in practice — present for the
-    /// engine contract, loud on misuse.
+    /// zero, byte-identical to the pixel adapters' rebase rule
+    /// (decision 470 drives this per container resize; present for
+    /// the engine contract, loud on misuse).
     fn refit(
         &mut self,
         host: &ComponentHost,
@@ -167,6 +180,12 @@ fn boot_shell(host: ComponentHost, images: ImageCache) -> (SceneSession, DomPres
     };
     let (html, _) = sync_and_render(&mut session, &mut pres);
     let _ = html;
+    // The priming take above consumes the theme stanza into a patch
+    // the browser never sees (the full page's own `<body style>` is
+    // dropped by the bootstrap's `innerHTML` mount). Re-arm so the
+    // first interaction re-emits the current theme and the page
+    // chrome heals instead of sitting light under dark controls.
+    pres.dom.rearm_theme_stanza();
     (session, pres)
 }
 
@@ -200,6 +219,15 @@ pub struct WasmHost {
     /// drive through `SceneCore`.
     session: SceneSession,
     pres: DomPresenter,
+    /// File-pick generation counter (decision 423 — the fetch
+    /// generation precedent: JS never sees raw keys, only
+    /// generations riding `f64`).
+    pick_generation: u64,
+    /// Outstanding pick request, if a chooser is open.
+    pending_pick: Option<(u64, FilePickerOptions)>,
+    /// Last settled pick result (level-triggered — re-reads repeat
+    /// it; dismissal is `Ok(vec![])`, never a missing read).
+    last_pick: Option<Result<Vec<PickedFile>, PickError>>,
 }
 
 /// Commit new diffs, sync the DOM, and repaint a real plan (the
@@ -221,6 +249,14 @@ fn sync_and_render(session: &mut SceneSession, pres: &mut DomPresenter) -> (Stri
     if !patch.full && !patch.is_empty() {
         return (patch.to_json(), touched);
     }
+    (full_reload(pres), touched)
+}
+
+/// Full-page reload JSON (decision 470 — factored out of the
+/// settled-suite fallback above so resizes reuse the exact shape):
+/// the full page embeds tree + sheet alike, so prime the snapshot
+/// and the shipped revision together (decision 392).
+fn full_reload(pres: &mut DomPresenter) -> String {
     // Loud fallback (unprimed snapshot or remount-class root change --
     // today's full swap inside a reload op, focus net in the applier;
     // proved unreachable in the settled suite, kept for completeness).
@@ -228,11 +264,10 @@ fn sync_and_render(session: &mut SceneSession, pres: &mut DomPresenter) -> (Stri
     // and the shipped revision together (decision 392).
     let html = render_page("oppa web", &pres.dom, &pres.sheet);
     pres.dom.mark_rendered(&pres.sheet);
-    let reload = format!(
+    format!(
         "{{\"v\":1,\"full\":true,\"reload\":{},\"swaps\":[],\"attrs\":[],\"sels\":[],\"spacers\":[],\"removes\":[],\"places\":[]}}",
         oppa_dom::json_escape(&html)
-    );
-    (reload, touched)
+    )
 }
 
 impl WasmHost {
@@ -282,6 +317,9 @@ impl WasmHost {
             clock,
             session,
             pres,
+            pick_generation: 0,
+            pending_pick: None,
+            last_pick: None,
         }
     }
 
@@ -385,6 +423,26 @@ impl WasmHost {
         self.sync_page()
     }
 
+    /// Boot page chrome as stanza-shaped JSON (`{"bg","ink","dark"}`,
+    /// the exact object `PagePatch.theme` carries): the full page's
+    /// own `<body style>` is dropped by the bootstrap's `innerHTML`
+    /// mount, so the shared bootstrap applies this at mount and the
+    /// page paints in-theme from the first frame instead of healing
+    /// on first interaction. Pure read (no snapshot, no marker).
+    pub fn theme_chrome(&self) -> String {
+        let mode = self.session.host().theme().mode();
+        // Decision 477: boot chrome follows custom tokens too (an
+        // overridden palette paints in-theme from the first frame,
+        // same as the mode palettes always have).
+        let t = self.session.host().theme_tokens();
+        format!(
+            "{{\"bg\":\"#{:06x}\",\"ink\":\"#{:06x}\",\"dark\":{}}}",
+            t.background.0,
+            t.text_primary.0,
+            mode == oppa::ThemeMode::Dark
+        )
+    }
+
     /// Starts a platform fetch (Round 4.1, web fetch -- the wasm half
     /// of decision 221): sets the named keyed signal to `Loading`
     /// and returns its generation for the promise callback. The key
@@ -429,6 +487,53 @@ impl WasmHost {
         self.sync_page()
     }
 
+    /// Starts a file pick (decision 423 — the web half of the
+    /// bytes open seam, same generation rendezvous as
+    /// [`WasmHost::fetch_start`]): records the outstanding options
+    /// and returns its generation for the JS chooser callback
+    /// (`f64`, exact to 2^53). A second start supersedes the first
+    /// (stale resolves discard, never half-swap). The JS chooser
+    /// glue (`<input type=file>` / File System Access + `FileReader`
+    /// bytes) calls [`WasmHost::file_pick_resolve`] — no chooser
+    /// exists yet (Blocked), so host builds resolve synthetically.
+    pub fn file_pick_start(&mut self, options: FilePickerOptions) -> f64 {
+        self.pick_generation += 1;
+        let gen = self.pick_generation;
+        self.pending_pick = Some((gen, options));
+        gen as f64
+    }
+
+    /// Resolves a file pick from the chooser callback (decision 423):
+    /// `Ok(files)` settles picked bytes (`[]` = dismissed),
+    /// `Err` settles refusal/failure loudly. Applies only when
+    /// `generation` is still current (stale results discard →
+    /// `false`, never half-swapped state; garbage generations
+    /// saturate through `as u64` into a mismatch — discarded, never
+    /// panicking). Returns `true` when the result latched.
+    pub fn file_pick_resolve(
+        &mut self,
+        generation: f64,
+        result: Result<Vec<PickedFile>, PickError>,
+    ) -> bool {
+        if self.pending_pick.as_ref().map(|(g, _)| *g) != Some(generation as u64) {
+            return false;
+        }
+        self.pending_pick = None;
+        self.last_pick = Some(result);
+        true
+    }
+
+    /// Outstanding pick generation, if a chooser is open.
+    pub fn pending_pick_generation(&self) -> Option<u64> {
+        self.pending_pick.as_ref().map(|(g, _)| *g)
+    }
+
+    /// Last settled pick result, if any (level-triggered re-reads
+    /// repeat it — the [`FileOpener`](oppa::FileOpener) rule).
+    pub fn last_pick_result(&self) -> Option<Result<Vec<PickedFile>, PickError>> {
+        self.last_pick.clone()
+    }
+
     /// rAF tick: advances TIME to `now_ms` and runs the frame.
     /// Returns the DOM patch JSON, or `None` when untouched
     /// (transition tails settle through these calls).
@@ -462,4 +567,142 @@ impl WasmHost {
         self.session.host().run_until_idle();
         self.sync_page()
     }
+
+    /// Follows the scene container's size (decision 470 — the
+    /// bootstrap's `ResizeObserver` calls this with the container's
+    /// content-box CSS px plus the live `devicePixelRatio`): the
+    /// scene fills its container, whatever size it is — the shell
+    /// owns the sizing policy (fixed default, fluid opt-in), the
+    /// framework follows.
+    ///
+    /// Loud refusals (never silent geometry): non-finite or negative
+    /// `w`/`h`/`dpr`, or non-positive `dpr`, panic — a measured rect
+    /// is always finite and a ratio always positive, so anything else
+    /// is a wiring bug. Zero-area (`w == 0 || h == 0`, minimized or
+    /// detached container) parks instead: the last scene stays, `None`
+    /// returns, and the next nonzero resize resumes — a platform
+    /// state, never an authoring bug. Same viewport + same DPR
+    /// returns `None` without touching anything (resize storms must
+    /// never spin frames on identical readings).
+    ///
+    /// On change: viewport first (decision-248 root invalidation),
+    /// then the DPR read-modify-write through `layout_config` (a DPR
+    /// flip with identical CSS sizes still reflows — decision 259),
+    /// settle, then the shared refit contract (surface recreate +
+    /// replay from zero) and a full reload patch — correctness first:
+    /// keyed resize patches stay a follow-up, never a silent half
+    /// sync. Returns the full-page reload JSON.
+    pub fn resize(&mut self, w: f32, h: f32, dpr: f32) -> Option<String> {
+        for (name, v) in [("w", w), ("h", h), ("dpr", dpr)] {
+            if !v.is_finite() {
+                panic!(
+                    "oppa-web: resize {name} is non-finite ({v}) — refused, never a silent size"
+                );
+            }
+        }
+        if w < 0.0 || h < 0.0 {
+            panic!("oppa-web: resize negative extent ({w}x{h}) — refused, never a silent size");
+        }
+        if dpr <= 0.0 {
+            panic!("oppa-web: resize non-positive dpr ({dpr}) — refused, never a silent ratio");
+        }
+        if w == 0.0 || h == 0.0 {
+            return None;
+        }
+        let host = self.session.host();
+        let config = host.layout_config();
+        // Bit-exact DPR compare (exact readings must match exactly;
+        // float `==` would trip `clippy::float_cmp`).
+        if host.viewport_size() == (w, h) && config.device_pixel_ratio.to_bits() == dpr.to_bits() {
+            return None;
+        }
+        host.set_viewport(w, h);
+        if config.device_pixel_ratio.to_bits() != dpr.to_bits() {
+            host.set_layout_config(oppa::LayoutTextConfig {
+                device_pixel_ratio: dpr,
+                ..config
+            });
+        }
+        host.run_until_idle();
+        let bg = host.theme_tokens().background;
+        self.pres
+            .refit(host, w as u32, h as u32, bg)
+            .expect("dom presenter refit failed");
+        self.session.host().run_until_idle();
+        Some(full_reload(&mut self.pres))
+    }
+}
+
+/// Standard wasm app binding: generates the `#[wasm_bindgen]` shell
+/// over [`WasmHost`] for an app root, so app crates name their root
+/// once instead of hand-forwarding every binding (the template's old
+/// ~40-line `HelloApp` is one line now).
+///
+/// ```rust,ignore
+/// use oppa_web::export_app;
+/// use wasm_bindgen::prelude::*;
+/// export_app!(HelloApp, "Hello", hello);
+/// ```
+///
+/// Requirements on the app crate (loud otherwise): a `wasm-bindgen`
+/// dependency with `use wasm_bindgen::prelude::*;` in scope (the
+/// attribute must resolve), and the `oppa-web` dependency under its
+/// default name (the shell paths name it). The generated struct
+/// forwards `html` / `click` / `hover` / `key` / `text` / `tick` /
+/// `sync_system_theme` / `resize` / `theme_chrome` — the exact surface
+/// the shared bootstrap drives.
+#[macro_export]
+macro_rules! export_app {
+    ($name:ident, $title:literal, $root:path) => {
+        #[wasm_bindgen]
+        pub struct $name {
+            app: ::oppa_web::WasmHost,
+        }
+
+        #[wasm_bindgen]
+        impl $name {
+            #[wasm_bindgen(constructor)]
+            pub fn new() -> Self {
+                Self {
+                    app: ::oppa_web::WasmHost::mount_root($title, (), $root),
+                }
+            }
+
+            pub fn html(&mut self) -> String {
+                self.app.html()
+            }
+
+            pub fn click(&mut self, x: f32, y: f32) -> Option<String> {
+                self.app.click(x, y)
+            }
+
+            pub fn hover(&mut self, x: f32, y: f32) -> Option<String> {
+                self.app.hover(x, y)
+            }
+
+            pub fn key(&mut self, code: u32, pressed: bool) -> Option<String> {
+                self.app.key(code, pressed)
+            }
+
+            pub fn text(&mut self, pid: &str, value: &str) -> Option<String> {
+                self.app.text(pid, value)
+            }
+
+            pub fn tick(&mut self, now_ms: f64) -> Option<String> {
+                self.app.tick(now_ms)
+            }
+
+            pub fn sync_system_theme(&mut self) -> Option<String> {
+                self.app.sync_system_theme()
+            }
+
+            pub fn resize(&mut self, w: f32, h: f32, dpr: f32) -> Option<String> {
+                self.app.resize(w, h, dpr)
+            }
+
+            pub fn theme_chrome(&self) -> String {
+                self.app.theme_chrome()
+            }
+        }
+    };
 }

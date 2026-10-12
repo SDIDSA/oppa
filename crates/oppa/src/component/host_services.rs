@@ -81,12 +81,69 @@ impl ComponentHost {
     /// read it through [`Ctx::theme`].
     pub fn theme(&self) -> Theme {
         let mut slot = self.inner.theme.borrow_mut();
-        if let Some(sig) = slot.clone() {
-            return Theme { signal: sig };
+        let sig = match slot.clone() {
+            Some(sig) => sig,
+            None => {
+                let sig = self.inner.rt.signal(ThemeMode::Light);
+                *slot = Some(sig.clone());
+                sig
+            }
+        };
+        drop(slot);
+        // Decision 477: the override table rides alongside the mode
+        // signal (created together so every Theme handle — whenever
+        // constructed — reads the live table, never a stale copy).
+        let mut oslot = self.inner.theme_token_overrides.borrow_mut();
+        let osig = match oslot.clone() {
+            Some(osig) => osig,
+            None => {
+                let osig = self.inner.rt.signal([None, None]);
+                *oslot = Some(osig.clone());
+                osig
+            }
+        };
+        Theme {
+            signal: sig,
+            overrides: osig,
         }
-        let sig = self.inner.rt.signal(ThemeMode::Light);
-        *slot = Some(sig.clone());
-        Theme { signal: sig }
+    }
+
+    /// Publishes a custom palette for one mode (decision 477):
+    /// subsequent `tokens()` reads for that mode return it instead
+    /// of the built-in palette (runners brand apps, tests pin
+    /// palettes; `None` clears back to built-in). Tracked (the
+    /// override signal notifies, so every themed body re-renders in
+    /// place like a mode toggle — instances and state survive).
+    pub fn set_theme_tokens_override(&self, mode: ThemeMode, tokens: Option<ThemeTokens>) {
+        let osig = self
+            .inner
+            .theme_token_overrides
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| self.theme().overrides.clone());
+        let mut arr = crate::reactive::untrack(|| osig.get());
+        arr[super::override_idx(mode)] = tokens;
+        osig.set(arr);
+    }
+
+    /// Current palette honoring overrides (tracked — same reads as
+    /// [`Theme::tokens`], for host-side code that already holds the
+    /// host instead of a [`Theme`]).
+    pub fn theme_tokens(&self) -> ThemeTokens {
+        self.theme().tokens()
+    }
+
+    /// Palette for `mode` honoring overrides (untracked — diagnostics
+    /// and paint-time queries that must not schedule).
+    pub fn theme_tokens_for(&self, mode: ThemeMode) -> ThemeTokens {
+        let arr = self
+            .inner
+            .theme_token_overrides
+            .borrow()
+            .clone()
+            .map(|osig| crate::reactive::untrack(|| osig.get()));
+        arr.and_then(|a| a[super::override_idx(mode)])
+            .unwrap_or(ThemeTokens::of(mode))
     }
 
     /// Switches the app theme (Round 11.2 — tests, settings screens,
@@ -263,7 +320,9 @@ impl ComponentHost {
 
     /// The focused field's painted selection, if any (Round 8.2 —
     /// builders highlight laid lines under the focus owner overlapping
-    /// the session range; collapsed selections paint nothing). `None`
+    /// the session range; collapsed selections paint nothing). The
+    /// range is display-space (decision 458 — masked fields lay
+    /// bullets, so content bytes map on before painting). `None`
     /// when nothing is focused, focus is outside a session-owning
     /// field, or the selection is collapsed. Untracked.
     pub fn focused_selection_paint(&self) -> Option<crate::render::SelectionPaint> {
@@ -273,9 +332,13 @@ impl ComponentHost {
         if sel.0 == sel.1 {
             return None;
         }
+        let (a, b) = (sel.0.min(sel.1), sel.0.max(sel.1));
         Some(crate::render::SelectionPaint {
             field: focus,
-            range: sel,
+            range: (
+                session.composite_byte_to_display(a),
+                session.composite_byte_to_display(b),
+            ),
         })
     }
 
@@ -339,7 +402,10 @@ impl ComponentHost {
                     }
                     (b.x, b.y, h)
                 } else {
-                    let caret = session.caret();
+                    // Display-space caret (decision 458 — masked
+                    // fields lay bullets, so the content caret maps
+                    // onto display bytes before touching clusters).
+                    let caret = session.composite_byte_to_display(session.caret());
                     let (li, _) = b.caret_position(caret);
                     let line = b.lines.get(li)?;
                     // Shaper rect through the host service (the anchor
@@ -407,7 +473,181 @@ impl ComponentHost {
             }
             cur = rec.get(c).and_then(|n| n.parent);
         }
-        crate::style::ThemeTokens::of(self.theme().mode()).text_primary
+        self.theme_tokens_for(self.theme().mode()).text_primary
+    }
+
+    /// The focused field's renderer-drawn selection handles, if any
+    /// (decision 454): one [`HandlePaint`](crate::render::HandlePaint)
+    /// per selection edge, resolved through laid clusters (the
+    /// `caret_position` rule — wrap affinity matches the highlight
+    /// exactly, and no shaper install means handles paint headless).
+    /// `None` when nothing is focused, focus is outside a
+    /// session-owning field, the selection is collapsed (the caret
+    /// bar owns that state), no text box is laid yet (quiet miss —
+    /// advisory geometry like the caret, never a wiring bug), or the
+    /// host hides them (decision 474 — desktop runners opt out;
+    /// `selection_handles_visible`). Untracked.
+    pub fn focused_handles_paint(
+        &self,
+    ) -> Option<(crate::render::HandlePaint, crate::render::HandlePaint)> {
+        if !self.inner.selection_handles_visible.get() {
+            return None;
+        }
+        let focus = self.focused_node()?;
+        let session = self.focused_field_session()?;
+        let sel = session.selection();
+        let (lo, hi) = (sel.0.min(sel.1), sel.0.max(sel.1));
+        if lo == hi {
+            return None;
+        }
+        // First laid text leaf under focus (the caret walk minus the
+        // shaper: edges resolve from committed clusters, so the
+        // geometry survives without a text service).
+        let rec = self.inner.rec.borrow();
+        let mut stack = vec![focus];
+        let mut lined: Option<LayoutBox> = None;
+        while let Some(id) = stack.pop() {
+            let Some(n) = rec.get(id) else {
+                continue;
+            };
+            if n.tag == crate::vnode::Tag::Text {
+                if let Some(b) = n.layout.clone() {
+                    if !b.lines.is_empty() {
+                        lined = Some(b);
+                        break;
+                    }
+                }
+            }
+            for child in n.children.iter().rev() {
+                stack.push(*child);
+            }
+        }
+        let b = lined?;
+        // Display-space edges (decision 458 — masked fields lay
+        // bullets, so content bytes map on before touching clusters).
+        let (li_lo, x_lo) = b.caret_position(session.composite_byte_to_display(lo));
+        let (li_hi, x_hi) = b.caret_position(session.composite_byte_to_display(hi));
+        let (line_lo, line_hi) = (b.lines.get(li_lo)?, b.lines.get(li_hi)?);
+        drop(rec);
+        let color = self.caret_ink(focus);
+        Some((
+            crate::render::HandlePaint {
+                field: focus,
+                edge: crate::input::HandleEdge::Start,
+                x: b.x + x_lo,
+                y: b.y + line_lo.y,
+                h: line_lo.height,
+                color,
+            },
+            crate::render::HandlePaint {
+                field: focus,
+                edge: crate::input::HandleEdge::End,
+                x: b.x + x_hi,
+                y: b.y + line_hi.y,
+                h: line_hi.height,
+                color,
+            },
+        ))
+    }
+
+    /// The live handle edge for the drag stream (decision 454): the
+    /// confirmed edge of the lowest-id live pointer (the `field_drag`
+    /// anchor precedent — one drag stream, one edge). `None` with no
+    /// confirmed handle grab — candidates inside slop and plain
+    /// presses stream the `drag_x` selection.
+    /// Untracked.
+    pub fn handle_drag_edge(&self) -> Option<crate::input::HandleEdge> {
+        let input = self.inner.input.borrow();
+        let id = *input.captures.keys().min()?;
+        if !input.handle_confirmed.contains(&id) {
+            return None;
+        }
+        input.handle_drags.get(&id).copied()
+    }
+
+    /// The candidate handle edge for the drag stream (decision 454):
+    /// the armed edge of the lowest-id live pointer whether or not it
+    /// confirmed yet. `field_drag` swallows the whole stream under a
+    /// candidate (in-slop moves stay quiet instead of clobbering the
+    /// anchor through `drag_x`) and moves the edge once confirmed.
+    /// Untracked.
+    pub fn handle_candidate_edge(&self) -> Option<crate::input::HandleEdge> {
+        let input = self.inner.input.borrow();
+        let id = *input.captures.keys().min()?;
+        input.handle_drags.get(&id).copied()
+    }
+
+    /// Arms the collapsed-hold toolbar (decision 459): the next
+    /// snapshot build offers the Paste bar for the collapsed caret.
+    /// Called by `field_long_press` when the hold lands on no word.
+    pub fn arm_caret_toolbar(&self) {
+        self.inner.input.borrow().caret_toolbar_armed.set(true);
+    }
+
+    /// Consumes a pending collapsed-hold toolbar request (runner-side —
+    /// the snapshot build calls this once per pump; `true` arms the
+    /// Paste bar for the current collapsed caret, never twice).
+    pub fn take_caret_toolbar(&self) -> bool {
+        self.inner.input.borrow().caret_toolbar_armed.replace(false)
+    }
+
+    /// Which scene-toolbar item owns the tap at `(x, y)` (decision
+    /// 455): overlay items are handlerless presentational nodes, so
+    /// taps resolve geometrically against their committed boxes (top
+    /// z-layer wins — the overlay paints last, so the first item in
+    /// model order containing the point owns it). `None` with no
+    /// published toolbar or no item in reach — the Down falls through
+    /// to the tap path. Untracked (router geometry, never effects).
+    pub fn toolbar_hit(&self, x: f32, y: f32) -> Option<crate::input::ToolbarAction> {
+        let model = crate::reactive::untrack(|| self.toolbar_model().get())?;
+        for item in &model.items {
+            let Some(b) = self.committed_box_by_debug(item.debug_name()) else {
+                continue;
+            };
+            if x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h {
+                return Some(item.action());
+            }
+        }
+        None
+    }
+
+    /// Which handle edge owns the grab at `(x, y)` (decision 454):
+    /// the nearest live handle bar-or-knob within
+    /// [`HANDLE_HIT_SLOP_PX`](crate::input::HANDLE_HIT_SLOP_PX)
+    /// (knob centre below the line bottom; ties prefer the nearer
+    /// edge, start wins exact ties). `None` with no live handles or
+    /// no grab in reach — the Down falls through to the tap path.
+    /// Hidden handles (decision 474) never arm: publication is
+    /// `None` there, so this misses exactly like a bare field.
+    /// Untracked.
+    pub fn handle_hit(&self, x: f32, y: f32) -> Option<crate::input::HandleEdge> {
+        use crate::input::{HandleEdge, HANDLE_HIT_SLOP_PX};
+        use crate::render::HANDLE_KNOB_R_PX;
+        let (start, end) = self.focused_handles_paint()?;
+        let score = |h: &crate::render::HandlePaint| {
+            let bar_dx = (x - h.x).abs();
+            let bar_dy = if y < h.y {
+                h.y - y
+            } else if y > h.y + h.h {
+                y - (h.y + h.h)
+            } else {
+                0.0
+            };
+            let bar = bar_dx.hypot(bar_dy);
+            let knob = ((x - h.x).powi(2) + (y - (h.y + h.h + HANDLE_KNOB_R_PX)).powi(2)).sqrt()
+                - HANDLE_KNOB_R_PX;
+            bar.min(knob)
+        };
+        let (ds, de) = (score(&start), score(&end));
+        if ds <= HANDLE_HIT_SLOP_PX || de <= HANDLE_HIT_SLOP_PX {
+            Some(if ds <= de {
+                HandleEdge::Start
+            } else {
+                HandleEdge::End
+            })
+        } else {
+            None
+        }
     }
 
     /// Seconds until the focused caret's next blink flip, if any

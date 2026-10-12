@@ -123,21 +123,21 @@ pub struct CpuBackend {
 }
 
 /// Validated font bytes: parsed once at `set_font_*` time (loud
-/// there), so paint-time construction cannot fail.
+/// there), so paint-time construction cannot fail. Shared
+/// (`Arc`) — the runner hands one allocation per face that both
+/// backends reference instead of copying (decision 437: ~3x font
+/// RSS on font-rich devices otherwise).
 #[derive(Clone)]
 pub(super) struct FaceBytes {
-    bytes: Arc<Vec<u8>>,
+    bytes: Arc<[u8]>,
     index: u32,
 }
 
 impl FaceBytes {
-    fn checked(bytes: Vec<u8>, index: u32, which: &str) -> Self {
+    fn checked(bytes: Arc<[u8]>, index: u32, which: &str) -> Self {
         ab_glyph::FontRef::try_from_slice_and_index(&bytes, index)
             .unwrap_or_else(|e| panic!("oppa-cpu: {which} font bytes rejected: {e}"));
-        Self {
-            bytes: Arc::new(bytes),
-            index,
-        }
+        Self { bytes, index }
     }
 }
 
@@ -169,7 +169,7 @@ impl CpuBackend {
     /// `set_font_bytes`): `DrawOp::Text` runs whose `font_id` has no
     /// explicit face rasterize through this one. Replaces any previous
     /// default; bytes are validated here (loud), never at paint.
-    pub fn set_font_bytes(&mut self, bytes: Vec<u8>, index: u32) {
+    pub fn set_font_bytes(&mut self, bytes: Arc<[u8]>, index: u32) {
         self.faces.default = Some(FaceBytes::checked(bytes, index, "default"));
     }
 
@@ -177,7 +177,7 @@ impl CpuBackend {
     /// Vello's `set_font_for`, M7 decision 110): runs carrying this id
     /// rasterize real glyphs; runs without any usable face keep the
     /// legacy advance-cell bars.
-    pub fn set_font_for(&mut self, id: FontId, bytes: Vec<u8>, index: u32) {
+    pub fn set_font_for(&mut self, id: FontId, bytes: Arc<[u8]>, index: u32) {
         self.faces
             .explicit
             .insert(id, FaceBytes::checked(bytes, index, "explicit"));

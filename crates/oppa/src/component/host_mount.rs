@@ -36,6 +36,12 @@ impl ComponentHost {
             diag: RefCell::new(crate::diag::RingLog::default_log()),
             trans_anim: Cell::new(false),
             close_requested_flag: Cell::new(false),
+            system_bars_request: Cell::new(None),
+            selection_handles_visible: Cell::new(true),
+            system_bars_visible_sig: RefCell::new(None),
+            theme_token_overrides: RefCell::new(None),
+            toolbar_model_sig: RefCell::new(None),
+            toolbar_actions: RefCell::new(std::collections::VecDeque::new()),
             longpress: RefCell::new(HashMap::new()),
             scroll_drags: RefCell::new(HashMap::new()),
             flings: RefCell::new(Vec::new()),
@@ -243,7 +249,103 @@ impl ComponentHost {
             vnode = crate::vnode::Div("oppa_debug_root").children(vec![vnode, layer]);
         }
 
+        // Decision 455: renderer-drawn text toolbar — the overlay
+        // portal appends to the app root's children when the runner
+        // published a model (`None` returns the app vnode untouched).
+        // Portals never join parent flow, so the app lays out
+        // byte-identically with and without the bar; appearing and
+        // vanishing as one appended child, siblings keep their
+        // instances, focus, and sessions across toggles (the bar must
+        // never destroy what it annotates).
+        let model = host.toolbar_model().get();
+        vnode = Self::toolbar_portal(host, vnode, model.as_ref());
+
         host.reconcile_root(vnode);
+    }
+
+    /// Appends the scene-toolbar overlay portal (decision 455 — the
+    /// root-append half; interaction resolves geometrically in the
+    /// router, never through handlers here). `None` returns the app
+    /// vnode untouched (no wrap, no remount — the portal appears and
+    /// vanishes as one appended child, so siblings keep their
+    /// instances, focus, and sessions across toggles). Container-less
+    /// roots (bare text leaves) carry no toolbar (documented bound —
+    /// every real app roots a container; IME mirroring still covers
+    /// typing there).
+    fn toolbar_portal(
+        host: &ComponentHost,
+        vnode: VNode,
+        model: Option<&crate::input::ToolbarModel>,
+    ) -> VNode {
+        use crate::input::{TOOLBAR_EST_W_PX, TOOLBAR_ROW_H_PX};
+        let Some(model) = model else {
+            return vnode;
+        };
+        let VNode::Element(mut e) = vnode else {
+            return vnode;
+        };
+        let tokens = host.theme_tokens();
+        // Coordinate spaces: the model anchor arrives in committed
+        // (device px, viewport-space) boxes while style offsets are
+        // CSS px — convert once here. The portal itself stays
+        // offset-less (viewport-anchored by construction, immune to
+        // parent-origin shifts) with the anchor offsets on the bar.
+        let dpr = host.layout_config().device_pixel_ratio.max(f32::EPSILON);
+        let (vw, _) = host.viewport_size();
+        let (l, t, _r, b) = model.anchor;
+        let (al, at, ab) = (l as f32 / dpr, t as f32 / dpr, b as f32 / dpr);
+        // Measured content width (pre-layout, through the installed
+        // shaper — the portal's given width stretches the bar
+        // full-viewport, so an explicit width must name the intrinsic
+        // content: each label's shaped advance plus item padding plus
+        // the bar border. Exact on the first frame, no converge loop,
+        // no extra root re-runs. `None` without a text service or on
+        // a shaping miss (headless/setup — falls back to the estimate
+        // clamp, never a loud toolbar).
+        let content_w: Option<f32> = (|| {
+            let service = host.inner.text_service.borrow();
+            let service = service.as_deref()?;
+            let family = host.layout_config().family.clone();
+            let mut w = 2.0;
+            for item in model.items.iter() {
+                let style = crate::text::TextStyle::new(&family, 14.0);
+                w += service.shape(item.label(), &style).ok()?.total_advance + 24.0;
+            }
+            Some(w)
+        })();
+        let x = al.clamp(0.0, (vw - content_w.unwrap_or(TOOLBAR_EST_W_PX)).max(0.0));
+        let y = if at >= TOOLBAR_ROW_H_PX + 8.0 {
+            at - TOOLBAR_ROW_H_PX - 8.0
+        } else {
+            ab + 8.0
+        };
+        let items: Vec<VNode> = model
+            .items
+            .iter()
+            .map(|item| {
+                crate::vnode::Div(item.debug_name())
+                    .style(crate::style::Style::new().pad_x(12).pad_y(8))
+                    .child(crate::vnode::VNode::from(
+                        crate::vnode::Text::new(item.label()).size(14),
+                    ))
+            })
+            .collect();
+        let mut bar_style = crate::style::Style::new()
+            .bg(tokens.surface)
+            .ink(tokens.text_primary)
+            .border(1, tokens.border)
+            .radius(8.0)
+            .x(x)
+            .absolute_y(y);
+        if let Some(w) = content_w {
+            bar_style = bar_style.w(w);
+        }
+        let bar = crate::vnode::Div("oppa_toolbar_bar")
+            .style(bar_style)
+            .child(crate::vnode::Row("oppa_toolbar_row").children(items));
+        let portal = crate::vnode::Portal("oppa_toolbar_layer").child(bar);
+        e.children.push(portal);
+        VNode::Element(e)
     }
 
     /// Installs the harness's current render table (called on every

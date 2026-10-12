@@ -40,11 +40,19 @@ fn stats(name: &str, samples: &[f64]) -> String {
 /// same scene, same twin, live surface re-read every frame), so this
 /// harness keeps no backend or surface id of its own.
 /// Writes `frameloop.txt`; returns the meta record line.
+///
+/// `heartbeat` runs once per frame, outside the timed section
+/// (decision 426): the synchronous proof never services input
+/// otherwise, and one undispatched MotionEvent ANRs the app
+/// within 5 s on device (the stay-alive drain's observed rule).
+/// The drain discards (never injects), so frames stay identical
+/// and timings stay pure.
 pub fn run_frame_loop(
     scene: &mut SceneCore,
     dir: &Path,
     expected_bytes: usize,
     tag: &str,
+    mut heartbeat: impl FnMut(),
 ) -> Result<String, String> {
     let mut full: Vec<f64> = Vec::with_capacity(FRAMES);
     for _ in 0..FRAMES {
@@ -59,6 +67,7 @@ pub fn run_frame_loop(
             ));
         }
         full.push(t.elapsed().as_secs_f64() * 1000.0);
+        heartbeat();
     }
     let mut bare: Vec<f64> = Vec::with_capacity(FRAMES);
     for _ in 0..FRAMES {
@@ -67,6 +76,7 @@ pub fn run_frame_loop(
                 .benchmark_gpu_noread()
                 .map_err(|e| format!("{tag} loop bare render: {e}"))?,
         );
+        heartbeat();
     }
     let full_mean = full[1..].iter().sum::<f64>() / (FRAMES - 1) as f64;
     let bare_mean = bare[1..].iter().sum::<f64>() / (FRAMES - 1) as f64;
@@ -153,6 +163,10 @@ pub fn format_damage_record(tag: &str, cold_full_ms: f64, stats: &DamageStats) -
 /// `flip` is one state flip against the host (a tap, a signal
 /// toggle — whatever moves exactly one control); it runs inside
 /// the timed section so the settle it schedules is measured too.
+///
+/// `heartbeat` runs once per frame outside the timed section (the
+/// decision-426 ANR rule above — same discard-never-inject
+/// contract as `run_frame_loop`).
 #[allow(clippy::too_many_arguments)]
 pub fn run_sustained_damage_loop(
     scene: &mut SceneCore,
@@ -160,6 +174,7 @@ pub fn run_sustained_damage_loop(
     dir: &Path,
     tag: &str,
     mut flip: impl FnMut(&mut ComponentHost),
+    mut heartbeat: impl FnMut(),
 ) -> Result<String, String> {
     // Cold full-scene baseline (excluded from the steady stats).
     let t = Instant::now();
@@ -184,6 +199,7 @@ pub fn run_sustained_damage_loop(
             ));
         }
         samples.push(t.elapsed().as_secs_f64() * 1000.0);
+        heartbeat();
     }
     let stats = damage_stats(&samples).ok_or_else(|| format!("{tag} damage loop: no samples"))?;
     let record = format_damage_record(tag, cold_full_ms, &stats);
@@ -333,12 +349,23 @@ mod tests {
         scene.host().run_until_idle();
         let dir = std::env::temp_dir();
         let mut flips = 0u32;
-        let record = run_sustained_damage_loop(&mut scene, 200 * 150 * 4, &dir, "test", |_| {
-            flips += 1;
-            on.set(!on.get());
-        })
+        let mut beats = 0u32;
+        let record = run_sustained_damage_loop(
+            &mut scene,
+            200 * 150 * 4,
+            &dir,
+            "test",
+            |_| {
+                flips += 1;
+                on.set(!on.get());
+            },
+            || {
+                beats += 1;
+            },
+        )
         .expect("damage loop runs");
         assert_eq!(flips, DAMAGE_FRAMES as u32, "every frame flips once");
+        assert_eq!(beats, DAMAGE_FRAMES as u32, "every frame beats once");
         assert!(
             record.contains("damage_test_n=60"),
             "record counts: {record}"

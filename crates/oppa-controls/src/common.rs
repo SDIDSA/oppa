@@ -18,6 +18,26 @@ pub fn action(f: impl Fn() + 'static) -> Action {
     Rc::new(f)
 }
 
+/// Decodes one SVG asset and deposits it into the shared image
+/// cache at `px`×`px` (decision 478 — the baked-icon pipeline for
+/// control icon slots: resvg rasterizes with full anti-aliasing,
+/// so icons stay smooth on the un-antialiased GPU path; every
+/// backend serves the same pixels from the one deposit). Returns
+/// the cache id the `icon` props take. Refuses loudly (a broken
+/// vendored asset is an authoring bug — broken icons never paint
+/// blank; oversize targets hit the decoder's dims cap).
+pub fn deposit_svg_icon(
+    images: &oppa::ImageCache,
+    key: &str,
+    svg: &[u8],
+    px: u32,
+) -> oppa::ImageId {
+    let img = oppa_image::decode_svg(svg, Some(px), Some(px)).unwrap_or_else(|e| {
+        panic!("controls: icon {key:?} SVG decode failed ({e}) — refused, never a blank icon")
+    });
+    images.insert_pixels(key, img.width, img.height, img.rgba)
+}
+
 pub fn field_press(host: &oppa::ComponentHost, session: &oppa::EditSession, style: TextClass) {
     host.ensure_session_shaper(session, style);
     let count = host.last_press_click_count();
@@ -44,13 +64,57 @@ pub fn field_press(host: &oppa::ComponentHost, session: &oppa::EditSession, styl
     dirty_focused_field(host);
 }
 
+/// Hold-to-select for text fields (decision 448): a still hold
+/// past the long-press deadline word-selects around the hold point
+/// (the double-click rule — `dbl_click_x` — so hold and double-tap
+/// agree exactly, the native long-press shape). The router publishes
+/// the hold point as the tap point on fire and consumes the
+/// following Up, so this is the gesture's only placement; the pump's
+/// selection sync then raises the system toolbar. Quick taps never
+/// reach here (Up removes the arm before the deadline).
+/// Decision 459: a hold that lands on no word (empty field,
+/// separator, past-the-end) arms the collapsed-caret toolbar instead
+/// (Select-all + Paste — pasting needs no selection); composing
+/// holds stay quiet (the platform owns the field mid-composition).
+pub fn field_long_press(host: &oppa::ComponentHost, session: &oppa::EditSession, style: TextClass) {
+    host.ensure_session_shaper(session, style);
+    let Some((px, _)) = host.last_press_position() else {
+        return;
+    };
+    let Some(origin_x) = host.focused_node().and_then(|n| host.text_origin_under(n)) else {
+        return;
+    };
+    session.dbl_click_x(px - origin_x);
+    let (a, b) = session.selection();
+    if a == b && !session.is_composing() {
+        host.arm_caret_toolbar();
+    }
+    dirty_focused_field(host);
+}
+
 /// Drag-selection stream for text fields (Round 8.2, decision 298):
 /// the Down anchor through the live capture, both mapped into
 /// session-local x around the field's text origin (`drag_x`). Moves
 /// inside tap slop stream near-empty ranges that the tap Up collapses
 /// (tap behavior unchanged); far Moves arm the drag release (no press
 /// on Up — the router's Drag lifecycles, unchanged).
+///
+/// Decision 454: a confirmed handle grab streams the armed edge
+/// instead (the router confirms past tap slop and marks the arm
+/// consumed, so no tap/hold/swipe/release can double-dispatch —
+/// this is the drag's only placement).
 pub fn field_drag(host: &oppa::ComponentHost, session: &oppa::EditSession, style: TextClass) {
+    // Decision 454: a handle candidate swallows the whole move
+    // stream — confirmed drags move the armed edge, in-slop moves
+    // are quiet no-ops (streaming `drag_x` under an unconfirmed grab
+    // would clobber the anchor the edge drag keeps). Only a plain
+    // (non-handle) Down streams `drag_x`.
+    if let Some(edge) = host.handle_candidate_edge() {
+        if host.handle_drag_edge().is_some() {
+            field_handle_drag(host, session, style, edge);
+        }
+        return;
+    }
     host.ensure_session_shaper(session, style);
     let (Some((ox, _)), Some((cx, _))) = (host.lowest_press_origin(), host.capture_position())
     else {
@@ -60,6 +124,32 @@ pub fn field_drag(host: &oppa::ComponentHost, session: &oppa::EditSession, style
         return;
     };
     session.drag_x(ox - origin_x, cx - origin_x);
+    dirty_focused_field(host);
+}
+
+/// Renderer-drawn handle drag (decision 454): the live capture point
+/// maps into session-local x around the field's text origin, then the
+/// armed edge moves through `move_handle_edge` (caret follows the
+/// dragged edge; the anchor never moves). Graceful no-ops (no shaper,
+/// no capture, no laid text) mirror the `field_drag` rule — pointer
+/// ops never panic setup state.
+pub fn field_handle_drag(
+    host: &oppa::ComponentHost,
+    session: &oppa::EditSession,
+    style: TextClass,
+    edge: oppa::HandleEdge,
+) {
+    host.ensure_session_shaper(session, style);
+    let Some((cx, _)) = host.capture_position() else {
+        return;
+    };
+    let Some(origin_x) = host.focused_node().and_then(|n| host.text_origin_under(n)) else {
+        return;
+    };
+    let Some(byte) = session.byte_at_x(cx - origin_x) else {
+        return;
+    };
+    session.move_handle_edge(edge, byte);
     dirty_focused_field(host);
 }
 

@@ -16,93 +16,123 @@ pub(crate) struct WindowsGpu {
 }
 
 /// Ordered GPU backend attempts: Windows probes Vulkan first, then
-/// DX12, then GL (decision 390 — a DX12-dead but GL-alive box, e.g.
-/// pre-Win10, crippled VMs, corrupt D3D12 stacks, still gets
-/// hardware; healthy machines never reach past Vulkan). An explicit
-/// `OPPA_RENDERER=gpu-vulkan` / `gpu-dx12` / `gpu-gl` pins the
-/// single backend instead (never a silent substitution when the
-/// user named one).
-fn backend_attempts() -> Vec<(&'static str, wgpu::Backends)> {
-    match crate::renderer_override() {
-        Some(crate::RendererKind::GpuDx12) => vec![("dx12", wgpu::Backends::DX12)],
-        Some(crate::RendererKind::GpuVulkan) => vec![("vulkan", wgpu::Backends::VULKAN)],
-        Some(crate::RendererKind::GpuGl) => vec![("gl", wgpu::Backends::GL)],
-        _ => vec![
-            ("vulkan", wgpu::Backends::VULKAN),
-            ("dx12", wgpu::Backends::DX12),
-            ("gl", wgpu::Backends::GL),
-        ],
+/// DX12, then GL — see [`WINDOWS_GPU_ORDER`](crate::WINDOWS_GPU_ORDER)
+/// (decision 390). An explicit `OPPA_RENDERER=gpu-vulkan` /
+/// `gpu-dx12` / `gpu-gl` pins the single backend instead (never a
+/// silent substitution when the user named one) — the pin match
+/// lives once in [`presenter_rows`](crate::presenter_rows).
+struct WindowsSurfaceFactory {
+    raw_window_handle: RawWindowHandle,
+    raw_display_handle: RawDisplayHandle,
+}
+
+impl WindowsSurfaceFactory {
+    /// Snapshots the HWND into raw handles once (Vulkan requires the
+    /// real module handle; DX12 tolerates `None` — a failed lookup
+    /// warns once here instead of once per row).
+    fn new(hwnd_val: NonZeroIsize) -> Self {
+        let mut win_handle = Win32WindowHandle::new(hwnd_val);
+        win_handle.hinstance = unsafe {
+            windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+                .ok()
+                .and_then(|h| NonZeroIsize::new(h.0 as isize))
+        };
+        if win_handle.hinstance.is_none() {
+            eprintln!(
+                "oppa-app: GetModuleHandleW failed; Vulkan surface may refuse (DX12 unaffected)"
+            );
+        }
+        Self {
+            raw_window_handle: RawWindowHandle::Win32(win_handle),
+            raw_display_handle: RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
+        }
     }
 }
 
-/// Builds the GPU swapchain against `hwnd`, or returns the loud
-/// reason to fall back to GDI.
+impl<'a> crate::SurfaceFactory<'a> for WindowsSurfaceFactory {
+    fn make_surface(
+        &mut self,
+        backends: wgpu::Backends,
+    ) -> Result<crate::BuiltSurface<'a>, String> {
+        // One leaked instance per attempt (the surface borrows it;
+        // the winner lives for the process).
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = backends;
+        let instance: &'static wgpu::Instance = Box::leak(Box::new(wgpu::Instance::new(desc)));
+        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
+            raw_display_handle: Some(self.raw_display_handle),
+            raw_window_handle: self.raw_window_handle,
+        };
+        let surface =
+            unsafe { instance.create_surface_unsafe(target) }.map_err(|e| format!("{e}"))?;
+        Ok(crate::BuiltSurface { instance, surface })
+    }
+}
+
+/// Builds the GPU swapchain against `hwnd` through the shared
+/// presenter ladder (see [`WINDOWS_GPU_ORDER`](crate::WINDOWS_GPU_ORDER),
+/// closed with the terminal CPU row), or returns the loud reason to
+/// fall back to the GDI blit leg.
 pub(crate) fn build_gpu_windows(
     hwnd: windows::Win32::Foundation::HWND,
     loop_: &mut DesktopLoop,
     size: (u32, u32),
 ) -> Result<WindowsGpu, String> {
     let (w, h) = (size.0.max(1), size.1.max(1));
-    let hwnd_val = hwnd.0 as isize;
-    // Vulkan requires the real module handle on the raw window
-    // handle; DX12 tolerates None.
-    let mut win_handle = Win32WindowHandle::new(
-        NonZeroIsize::new(hwnd_val).ok_or_else(|| "null HWND for gpu surface".to_string())?,
-    );
-    win_handle.hinstance = unsafe {
-        windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
-            .ok()
-            .and_then(|h| NonZeroIsize::new(h.0 as isize))
-    };
-    if win_handle.hinstance.is_none() {
-        eprintln!("oppa-app: GetModuleHandleW failed; Vulkan surface may refuse (DX12 unaffected)");
-    }
-    let raw_window = RawWindowHandle::Win32(win_handle);
-    let raw_display = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
-    for (name, backends) in backend_attempts() {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = backends;
-        let instance: &'static wgpu::Instance = Box::leak(Box::new(wgpu::Instance::new(desc)));
-        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-            raw_display_handle: Some(raw_display),
-            raw_window_handle: raw_window,
-        };
-        let surface = match unsafe { instance.create_surface_unsafe(target) } {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("oppa-app: {name} surface failed: {e}");
-                continue;
-            }
-        };
-        match loop_.ensure_gpu_for_surface(instance, &surface) {
-            Ok(adapter) => {
-                eprintln!("oppa-app: {name} {adapter}");
-                let mode = loop_.pick_gpu_mode(&surface);
-                loop_
-                    .configure_gpu_surface(&surface, w, h, mode)
-                    .map_err(|e| format!("configure surface: {e}"))?;
-                loop_.enable_gpu(mode);
-                // Record the winning backend for the debug badge
-                // (decision 387): a closed row vocabulary, so an
-                // unknown name refuses loudly instead of guessing.
-                match crate::GpuApi::from_row_name(name) {
-                    Some(api) => loop_.set_gpu_api(api),
-                    None => {
-                        return Err(format!("winning gpu backend {name:?} is not a known row"));
-                    }
-                }
-                return Ok(WindowsGpu {
-                    surface,
-                    mode,
-                    name: name.to_string(),
-                });
-            }
-            Err(e) => {
-                eprintln!("oppa-app: {name} gpu failed: {e}");
+    let rows = crate::presenter_rows(&crate::WINDOWS_GPU_ORDER, true);
+    let hwnd_val = NonZeroIsize::new(hwnd.0 as isize)
+        .ok_or_else(|| "null HWND for gpu surface".to_string())?;
+    let mut factory = WindowsSurfaceFactory::new(hwnd_val);
+    let mut attempt = move |scene: &mut crate::SceneCore,
+                            row: crate::GpuRow,
+                            instance: &wgpu::Instance,
+                            surface: &wgpu::Surface<'_>|
+          -> Result<crate::GpuApplied, crate::RowFail> {
+        let adapter = scene
+            .ensure_gpu_for_surface(instance, surface)
+            .map_err(|e| crate::RowFail::Next(format!("{} gpu failed: {e}", row.name)))?;
+        eprintln!("oppa-app: {} {adapter}", row.name);
+        let mode = scene.pick_gpu_mode(surface);
+        let format = scene
+            .configure_gpu_surface(surface, w, h, mode)
+            .map_err(|e| crate::RowFail::Abort(format!("configure surface: {e}")))?;
+        scene.enable_gpu(mode);
+        // Decision 473: nobody reads the CPU pixmap while the
+        // swapchain serves — skip the redundant full-scene software
+        // raster (the Android per-generation precedent). Transient
+        // present failures refresh it once via `refresh_cpu_pixmap`
+        // without leaving GPU mode; `disable_gpu` re-arms it on the
+        // loud-failure fallback.
+        scene.set_cpu_paint(false);
+        // Record the winning backend for the debug badge
+        // (decision 387): a closed row vocabulary, so an unknown
+        // name refuses loudly instead of guessing.
+        match crate::GpuApi::from_row_name(row.name) {
+            Some(api) => scene.set_gpu_api(api),
+            None => {
+                return Err(crate::RowFail::Abort(format!(
+                    "winning gpu backend {:?} is not a known row",
+                    row.name
+                )));
             }
         }
+        Ok(crate::GpuApplied {
+            adapter,
+            mode,
+            format,
+        })
+    };
+    match crate::walk_presenter_rows(&rows, &mut factory, &mut attempt, loop_.scene_mut()) {
+        Ok(crate::LadderOutcome::Gpu(up)) => Ok(WindowsGpu {
+            surface: up.surface,
+            mode: up.mode,
+            name: up.name.to_string(),
+        }),
+        // The ladder logs the refusal line; the CPU wording stays
+        // here (the runner owns its blit leg).
+        Ok(crate::LadderOutcome::Cpu) => Err("no working GPU backend".to_string()),
+        Err(e) => Err(e.to_string()),
     }
-    Err("no working GPU backend".to_string())
 }
 
 /// Reconfigures the GPU swapchain to the loop's live viewport (Round
@@ -126,7 +156,9 @@ pub(crate) fn reconfigure_gpu(loop_: &mut DesktopLoop, gpu: &WindowsGpu) {
         );
         if let Err(e2) = loop_.configure_gpu_surface(&gpu.surface, w, h, gpu.mode) {
             eprintln!("oppa-app: gpu reconfigure retry failed: {e2}; CPU fallback");
-            loop_.disable_gpu();
+            if let Err(e) = loop_.disable_gpu() {
+                eprintln!("oppa-app: cpu catch-up repaint failed: {e}");
+            }
         } else {
             eprintln!("oppa-app: gpu reconfigure retry succeeded ({w}x{h})");
         }

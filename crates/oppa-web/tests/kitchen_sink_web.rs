@@ -133,7 +133,11 @@ fn is_blank(px: &[(u8, u8, u8, u8)]) -> bool {
 /// real inputs, and the Select chevron is inline SVG (no glyph).
 #[test]
 fn sink_mounts_form_with_roles_fields_and_vectors() {
-    let mut app = WebApp::new_with_root("KitchenSink", (), KitchenSinkApp);
+    let mut app = WebApp::new_with_root(
+        "KitchenSink",
+        oppa_controls::KitchenSinkProps::default(),
+        KitchenSinkApp,
+    );
     let html = app.html();
     assert!(html.contains("Oppa Kitchen Sink"), "title renders");
     // Form-tab roles (progressbar + dialog live on the Overlays
@@ -177,7 +181,11 @@ fn sink_mounts_form_with_roles_fields_and_vectors() {
 /// paints as inline SVG once checked.
 #[test]
 fn sink_checkbox_and_toggle_flip_through_bindings() {
-    let mut app = WebApp::new_with_root("KitchenSink", (), KitchenSinkApp);
+    let mut app = WebApp::new_with_root(
+        "KitchenSink",
+        oppa_controls::KitchenSinkProps::default(),
+        KitchenSinkApp,
+    );
     let _ = app.html();
     let (x, y) = center(&app, "checkbox");
     let html = app.click(x, y).expect("checkbox press touches");
@@ -210,7 +218,11 @@ fn sink_checkbox_and_toggle_flip_through_bindings() {
 /// Select opens through the box binding and picks through an option.
 #[test]
 fn sink_select_opens_and_picks_through_bindings() {
-    let mut app = WebApp::new_with_root("KitchenSink", (), KitchenSinkApp);
+    let mut app = WebApp::new_with_root(
+        "KitchenSink",
+        oppa_controls::KitchenSinkProps::default(),
+        KitchenSinkApp,
+    );
     let _ = app.html();
     let (x, y) = center(&app, "select-box");
     let html = app.click(x, y).expect("box press opens");
@@ -255,7 +267,11 @@ fn sink_select_opens_and_picks_through_bindings() {
 /// pixels (no two stages share a frame).
 #[test]
 fn sink_all_tabs_modal_and_platform_with_new_pixels() {
-    let mut app = WebApp::new_with_root("KitchenSink", (), KitchenSinkApp);
+    let mut app = WebApp::new_with_root(
+        "KitchenSink",
+        oppa_controls::KitchenSinkProps::default(),
+        KitchenSinkApp,
+    );
     let _ = app.html();
     let mut cpu = CpuBackend::new();
     let surf = white_surface(&mut cpu);

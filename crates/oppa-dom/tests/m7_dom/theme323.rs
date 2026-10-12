@@ -79,3 +79,50 @@ fn light_full_page_styles_its_body() {
         "light body style rides the page: {html}"
     );
 }
+
+/// Decision 477: a published palette override recolors the page
+/// chrome — the stanza carries the override (change-only by value:
+/// repeats stay quiet) and the full page styles its own body with
+/// it. Unset resolves through the mode exactly as before (the two
+/// tests above pin that).
+#[test]
+fn custom_tokens_recolor_chrome_stanza_and_body() {
+    let host = ComponentHost::new();
+    host.set_viewport(200.0, 120.0);
+    host.mount("Card", CardProps { title: "Hi".into() }, render_card);
+    host.run_until_idle();
+    let mut backend = DomBackend::new(1.0);
+    let mut sheet = StyleSheet::new(1.0);
+    for d in host.diffs_from(0) {
+        backend.commit(&d).expect("commit");
+    }
+    backend.with_sync(&host, &mut sheet).expect("sync");
+    backend.mark_rendered(&sheet);
+    let patch = backend.take_patch(&sheet);
+    assert!(patch.is_empty(), "settled Light take is empty");
+    // Publish custom tokens: one stanza with the override colors.
+    let custom = ThemeTokens {
+        background: Color(0x19_1D_23),
+        text_primary: Color(0xD7_D7_D7),
+        ..ThemeTokens::dark()
+    };
+    backend.set_theme_tokens(custom);
+    let touched = backend.with_sync(&host, &mut sheet).expect("sync").touched;
+    assert!(touched > 0, "the tokens publish is sync work");
+    let patch = backend.take_patch(&sheet);
+    let stanza = patch.theme.as_ref().expect("one stanza");
+    assert_eq!(stanza.bg, "#191d23", "override drives the wire");
+    assert_eq!(stanza.ink, "#d7d7d7", "override drives the wire");
+    assert!(!stanza.dark, "mode flag still follows the mode");
+    // Repeat publish of identical tokens: quiet again.
+    backend.set_theme_tokens(custom);
+    backend.with_sync(&host, &mut sheet).expect("sync");
+    let patch = backend.take_patch(&sheet);
+    assert!(patch.theme.is_none(), "change-only by value");
+    // Full page styles its own body with the override.
+    let html = render_page("t", &backend, &sheet);
+    assert!(
+        html.contains("<body style=\"background:#191d23;color:#d7d7d7;\">"),
+        "override body style rides the page: {html}"
+    );
+}

@@ -1382,6 +1382,7 @@ dependencies = [
  "jni 0.21.1",
  "ndk",
  "oppa",
+ "oppa-android-runner",
  "oppa-app",
  "oppa-controls",
  "oppa-cpu",
@@ -1390,6 +1391,21 @@ dependencies = [
  "oppa-text-android",
  "raw-window-handle",
  "tiny-skia",
+ "wgpu",
+]
+
+[[package]]
+name = "oppa-android-runner"
+version = "0.1.0"
+dependencies = [
+ "android-activity",
+ "jni 0.21.1",
+ "ndk",
+ "oppa",
+ "oppa-app",
+ "oppa-shell-android",
+ "oppa-text-android",
+ "raw-window-handle",
  "wgpu",
 ]
 

@@ -54,7 +54,7 @@ fn hi_plan() -> FramePlan {
 fn paint_hi(faced: bool) -> Vec<u8> {
     let mut be = CpuBackend::new();
     if faced {
-        be.set_font_for(FID, DEJAVU.to_vec(), 0);
+        be.set_font_for(FID, DEJAVU.into(), 0);
     }
     let s = be
         .create_surface(SurfaceDesc {
@@ -122,5 +122,5 @@ fn raster_is_deterministic() {
 #[should_panic(expected = "font bytes rejected")]
 fn invalid_face_bytes_fail_loud_at_registration() {
     let mut be = CpuBackend::new();
-    be.set_font_for(FID, vec![0, 1, 2, 3], 0);
+    be.set_font_for(FID, std::sync::Arc::<[u8]>::from([0, 1, 2, 3]), 0);
 }

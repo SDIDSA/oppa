@@ -84,7 +84,8 @@ impl TextAreaProps {
 /// Press/drag handlers mirror [`TextInput`] (Rounds 8.1–8.2 — tap caret,
 /// Shift extend, drag stream, double word, triple hard line; the press
 /// handler needs no y because hard lines split on `\n`, while soft-wrap
-/// y-to-line resolution stays an open follow-up).
+/// y-to-line resolution stays an open follow-up) plus hold-to-select
+/// (decision 448 — same double-tap word rule as `TextInput`).
 /// Disabled drops the handlers structurally (decision 213 — no tab
 /// stop either). Empty-with-placeholder mirrors `TextInput`
 /// (presentational span, never the value; on DOM a native
@@ -109,7 +110,18 @@ pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
         props.required,
         &props.error_message,
     );
-    let payload: VNode = match (props.value.get().is_empty(), &props.placeholder) {
+    let raw_val = props.value.get();
+    // Live preedit (decision 461 — same rule as `TextInput`):
+    // composing sessions render the display composite inline and
+    // subscribe to the composition epoch; idle sessions keep the
+    // exact old shape.
+    let _composition_epoch = session.composition_epoch().get();
+    let display_text = if session.is_composing() {
+        SharedString::from(session.display_text())
+    } else {
+        raw_val.clone()
+    };
+    let payload: VNode = match (display_text.is_empty(), &props.placeholder) {
         (true, Some(placeholder)) => with_ink(
             VNode::from(Text {
                 text: placeholder.clone(),
@@ -118,7 +130,7 @@ pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
             t.text_secondary,
         ),
         _ => TextAreaLeaf {
-            text: props.value.get(),
+            text: display_text,
             style: props.style,
             label: props.label.clone(),
         }
@@ -154,9 +166,14 @@ pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
         let tap_style = props.style;
         let drag_host = host.clone();
         let drag_session = tap_session.clone();
+        let hold_host = host.clone();
+        let hold_session = tap_session.clone();
         builder
             .on_press(move || {
                 field_press(&host, &tap_session, tap_style);
+            })
+            .on_long_press(move || {
+                field_long_press(&hold_host, &hold_session, tap_style);
             })
             .on_drag(move || {
                 field_drag(&drag_host, &drag_session, tap_style);

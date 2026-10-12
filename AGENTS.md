@@ -26,3 +26,9 @@ The index is [`docs/README.md`](docs/README.md).
 9. Keep documents small and single-question; one fact lives in one place —
    cross-reference with relative links; never link to nonexistent files.
 10. No new doc files without deleting or merging an old one.
+11. Leave the tree cleaner than you found it: pre-existing dirt
+    (stale artifacts, outdated comments, dead code, numbering or
+    reference drift) gets fixed on the way, in the same change,
+    whenever it is safe and cheap — never as a separate round.
+    Never revert or reassign someone else's in-flight work to do
+    it; report it instead.

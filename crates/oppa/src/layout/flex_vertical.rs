@@ -91,6 +91,31 @@ impl<'a> LayoutCtx<'a> {
             );
             sizes.insert(*child, s);
         }
+        // Decision 476: Div is block-lite and ignores flex shares —
+        // a flow child carrying flex_grow/flex_shrink under a Div
+        // would silently size intrinsically, so it refuses loudly
+        // (the flex_wrap=Wrap precedent: unimplemented axes never
+        // lay out silently — use a Column for flex children).
+        // fill_height children keep working (the pool below honors
+        // them under any explicit height); portals and absolute_y
+        // children never join flow and are exempt.
+        if block {
+            for child in &flow_ids {
+                let cs = self.style_of(*child);
+                let grow = cs.flex_grow.map(|g| g.get()).unwrap_or(0.0);
+                let shrink = cs.flex_shrink.map(|s| s.get()).unwrap_or(0.0);
+                if grow > 0.0 || shrink > 0.0 {
+                    let name = self
+                        .rec
+                        .get(*child)
+                        .map(|n| n.debug.clone())
+                        .unwrap_or_default();
+                    panic!(
+                        "layout: flex_grow/flex_shrink on Div child {name:?} is not supported in v1 — Div is block-lite and ignores flex shares; use a Column for flex children"
+                    );
+                }
+            }
+        }
         // fill_height (main axis, Decision 249): a constrained parent
         // (explicit `h`) divides its remaining content height equally
         // among fill children. Max-grow through `set_box_h` — the

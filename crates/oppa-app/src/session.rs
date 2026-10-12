@@ -18,13 +18,13 @@
 // loop: ...") stays load-bearing — tests grep it.
 
 use super::*;
-use oppa::{CaretPaint, FramePlan, ImageCache, SelectionPaint, ThemeMode, ThemeTokens};
+use oppa::{CaretPaint, FramePlan, HandlePaint, ImageCache, SelectionPaint, ThemeMode};
 use oppa_cpu::FramePlanBuilder;
 
 /// One presenter adapter of the shared [`SceneSession`] loop: the
 /// mechanical seam both present sides fill. Method names match the
 /// backend APIs (`commit`, `set_selection`, `set_caret`,
-/// `set_theme_mode`, `set_images`, `paint`) so implementations are
+/// `set_handles`, `set_theme_mode`, `set_images`, `paint`) so implementations are
 /// mechanical. DOM-only specifics (`sync`, `take_patch`, `render_page`)
 /// deliberately stay OUT of this trait — they are backend-adapter
 /// state, not engine logic.
@@ -42,10 +42,23 @@ pub trait ScenePresenter {
     /// Publishes the focused caret overlay.
     fn set_caret(&mut self, caret: Option<CaretPaint>);
 
+    /// Publishes the focused selection handles (decision 454 — the
+    /// host's live handle pair; default no-op so adapters without a
+    /// handle leg compile untouched — the shared builder still emits
+    /// the ops for every pixel adapter through `repaint` below).
+    fn set_handles(&mut self, _handles: Option<(HandlePaint, HandlePaint)>) {}
+
     /// Publishes the host theme mode (the page-chrome leg the DOM
     /// adapter forwards into the stylesheet; the pixel adapters chase
     /// the page background through the refit contract below).
     fn set_theme_mode(&mut self, mode: ThemeMode) -> Result<(), String>;
+
+    /// Publishes the override-honoring palette (decision 477 —
+    /// backends that paint theme-derived chrome outside the shared
+    /// plan, i.e. the DOM page chrome, follow custom tokens through
+    /// this; default no-op so adapters without a chrome leg compile
+    /// untouched).
+    fn set_theme_tokens(&mut self, _tokens: oppa::ThemeTokens) {}
 
     /// Syncs the adapter's static-image deposits (the pixel adapters
     /// deposit into the active arm(s) at paint; the DOM adapter hands
@@ -113,7 +126,7 @@ impl SceneSession {
         viewport: (u32, u32),
         dpr: f32,
     ) -> Self {
-        let page_bg = ThemeTokens::of(host.theme().mode()).background;
+        let page_bg = host.theme_tokens().background;
         Self {
             host,
             builder,
@@ -148,6 +161,17 @@ impl SceneSession {
     /// implementation of the prologue every adapter shares. Returns
     /// the plan's damage-rect count; presenter failures are loud.
     pub fn repaint<P: ScenePresenter + ?Sized>(&mut self, pres: &mut P) -> Result<usize, String> {
+        // Stage profiler (diagnosis only): `OPPA_PROFILE_PAINT=1`
+        // logs per-stage ms (commit / overlays / plan / images /
+        // paint). Env-gated, one read per repaint — desktop sets it
+        // directly, the Android runner mirrors its `debug.oppa.profile`
+        // prop into process env (NativeActivity inherits a fixed env).
+        // Decision 469: the stage timestamps capture lazily behind the
+        // flag — `Instant::now()` traps on wasm32-unknown-unknown, so
+        // the unconditional captures broke every web repaint (the
+        // printing was always gated; the captures were not).
+        let profile = std::env::var_os("OPPA_PROFILE_PAINT").is_some();
+        let t_all = profile.then(std::time::Instant::now);
         pres.commit(&self.host)?;
         // Round 15.2 (decision 313): the text overlays ride every
         // committed frame — the shared build-scoped rule from the
@@ -161,27 +185,42 @@ impl SceneSession {
         pres.set_caret(caret);
         self.builder.set_selection(selection);
         self.builder.set_caret(caret);
+        // Decision 454: the renderer-drawn handle pair rides the same
+        // publish rule (pixel adapters paint it through the shared
+        // builder emission; the DOM adapter draws its own divs).
+        let handles = self.host.focused_handles_paint();
+        pres.set_handles(handles);
+        self.builder.set_handles(handles);
         // Theme contract round: the build theme + page chrome follow
         // the host mode every frame, and a toggled page background
         // refits the presenter's surfaces before painting (same
         // one-refit path as resize/DPR — steady state is a color
         // compare, never surface churn).
         let mode = self.host.theme().mode();
+        // Decision 477: the builder and the presenter both follow
+        // the override-honoring palette (custom tokens recolor text
+        // ink, page chrome, and refit backgrounds in one publish).
+        let tokens = self.host.theme_tokens();
         self.builder.set_theme_mode(mode);
+        self.builder.set_theme_tokens(tokens);
         pres.set_theme_mode(mode)?;
-        let want_bg = ThemeTokens::of(mode).background;
+        pres.set_theme_tokens(tokens);
+        let want_bg = tokens.background;
         if want_bg != self.page_bg {
             self.page_bg = want_bg;
             let (w, h) = self.viewport;
             pres.refit(&self.host, w, h, want_bg)?;
         }
+        let t_staged = profile.then(std::time::Instant::now);
         let plan = self
             .host
             .with_retained_mut(|rec, styles| self.builder.build_full(rec, styles));
+        let t_built = profile.then(std::time::Instant::now);
         self.last_caret_shown = self.builder.caret().is_some();
         self.last_plan = Some(plan.clone());
         let images = self.host.images();
         pres.set_images(&images);
+        let t_ready = profile.then(std::time::Instant::now);
         // The adapter's frame metric (see the `paint` contract
         // above): plan damage-rect count for the pixel adapters
         // (`RgbPresenter::paint` returns exactly this), touched-work
@@ -190,6 +229,23 @@ impl SceneSession {
         // fallback — e.g. background presses and converged value
         // re-feeds reported work that never touched the page).
         let touched = pres.paint(&self.host, &plan)?;
+        if profile {
+            let t_end = std::time::Instant::now();
+            // All four stage stamps are `Some` here (captured above
+            // behind this same flag); the fallback only satisfies the
+            // type checker, never production.
+            let ms = |then: Option<std::time::Instant>, now: std::time::Instant| {
+                then.map(|t| now.duration_since(t).as_millis()).unwrap_or(0)
+            };
+            eprintln!(
+                "oppa-paint: staged={}ms build={}ms images={}ms paint={}ms total={}ms damage={touched}",
+                ms(t_all, t_staged.unwrap_or(t_end)),
+                ms(t_staged, t_built.unwrap_or(t_end)),
+                ms(t_built, t_ready.unwrap_or(t_end)),
+                ms(t_ready, t_end),
+                ms(t_all, t_end),
+            );
+        }
         Ok(touched)
     }
 

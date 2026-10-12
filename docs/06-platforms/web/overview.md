@@ -43,16 +43,27 @@ Sources: `12-archive/DESIGN.md` §§1–2, 9.2–9.3 (locked #2, #23, #27);
   Framework-measured tracked text never delegates to CSS
   `letter-spacing`. Freeze gated on §2.3 conditions.
 - **Hot reload:** wasm module swap ≈ 0.1 s.
-- **App story (v1 remainder, Gap 6):** `crates/oppa-web` (wasm
-  `WebApp`: host + `DomBackend` + `StyleSheet`, `MockClock` time) +
-  `web/bootstrap.js` (pointer/key → inject, rAF → `tick`, full-HTML
-  swap on change) + `web/index.html`. Built with
-  `cargo build -p oppa-web --target wasm32-unknown-unknown --release`
-  then `wasm-bindgen --target web` (`web/pkg/`, machine-local build
-  output). Run: raw `python -m http.server` + headless Edge via
-  `spike/web/webapp.mjs` → `spike/results/webapp.json`
-  (measured: ready, switch false→true→false through real pointer
-  events, zero console errors).
+- **Resize (decision 470):** the scene follows its container —
+  the bootstrap watches `#oppa-root` through a `ResizeObserver`
+  (content-box CSS px + live `devicePixelRatio`) and each distinct
+  reading applies synchronously through `WasmHost::resize`
+  (viewport + DPR reflow, settle, refit contract, full reload
+  patch). The shell owns the sizing policy: the template root is
+  fluid (`100vw`/`100vh`), pin to fixed px for a fixed-size app.
+  Non-finite/negative sizes refuse loudly, zero-area parks, and
+  identical readings stay quiet; shells bound before 470 (no
+  `resize` export) stay fixed-size with one warning. DPR rides the
+  same edge (zoom/monitor moves reflow); per-edge storm cost is a
+  full reload each — keyed resize patches stay a follow-up.
+- **App story:** `cargo oppa new <dir> --web`, then `cargo oppa serve`
+  in it (one command: wasm build + version-pinned wasm-bindgen +
+  no-store static serve + browser open — the web `cargo run`).
+  Apps name their root once via `oppa_web::export_app!` over
+  `WasmHost`; every page boots through the one shared
+  `web/oppa-bootstrap.js` (`bootOppa` — keyed applier, event wiring,
+  rAF, boot theme chrome, optional PWA). Headless Edge proof via
+  `spike/web/*.mjs` (ready, switch false→true→false through real
+  pointer events, zero console errors).
 - **Browser compat (note, not a claim):** proven on headless
   Chromium/Edge 154 (this box, re-baselined Phase 40b decision 382).
   The module uses baseline wasm only (no threads, no SIMD, no
@@ -69,7 +80,7 @@ Sources: `12-archive/DESIGN.md` §§1–2, 9.2–9.3 (locked #2, #23, #27);
   (`standalone` display, shell colors; icons are app branding,
   none ships) + `web/sw.js` (cache-first app shell, versioned
   `CACHE` per release, bundle names following the package stem)
-  + registration in `bootstrap.js` and the manifest link in
+  + registration in `index.html` (via `bootOppa({pwa})`) and the manifest link in
   `index.html` (all flowing through `cargo oppa new --web`,
   renames included). The dev rig links its own manifest for
   smoke but registers no worker (network-fresh by design).
@@ -80,3 +91,4 @@ Sources: `12-archive/DESIGN.md` §§1–2, 9.2–9.3 (locked #2, #23, #27);
   figure; Firefox full-leg automation and Safari passes stay
   blocked). The load-once-offline hand pass stays manual (needs an
   interactive browser session); no background-update or push story (open).
+- **File pickers (decisions 422–423):** no PathBuf `FileDialog` impl in `oppa-web` — PathBuf open/save/folder refuse as `PickError::Unsupported`; the bytes host half landed (`WasmHost::file_pick_start`/`resolve` generation rendezvous + `ScriptedOpener`) — hidden-`<input>`/FS-Access chooser glue + `FileReader` bytes + bindgen surface stay follow-ups (FS Access Chromium-only); see the contract in [`SPEC.md`](../../SPEC.md).

@@ -217,6 +217,145 @@ fn ctx_request_close_forwards_to_host_flag() {
 }
 
 #[test]
+fn system_bars_visible_defaults_hidden_and_drains_once() {
+    // Android screen-mode toggle: the boot mode is hidden/immersive,
+    // so the signal defaults to false; a set arms exactly one runner
+    // command (last write wins, drain consumes, re-request re-arms).
+    let host = ComponentHost::new();
+    assert_eq!(host.take_system_bars_request(), None, "unset drains none");
+    let visible = host.system_bars_visible();
+    assert!(
+        !crate::reactive::untrack(|| visible.get()),
+        "boot mode is hidden"
+    );
+    host.set_system_bars_visible(true);
+    assert!(
+        crate::reactive::untrack(|| visible.get()),
+        "signal follows the set"
+    );
+    assert_eq!(
+        host.take_system_bars_request(),
+        Some(true),
+        "request drains once"
+    );
+    assert_eq!(host.take_system_bars_request(), None, "drain consumes");
+    host.set_system_bars_visible(true);
+    host.set_system_bars_visible(false);
+    assert_eq!(
+        host.take_system_bars_request(),
+        Some(false),
+        "last write wins"
+    );
+}
+
+#[test]
+fn selection_handles_visible_defaults_on_and_sets() {
+    // Mobile affordance flag (decision 474): publication defaults
+    // on (current behavior everywhere until a runner opts out);
+    // desktop Windows/Linux runners set it false at startup, and
+    // flips apply on the next publish with no re-render owed.
+    let host = ComponentHost::new();
+    assert!(
+        host.selection_handles_visible(),
+        "handles publish by default"
+    );
+    host.set_selection_handles_visible(false);
+    assert!(!host.selection_handles_visible(), "runner opt-out sticks");
+    host.set_selection_handles_visible(true);
+    assert!(host.selection_handles_visible(), "restore works");
+}
+
+#[test]
+fn custom_theme_tokens_override_per_mode_and_republish() {
+    // Decision 477: per-mode custom palettes — unset slots fall
+    // back to built-in; publishing re-renders themed bodies in
+    // place like a mode toggle (instances survive).
+    use crate::{Color, ThemeMode, ThemeTokens};
+    let host = ComponentHost::new();
+    assert_eq!(
+        host.theme_tokens(),
+        ThemeTokens::of(ThemeMode::Light),
+        "unset override is the built-in palette"
+    );
+    let custom = ThemeTokens {
+        primary: Color(0x12_34_56),
+        ..ThemeTokens::dark()
+    };
+    host.set_theme_tokens_override(ThemeMode::Dark, Some(custom));
+    // Light mode is untouched by a Dark publish.
+    assert_eq!(
+        host.theme_tokens(),
+        ThemeTokens::of(ThemeMode::Light),
+        "other mode keeps built-in"
+    );
+    host.set_theme(ThemeMode::Dark);
+    host.run_until_idle();
+    assert_eq!(host.theme_tokens(), custom, "live mode reads the override");
+    // Tracked republish: a body reading tokens() re-runs on publish.
+    #[derive(Clone)]
+    struct Inker {
+        seen: crate::Signal<Color>,
+    }
+    impl Props for Inker {}
+    fn inker(ctx: &Ctx, props: &Inker) -> VNode {
+        props.seen.set(ctx.theme().tokens().primary);
+        VNode::Hole
+    }
+    let seen = host.runtime().signal(Color(0x00_00_00));
+    host.mount("Inker", Inker { seen: seen.clone() }, inker);
+    host.run_until_idle();
+    assert_eq!(
+        crate::reactive::untrack(|| seen.get()),
+        custom.primary,
+        "body reads the override"
+    );
+    let custom2 = ThemeTokens {
+        primary: Color(0x65_43_21),
+        ..ThemeTokens::dark()
+    };
+    host.set_theme_tokens_override(ThemeMode::Dark, Some(custom2));
+    host.run_until_idle();
+    assert_eq!(
+        crate::reactive::untrack(|| seen.get()),
+        custom2.primary,
+        "republish re-renders themed bodies in place"
+    );
+    // Clearing restores the built-in palette.
+    host.set_theme_tokens_override(ThemeMode::Dark, None);
+    host.run_until_idle();
+    assert_eq!(
+        host.theme_tokens(),
+        ThemeTokens::of(ThemeMode::Dark),
+        "clear restores built-in"
+    );
+}
+
+#[test]
+fn ctx_system_bars_toggle_forwards_to_host() {
+    // The component-facing half: a body calling
+    // `ctx.set_system_bars_visible(true)` writes the same signal the
+    // runner drains (show-then-hide shape without a device).
+    #[derive(Clone)]
+    struct Shower;
+    impl Props for Shower {}
+    fn shower(ctx: &Ctx, _: &Shower) -> VNode {
+        ctx.set_system_bars_visible(true);
+        VNode::Hole
+    }
+    let host = ComponentHost::new();
+    host.mount("Shower", Shower, shower);
+    host.run_until_idle();
+    assert!(crate::reactive::untrack(|| host
+        .system_bars_visible()
+        .get()));
+    assert_eq!(
+        host.take_system_bars_request(),
+        Some(true),
+        "ctx call arms the command"
+    );
+}
+
+#[test]
 fn component_lifecycle_signal_updates_and_suspends_tickers() {
     use crate::shell::AppLifecycleState;
     let host = ComponentHost::new();

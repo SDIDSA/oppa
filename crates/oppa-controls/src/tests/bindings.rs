@@ -189,6 +189,8 @@ fn uncontrolled_text_reports_committed_edits() {
             required: false,
             error_message: None,
             helper_text: None,
+            icon: None,
+            icon_size: 16.0,
         },
         UncontrolledTextInput,
     );

@@ -147,7 +147,9 @@ fn presenter_badge_name_follows_the_active_renderer() {
     loop_.enable_gpu(wgpu::PresentMode::Fifo);
     assert_eq!(loop_.renderer_kind(), RendererKind::GpuAuto);
     assert_eq!(loop_.presenter_badge_name(), "Gpu");
-    loop_.disable_gpu();
+    loop_
+        .disable_gpu()
+        .expect("disable repaints the cpu catch-up");
     assert_eq!(loop_.presenter_badge_name(), "CPU");
     // The derived name is what the badge renders.
     loop_.enable_gpu(wgpu::PresentMode::Fifo);
@@ -213,7 +215,9 @@ fn gpu_badge_names_the_recorded_wgpu_backend() {
     assert_eq!(GpuApi::from_row_name("vulkan"), Some(GpuApi::Vulkan));
     assert_eq!(GpuApi::from_row_name("gl"), Some(GpuApi::Gl));
     assert_eq!(GpuApi::from_row_name("metal"), None);
-    loop_.disable_gpu();
+    loop_
+        .disable_gpu()
+        .expect("disable repaints the cpu catch-up");
     assert_eq!(loop_.gpu_api(), None);
     assert_eq!(loop_.presenter_badge_name(), "CPU");
 }

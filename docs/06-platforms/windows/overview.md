@@ -26,6 +26,7 @@ Sources: [`STATE.md`](../../STATE.md) (Done); code: `crates/oppa-shell-win/`,
 - **Planned:** none open — Vello backend, UIA Invoke/RangeValue,
   and the hot-reload dylib swap all shipped (see
   [`STATE.md`](../../STATE.md) Done).
+- **File pickers (decisions 422/425):** Win32 open (`GetOpenFileNameW`) + COM save/folder, all three on the `DesktopLoop` slots with shared handles (missing slots refuse as `PickError::Unsupported`); the kitchen-sink example forwards them, so its Platform tab drives native dialogs.
 - **Packaging:** release exe is the blessed path; installer
   story open — see [packaging](../packaging.md) (G4,
   decision 215).

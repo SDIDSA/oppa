@@ -12,3 +12,8 @@ path = "src/main.rs"
 [lib]
 name = "cargo_oppa"
 path = "src/lib.rs"
+
+[dependencies]
+# APK assembly (unsigned zip + dex/so entries — no system zip tool
+# needed on any host).
+zip = "2"

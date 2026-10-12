@@ -412,6 +412,7 @@ mod buttons;
 mod chrome;
 mod feedback;
 mod fields;
+mod icons;
 mod interaction;
 mod lists;
 mod overlays;

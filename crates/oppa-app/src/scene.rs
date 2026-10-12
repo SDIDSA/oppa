@@ -82,7 +82,7 @@ impl SceneCore {
         // Theme contract round: the page background seeds from the
         // host theme (a fresh host is Light — the pre-contract
         // white, pixel-identical) and clears both paint surfaces.
-        let bg = ThemeTokens::of(host.theme().mode()).background;
+        let bg = host.theme_tokens().background;
         let rgb = RgbPresenter::new(w, h, bg)?;
         let session = SceneSession::from_parts(host, FramePlanBuilder::new(1.0), (w, h), 1.0);
         Ok(Self { session, rgb })
@@ -100,7 +100,12 @@ impl SceneCore {
     /// on both. Best-effort by contract (callers warn, never die,
     /// when the face is unreadable). Always lands in both backends
     /// so a later `enable_gpu` never paints tofu.
-    pub fn set_font_for(&mut self, id: oppa::text::FontId, bytes: Vec<u8>, index: u32) {
+    pub fn set_font_for(
+        &mut self,
+        id: oppa::text::FontId,
+        bytes: std::sync::Arc<[u8]>,
+        index: u32,
+    ) {
         self.rgb.set_font_for(id, bytes, index);
     }
 
@@ -113,7 +118,8 @@ impl SceneCore {
     /// twin when active), and paints the arms. The full loop rule +
     /// per-adapter paints live on
     /// [`SceneSession::repaint`]; pixels encode into the
-    /// CPU pixmap always plus the custom twin whenever GPU is active.
+    /// CPU pixmap (skipped while opted out — decision 473) plus the
+    /// custom twin whenever GPU is active.
     /// Returns the plan's damage-rect count; pixels failures are
     /// loud `Err`s.
     pub fn repaint(&mut self) -> Result<usize, String> {
@@ -307,8 +313,17 @@ impl SceneCore {
         self.rgb.cpu.retained_op_count(self.rgb.surface)
     }
 
-    /// CPU pixmap surface (always painted — the GDI / softbuffer
-    /// source and the GPU fallback pixels).
+    /// Total CPU paints executed (decision 436 test seam: proves the
+    /// opt-out actually skips `CpuBackend::paint` instead of merely
+    /// producing identical pixels).
+    pub fn cpu_paints_total(&self) -> u64 {
+        self.rgb.cpu.paints_total()
+    }
+
+    /// CPU pixmap surface (the GDI / softbuffer source and the GPU
+    /// fallback pixels; stale while the paint is opted out — readers
+    /// on the fallback path go through
+    /// [`refresh_cpu_pixmap`](Self::refresh_cpu_pixmap)).
     pub fn cpu_surface_id(&self) -> SurfaceId {
         self.rgb.surface
     }
@@ -336,11 +351,52 @@ impl SceneCore {
 
     /// Drops back to the CPU pixmap (loud GPU failure path): later
     /// repaints skip the GPU twin again; its retained scene stays
-    /// for a later re-enable (refit keeps sizes in lockstep).
-    pub fn disable_gpu(&mut self) {
+    /// for a later re-enable (refit keeps sizes in lockstep). When
+    /// the CPU paint was opted out while GPU served (decision 436),
+    /// repaints once immediately so the fallback never serves silent
+    /// old pixels — loud `Err` on failure, like every repaint.
+    pub fn disable_gpu(&mut self) -> Result<(), String> {
         self.rgb.active = RendererKind::Cpu;
         self.rgb.gpu_mode = None;
         self.rgb.gpu_api = None;
+        if !self.rgb.cpu_paint {
+            self.rgb.set_cpu_paint(true);
+            self.session.repaint(&mut self.rgb)?;
+        }
+        Ok(())
+    }
+
+    /// Opts the CPU pixmap paint in or out (decision 436, extended
+    /// to desktop GPU runs by decision 473): GPU-serving runners
+    /// disable it per bring-up (nobody reads the pixmap while the
+    /// swapchain serves, and the full-scene software raster dominates
+    /// tap cost — measured unoptimized on top); CPU-only runs and
+    /// the proof harness keep the default on, and
+    /// [`disable_gpu`](Self::disable_gpu) re-arms it on the
+    /// loud-failure fallback. See [`refresh_cpu_pixmap`](Self::refresh_cpu_pixmap)
+    /// for the transient-failure rule (fresh blit without leaving
+    /// GPU mode).
+    pub fn set_cpu_paint(&mut self, on: bool) {
+        self.rgb.set_cpu_paint(on);
+    }
+
+    /// Repaints the CPU pixmap once without leaving GPU mode
+    /// (decision 473 — transient present-failure fallback): when the
+    /// CPU paint was opted out while GPU serves, re-arms it,
+    /// repaints, and re-opts out, so the fallback blit that follows
+    /// reads fresh pixels while the swapchain stays primary (the
+    /// next frame still retries GPU per the runner contract).
+    /// No-op when the CPU paint is already on (CPU-only runs never
+    /// pay it). Loud `Err` on repaint failure (never a silent stale
+    /// blit).
+    pub fn refresh_cpu_pixmap(&mut self) -> Result<(), String> {
+        if self.rgb.cpu_paint {
+            return Ok(());
+        }
+        self.rgb.set_cpu_paint(true);
+        let r = self.repaint();
+        self.rgb.set_cpu_paint(false);
+        r.map(|_| ())
     }
 
     /// Ensures a live GPU context on an adapter compatible with
@@ -407,11 +463,12 @@ impl SceneCore {
             .map_err(|e| format!("desktop loop: configure custom gpu surface: {e:?}"))
     }
 
-    /// Picks the present mode: uncapped Immediate first, then
-    /// Mailbox, then vsync Fifo (throughput leg first). Loud either
+    /// Picks the present mode, vsync-first: Fifo, then Mailbox,
+    /// then uncapped Immediate (an event-paced UI has no business
+    /// presenting uncapped — tearing plus wasted GPU for nothing;
+    /// Immediate is the last resort, never the default). Loud either
     /// way, with the offered list for blank-window diagnosis.
-    /// The desktop `pick_gpu_mode` and the Android `pick_uncapped_mode`
-    /// are this one method now.
+    /// Benchmarks take [`SceneCore::pick_uncapped_mode`] instead.
     pub fn pick_gpu_mode(&self, surface: &wgpu::Surface<'_>) -> wgpu::PresentMode {
         let offered = self
             .rgb
@@ -419,19 +476,26 @@ impl SceneCore {
             .adapter()
             .map(|a| surface.get_capabilities(a).present_modes)
             .unwrap_or_default();
+        let mode = prefer_present_mode(&offered, false);
         eprintln!("oppa-app: offered present modes: {offered:?}");
-        for mode in [
-            wgpu::PresentMode::Immediate,
-            wgpu::PresentMode::Mailbox,
-            wgpu::PresentMode::Fifo,
-        ] {
-            if offered.contains(&mode) {
-                eprintln!("oppa-app: present mode {mode:?}");
-                return mode;
-            }
-        }
-        eprintln!("oppa-app: no preferred mode offered, Fifo");
-        wgpu::PresentMode::Fifo
+        eprintln!("oppa-app: present mode {mode:?}");
+        mode
+    }
+
+    /// Picks the present mode, throughput-first: uncapped Immediate,
+    /// then Mailbox, then vsync Fifo. Benchmark/continuous-repaint
+    /// only — product loops take [`SceneCore::pick_gpu_mode`].
+    pub fn pick_uncapped_mode(&self, surface: &wgpu::Surface<'_>) -> wgpu::PresentMode {
+        let offered = self
+            .rgb
+            .gpu_backend
+            .adapter()
+            .map(|a| surface.get_capabilities(a).present_modes)
+            .unwrap_or_default();
+        let mode = prefer_present_mode(&offered, true);
+        eprintln!("oppa-app: offered present modes: {offered:?}");
+        eprintln!("oppa-app: present mode {mode:?} (uncapped)");
+        mode
     }
 
     /// Presents the custom GPU backend through the real swapchain.
@@ -548,5 +612,58 @@ impl SceneCore {
         let handle = self.session.host.mount(name, props, render);
         self.session.host.run_until_idle();
         handle
+    }
+}
+
+/// Preference order over offered present modes (pure for tests):
+/// vsync-first (`Fifo → Mailbox → Immediate`) for product loops,
+/// throughput-first reversed for benchmarks. Empty offers fall to
+/// Fifo (every backend serves vsync — a missing Fifo is a driver
+/// fact, and tearing beats black).
+fn prefer_present_mode(offered: &[wgpu::PresentMode], uncapped: bool) -> wgpu::PresentMode {
+    use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
+    let order = if uncapped {
+        [Immediate, Mailbox, Fifo]
+    } else {
+        [Fifo, Mailbox, Immediate]
+    };
+    order
+        .into_iter()
+        .find(|mode| offered.contains(mode))
+        .unwrap_or(Fifo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prefer_present_mode;
+    use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
+
+    #[test]
+    fn product_prefers_vsync_first() {
+        // Full offer: Fifo wins (no tearing, no wasted GPU).
+        assert_eq!(
+            prefer_present_mode(&[Immediate, Mailbox, Fifo], false),
+            Fifo
+        );
+        // Fifo missing: Mailbox still vsyncs (never Immediate while
+        // a vsync row exists).
+        assert_eq!(prefer_present_mode(&[Immediate, Mailbox], false), Mailbox);
+        // Immediate-only box: tearing beats black.
+        assert_eq!(prefer_present_mode(&[Immediate], false), Immediate);
+        // Empty offer: Fifo fallback (every backend serves vsync).
+        assert_eq!(prefer_present_mode(&[], false), Fifo);
+    }
+
+    #[test]
+    fn benchmark_prefers_throughput_first() {
+        // Full offer: uncapped Immediate wins (benchmark cadence).
+        assert_eq!(
+            prefer_present_mode(&[Fifo, Mailbox, Immediate], true),
+            Immediate
+        );
+        // Immediate missing: Mailbox before Fifo.
+        assert_eq!(prefer_present_mode(&[Fifo, Mailbox], true), Mailbox);
+        // Fifo-only box: still Fifo.
+        assert_eq!(prefer_present_mode(&[Fifo], true), Fifo);
     }
 }

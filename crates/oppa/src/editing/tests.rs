@@ -234,6 +234,29 @@ fn composition_cancel_commits_nothing() {
 }
 
 #[test]
+fn composition_epoch_bumps_on_signal_less_changes_only() {
+    let mut s = session("");
+    let epoch = s.composition_epoch();
+    assert_eq!(epoch.get(), 0);
+    s.composition_started(0);
+    assert_eq!(epoch.get(), 1);
+    s.composition_updated("nih", 3);
+    assert_eq!(epoch.get(), 2);
+    // Commits re-render through on_change, never the epoch.
+    s.composition_committed("nih");
+    assert_eq!(epoch.get(), 2, "commits ride on_change, not the epoch");
+    assert!(!s.is_composing());
+    // A fresh composition bumps again; cancel closes it.
+    s.composition_started(3);
+    assert_eq!(epoch.get(), 3);
+    s.composition_cancelled();
+    assert_eq!(epoch.get(), 4);
+    // Idle edits (plain inserts) never touch the epoch.
+    s.insert("x");
+    assert_eq!(epoch.get(), 4);
+}
+
+#[test]
 fn delete_range_reanchors_active_composition() {
     let mut s = session("abc");
     s.composition_started(3);
@@ -772,6 +795,162 @@ fn shift_extends_accumulate_and_plain_moves_collapse_first() {
     s.select_all();
     s.extend_caret(-1);
     assert_eq!(s.selection(), (0, 10));
+}
+
+// -- absolute range set (decision 449: the proxy-selection report path) --
+#[test]
+fn select_range_orders_clamps_and_tracks_caret() {
+    let s = session("hello world");
+    s.select_range(6, 11);
+    assert_eq!(s.selection(), (6, 11));
+    assert_eq!(s.caret(), 11);
+    // Reversed inputs order with the caret on the reported end
+    // (handle-drag direction tracks, the drag_x precedent).
+    s.select_range(11, 6);
+    assert_eq!(s.selection(), (6, 11));
+    assert_eq!(s.caret(), 6);
+    // OOB and mid-char inputs floor safely (the clamp_byte rule).
+    s.select_range(0, 99);
+    assert_eq!(s.selection(), (0, 11));
+    s.select_range(4, 5);
+    assert_eq!(s.selection(), (4, 5));
+    assert_eq!(s.caret(), 5);
+    // Selection-only: content and undo stack untouched.
+    assert_eq!(s.content_text(), "hello world");
+    assert_eq!(s.undo_depth(), 0);
+}
+
+#[test]
+fn select_range_multibyte_floors_to_boundaries() {
+    let s = session("a\u{1f44d}b");
+    // Thumbs-up spans bytes 1..5: edges inside it floor outward to
+    // whole chars (never a half unit on either side).
+    s.select_range(2, 6);
+    assert_eq!(s.selection(), (1, 6));
+    s.select_range(0, 2);
+    assert_eq!(s.selection(), (0, 1));
+}
+
+#[test]
+fn select_range_is_quiet_noop_while_composing() {
+    let mut s = session("hello");
+    s.select_range(0, 5);
+    // Opening a composition collapses the selection itself (its own
+    // rule); the report arriving after must move nothing further.
+    s.composition_started(0);
+    assert!(s.is_composing());
+    let frozen = s.selection();
+    s.select_range(1, 3);
+    assert_eq!(s.selection(), frozen, "composing selection untouched");
+    assert_eq!(s.content_text(), "hello", "composing content untouched");
+}
+
+// -- renderer-drawn handle drags (decision 454) --
+#[test]
+fn move_handle_edge_tracks_the_dragged_edge() {
+    use crate::input::HandleEdge;
+    let s = session("hello world");
+    s.select_range(2, 8);
+    // Start edge moves, anchor holds, caret follows the finger.
+    s.move_handle_edge(HandleEdge::Start, 0);
+    assert_eq!(s.selection(), (0, 8));
+    assert_eq!(s.caret(), 0);
+    // End edge moves the same way.
+    s.move_handle_edge(HandleEdge::End, 11);
+    assert_eq!(s.selection(), (0, 11));
+    assert_eq!(s.caret(), 11);
+    // Selection-only: content and undo stack untouched.
+    assert_eq!(s.content_text(), "hello world");
+    assert_eq!(s.undo_depth(), 0);
+}
+
+#[test]
+fn move_handle_edge_never_crosses_and_ignores_collapsed() {
+    use crate::input::HandleEdge;
+    let mut s = session("hello world");
+    s.select_range(2, 8);
+    // Dragging an edge past its anchor collapses onto the anchor
+    // (edges never cross, stated).
+    s.move_handle_edge(HandleEdge::Start, 10);
+    assert_eq!(s.selection(), (8, 8));
+    assert_eq!(s.caret(), 8);
+    s.select_range(2, 8);
+    s.move_handle_edge(HandleEdge::End, 0);
+    assert_eq!(s.selection(), (2, 2));
+    assert_eq!(s.caret(), 2);
+    // Collapsed selections have no handles: quiet no-op (never a
+    // live path — the Down could never have armed one).
+    s.move_handle_edge(HandleEdge::Start, 0);
+    assert_eq!(s.selection(), (2, 2));
+    // Composing owns the field: quiet no-op.
+    s.select_range(0, 5);
+    s.composition_started(0);
+    let frozen = s.selection();
+    s.move_handle_edge(HandleEdge::End, 11);
+    assert_eq!(s.selection(), frozen, "composing selection untouched");
+    assert_eq!(s.content_text(), "hello world");
+}
+
+#[test]
+fn byte_at_x_maps_edges_and_needs_a_shaper() {
+    // 10px per ASCII char: x=5.0 lands on the first cluster's
+    // trailing half → byte 1; x=4.9 on its leading half → byte 0.
+    let s = session("hello");
+    assert_eq!(s.byte_at_x(4.9), Some(0));
+    assert_eq!(s.byte_at_x(5.0), Some(1));
+    // Past the end clamps to the length, never None.
+    assert_eq!(s.byte_at_x(1000.0), Some(5));
+    // No shaper: graceful None (pointer ops never panic setup).
+    let bare = session_no_shaper("hello");
+    assert_eq!(bare.byte_at_x(5.0), None);
+}
+
+// -- masked display mapping (decision 458: bullets on screen,
+// cleartext in session) --
+#[test]
+fn masked_display_text_masks_per_char() {
+    let s = session("aé");
+    assert_eq!(s.display_text(), "aé", "unmasked shows content");
+    s.set_masked(true);
+    assert_eq!(s.display_text(), "••", "one bullet per char");
+    let empty = session("");
+    empty.set_masked(true);
+    assert_eq!(empty.display_text(), "");
+}
+
+#[test]
+fn masked_byte_mapping_round_trips_through_char_indices() {
+    let s = session("aé");
+    s.set_masked(true);
+    // Content "aé": 'a' = byte 0, 'é' = bytes 1..3. Display "••":
+    // first bullet = bytes 0..3, second = bytes 3..6.
+    assert_eq!(s.display_byte_to_composite(0), 0);
+    assert_eq!(s.display_byte_to_composite(3), 1);
+    assert_eq!(s.display_byte_to_composite(99), 3);
+    assert_eq!(s.composite_byte_to_display(0), 0);
+    assert_eq!(s.composite_byte_to_display(1), 3);
+    assert_eq!(s.composite_byte_to_display(99), 6);
+    // Unmasked is the plain clamp (mid-char floors to the boundary).
+    let u = session("aé");
+    assert_eq!(u.display_byte_to_composite(2), 1);
+    assert_eq!(u.composite_byte_to_display(2), 1);
+}
+
+#[test]
+fn masked_pointer_ops_land_on_content_chars() {
+    // FakeText advances 10px/char at size 16: masked "hello" lays
+    // six bullets; tapping the second bullet maps to content byte 1
+    // (not bullet byte 4, which would strand the caret mid-content).
+    let s = session("hello");
+    s.set_masked(true);
+    assert_eq!(s.byte_at_x(15.0), Some(1));
+    s.click_x(15.0);
+    assert_eq!(s.selection(), (1, 1));
+    // Double-tap selects the CONTENT word, not bullet separators.
+    s.dbl_click_x(25.0);
+    assert_eq!(s.selection(), (0, 5));
+    // Caret paint resolves through display clusters without panic.
+    assert!(s.caret_rect().is_some());
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use super::*;
+use oppa::ime::ImeCompositionHandler;
 use oppa::input::InputEvent;
 use oppa::{ComponentHost, SharedString};
 
@@ -61,6 +62,46 @@ fn text_input_placeholder_shows_when_empty() {
     let id = node_by_debug(&host, "text-input");
     let sem = host.retained_semantics(id).expect("semantics");
     assert_eq!(sem.label.as_deref(), Some("Name"), "label stable");
+}
+
+/// Decision 461: live composition renders inline (the preedit
+/// used to vanish until commit — soft-keyboard taps showed
+/// nothing). The epoch subscription re-renders the field around
+/// the display composite; idle trees are untouched.
+#[test]
+fn text_input_live_composition_renders_inline() {
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from(""));
+    host.mount(
+        "TI",
+        TextInputProps::new("Name", value.clone()).placeholder("Enter name"),
+        TextInput,
+    );
+    host.run_until_idle();
+    assert_eq!(host.text_fields().len(), 1, "empty: placeholder span only");
+    let id = node_by_debug(&host, "text-input");
+    press_node(&host, id);
+    let mut session = host.focused_field_session().expect("session");
+    session.composition_started(0);
+    session.composition_updated("ok", 2);
+    host.run_until_idle();
+    assert_eq!(
+        host.text_fields().len(),
+        2,
+        "composing leaf renders inline, not the placeholder"
+    );
+    assert!(
+        approx(lined_content_w(&host), 17.5),
+        "composing 2x8.75 displayed"
+    );
+    // Committing keeps the text through the normal funnel.
+    session.composition_committed("ok");
+    host.run_until_idle();
+    assert!(
+        approx(lined_content_w(&host), 17.5),
+        "committed 2x8.75 displayed"
+    );
 }
 
 /// Decision 293 (OQ-SINK-1 fixed): typing into an empty+
@@ -194,4 +235,79 @@ fn text_input_edit_session_binds() {
     host.inject_input(InputEvent::text(field, "yo"));
     host.run_until_idle();
     assert_eq!(value.get(), SharedString::from("yo"));
+}
+
+/// Decision 478: a set icon renders a fixed leading slot inside
+/// the field box — same outer box, icon vertically centered —
+/// while focus, typing, and tab order behave exactly as without
+/// one (the icon is decorative and handlerless).
+#[test]
+fn text_input_icon_renders_slot_and_still_types() {
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from(""));
+    let mut rgba = Vec::with_capacity(4 * 4 * 4);
+    for _ in 0..16 {
+        rgba.extend_from_slice(&[255, 0, 0, 255]);
+    }
+    let image = host.images().insert_pixels("field-icon", 4, 4, rgba);
+    host.mount(
+        "TIIcon",
+        TextInputProps::new("Name", value.clone())
+            .icon(image)
+            .icon_size(20.0),
+        TextInput,
+    );
+    host.run_until_idle();
+    // Same outer box as the iconless default.
+    let outer = host
+        .committed_box(node_by_debug(&host, "text-input"))
+        .expect("box");
+    assert!(
+        approx(outer.w, 200.0) && approx(outer.h, 32.0),
+        "outer box unchanged, got {}x{}",
+        outer.w,
+        outer.h
+    );
+    // Fixed 20px slot, vertically centered in the box.
+    let icon = host
+        .committed_box(node_by_debug(&host, "text-input-icon"))
+        .expect("icon slot laid out");
+    assert!(
+        approx(icon.w, 20.0) && approx(icon.h, 20.0),
+        "icon slot 20x20, got {}x{}",
+        icon.w,
+        icon.h
+    );
+    assert!(
+        approx(icon.y + icon.h / 2.0, outer.y + outer.h / 2.0),
+        "icon vertically centered, got {} vs {}",
+        icon.y + icon.h / 2.0,
+        outer.y + outer.h / 2.0
+    );
+    assert!(
+        icon.x >= outer.x && icon.x + icon.w <= outer.x + outer.w,
+        "icon inside the box"
+    );
+    // Focus, typing, and tab order are untouched.
+    let id = node_by_debug(&host, "text-input");
+    assert!(
+        host.tab_order().contains(&id),
+        "outer stays the single tab stop"
+    );
+    assert!(
+        !host
+            .tab_order()
+            .contains(&node_by_debug(&host, "text-input-icon")),
+        "icon adds no tab stop of its own"
+    );
+    press_node(&host, id);
+    assert_eq!(host.focused_node(), Some(id), "press focuses");
+    host.inject_input(InputEvent::text(id, "Ada"));
+    host.run_until_idle();
+    assert_eq!(
+        value.get(),
+        SharedString::from("Ada"),
+        "typing feeds the value with an icon set"
+    );
 }

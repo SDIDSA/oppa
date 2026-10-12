@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 oppa = { path = "../oppa" }
+oppa-android-runner = { path = "../oppa-android-runner" }
 oppa-app = { path = "../oppa-app" }
 oppa-controls = { path = "../oppa-controls" }
 oppa-cpu = { path = "../oppa-cpu" }

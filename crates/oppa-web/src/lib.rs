@@ -3,7 +3,7 @@
 //!
 //! [`WebApp`] owns one `ComponentHost` (toggle scene, `MockClock`
 //! time), a `DomBackend` + `StyleSheet`, and the diff cursor. The
-//! JS bootstrap (`web/bootstrap.js`) wires browser events into it:
+//! JS bootstrap (`web/oppa-bootstrap.js`) wires browser events into it:
 //! pointer/key input → inject + run + sync, `requestAnimationFrame`
 //! timestamps → [`WebApp::tick`] (TIME tails — the toggle's 120 ms
 //! transition settles through frames, decision 122), and applies the
@@ -309,7 +309,20 @@ impl WebApp {
     /// their state through `props`, like every `new_with_root`
     /// root.
     pub fn new_sink() -> WebApp {
-        WebApp::new_with_root("KitchenSink", (), oppa_controls::KitchenSinkApp)
+        WebApp::new_with_root(
+            "KitchenSink",
+            oppa_controls::KitchenSinkProps::default(),
+            oppa_controls::KitchenSinkApp,
+        )
+    }
+
+    /// Mounts the portable login page instead of the demo scene: the
+    /// same `login_root` the desktop example (`run_desktop`) and the
+    /// Android `SceneCore` mount — served as `login.html`. Demo-only
+    /// state (nav, settings toggle, demo image) still rides along
+    /// inertly, like `new_sink`.
+    pub fn new_login() -> WebApp {
+        WebApp::new_with_root("Login", (), oppa_controls::login_root)
     }
 
     /// Opens the settings store (Round 4.3): localStorage where it
@@ -361,6 +374,13 @@ impl WebApp {
         self.shell.html()
     }
 
+    /// Boot page chrome (stanza-shaped JSON — the shared bootstrap
+    /// applies it at mount so the page paints in-theme from the
+    /// first frame).
+    pub fn theme_chrome(&self) -> String {
+        self.shell.theme_chrome()
+    }
+
     /// Pointer tap at CSS px: down + up through the shared pipeline.
     /// Returns the DOM patch JSON, or `None` when untouched. A
     /// touched frame persists the toggle (Round 4.3 — settings
@@ -398,6 +418,15 @@ impl WebApp {
     /// node, never a panic).
     pub fn text(&mut self, pid: &str, value: &str) -> Option<String> {
         self.shell.text(pid, value)
+    }
+
+    /// Follows the scene container's size (decision 470): container
+    /// content-box CSS px plus live `devicePixelRatio`. See
+    /// [`WasmHost::resize`] for the validation, park, and refit
+    /// rules. Returns the full-page reload JSON, or `None` when
+    /// parked or untouched.
+    pub fn resize(&mut self, w: f32, h: f32, dpr: f32) -> Option<String> {
+        self.shell.resize(w, h, dpr)
     }
 
     /// Starts a platform fetch (Round 4.1, web fetch — the wasm half
@@ -618,6 +647,70 @@ mod tests {
             app.fetch_resolve("demo:quote", f64::NAN, true, "x".to_string())
                 .is_none(),
             "NaN generation discards"
+        );
+    }
+
+    /// Decision 423 (bytes open seam): pick start mints a
+    /// generation and parks pending; resolve latches bytes;
+    /// stale generations discard; dismissal settles empty.
+    #[test]
+    fn file_pick_start_resolve_and_stale_discard() {
+        use oppa::{FilePickerOptions, PickedFile};
+        let mut app = WasmHost::mount_root("Bare", (), |_, _| oppa::Div("bare").build());
+        assert_eq!(app.pending_pick_generation(), None);
+        assert_eq!(app.last_pick_result(), None);
+        let g1 = app.file_pick_start(FilePickerOptions::default());
+        assert_eq!(g1, 1.0, "first generation");
+        assert_eq!(app.pending_pick_generation(), Some(1));
+        // Stale generation discards (never latches, never clears).
+        assert!(
+            !app.file_pick_resolve(
+                g1 + 1.0,
+                Ok(vec![PickedFile::new("stale.png".to_string(), vec![9])])
+            ),
+            "stale result discards"
+        );
+        assert_eq!(app.pending_pick_generation(), Some(1));
+        assert_eq!(app.last_pick_result(), None);
+        // Current generation applies.
+        let files = vec![PickedFile::new("a.png".to_string(), vec![1, 2, 3])];
+        assert!(app.file_pick_resolve(g1, Ok(files.clone())));
+        assert_eq!(app.pending_pick_generation(), None);
+        assert_eq!(app.last_pick_result(), Some(Ok(files)));
+        // Garbage generation saturates into a mismatch (never panics).
+        assert!(
+            !app.file_pick_resolve(f64::NAN, Ok(vec![PickedFile::new("x".to_string(), vec![])])),
+            "NaN generation discards"
+        );
+    }
+
+    /// Decision 423: a second start supersedes the first (the first
+    /// generation goes stale); dismissal settles `Ok(vec![])`.
+    #[test]
+    fn file_pick_supersede_and_dismissal() {
+        use oppa::FilePickerOptions;
+        let mut app = WasmHost::mount_root("Bare", (), |_, _| oppa::Div("bare").build());
+        let g1 = app.file_pick_start(FilePickerOptions::default());
+        let g2 = app.file_pick_start(FilePickerOptions::default());
+        assert_eq!((g1, g2), (1.0, 2.0));
+        assert!(
+            !app.file_pick_resolve(g1, Ok(vec![])),
+            "superseded generation discards"
+        );
+        assert!(app.file_pick_resolve(g2, Ok(vec![])), "current dismisses");
+        assert_eq!(app.last_pick_result(), Some(Ok(vec![])));
+    }
+
+    /// Decision 423: bridge failures latch loudly as `Err`.
+    #[test]
+    fn file_pick_failure_resolves_loudly() {
+        use oppa::{FilePickerOptions, PickError};
+        let mut app = WasmHost::mount_root("Bare", (), |_, _| oppa::Div("bare").build());
+        let g = app.file_pick_start(FilePickerOptions::default());
+        assert!(app.file_pick_resolve(g, Err(PickError::Backend("reader died".to_string()))));
+        assert_eq!(
+            app.last_pick_result(),
+            Some(Err(PickError::Backend("reader died".to_string())))
         );
     }
 

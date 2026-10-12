@@ -30,7 +30,9 @@ impl DomBackend {
     ///   value property instead — never an element swap while the
     ///   browser may hold caret);
     /// - own-changed parents of fields sync open-tag state in place
-    ///   (never an outerHTML swap over a live field);
+    ///   (never an outerHTML swap over a live field — except a kind
+    ///   change, which retags by swap since no attrs op can change
+    ///   the tag);
     /// - field-free changed subtrees swap whole (nothing focusable
     ///   inside, by retained-kind walk);
     /// - `.sel` highlights and `.spacer` heights sync through their
@@ -153,10 +155,15 @@ impl DomBackend {
             }
             let pid = pid_of(id);
             // Unkeyed decorations ride marker classes, never swaps.
-            // (Round 15.1: the caret bar joins the selection payload —
-            // one `sels` entry carries both, so blink toggles never
-            // need a new patch kind.)
-            if el.sel_rects != prev.sel_rects || el.caret_rect != prev.caret_rect {
+            // (Round 15.1: the caret bar used to join the selection
+            // payload — decision 472 removed it (verdict-(b) leaves
+            // the caret to the browser), so blink toggles no longer
+            // touch this channel at all. Decision 454: handle divs
+            // ride the same entry.)
+            if el.sel_rects != prev.sel_rects
+                || el.handle_bars != prev.handle_bars
+                || el.handle_knobs != prev.handle_knobs
+            {
                 patch.sels.push((pid.clone(), self.render_decorations(el)));
             }
             if el.spacer_h != prev.spacer_h {
@@ -167,7 +174,19 @@ impl DomBackend {
             if same_own(el, prev) {
                 continue;
             }
-            if el.children.is_empty() {
+            // Kind change retags the element (a live `<input>` cannot
+            // become a `<div>` through open-tag sync — the tag lives
+            // outside every attrs op, and parenting children into a
+            // void element hides them): swap the whole subtree by pid.
+            // Focus heals through the applier's end-of-frame focal
+            // pass (the swapped subtree carries the field pids, and
+            // blob values ride the committed signals, so caret
+            // restores when the DOM value matches). Ancestor
+            // suppression below covers the descendant ops of the same
+            // transition, including places under this parent.
+            if el.kind != prev.kind {
+                patch.swaps.push((pid, self.render_node(id)));
+            } else if el.children.is_empty() {
                 match el.kind {
                     HtmlKind::Field | HtmlKind::Area => patch.attrs.push(self.chrome_of(el, prev)),
                     _ => patch.swaps.push((pid, self.render_node(id))),
@@ -227,6 +246,18 @@ impl DomBackend {
         patch
     }
 
+    /// Re-arms the theme stanza after a priming sync whose patch
+    /// never reaches the browser (boot): the boot take consumes the
+    /// one stanza into a discarded patch while the full page's own
+    /// `<body style>` is dropped by the bootstrap's `innerHTML`
+    /// mount — so without this the static light shell stays forever
+    /// under dark controls. The next `take_patch` re-emits the
+    /// current theme and the page chrome heals on first interaction.
+    pub fn rearm_theme_stanza(&mut self) {
+        self.last_patched_theme = None;
+        self.last_patched_tokens = None;
+    }
+
     /// Drains the stylesheet delta into `patch.sheet` (decision 392):
     /// `Some` exactly when the sheet added rules since the last
     /// shipped revision — then advances the revision, so settled
@@ -239,16 +270,18 @@ impl DomBackend {
         self.shipped_rules = sheet.rule_count();
     }
 
-    /// Change-only page-chrome stanza (theme contract round): returns
-    /// `Some` and advances the marker when the mode moved since the
+    /// Change-only page-chrome stanza (theme contract round, decision
+    /// 477 extends it to palettes): returns `Some` and advances the
+    /// markers when the mode or the resolved tokens moved since the
     /// last patch — `None` on repeats (never per-frame noise).
     fn theme_stanza(&mut self) -> Option<ThemePatch> {
-        if self.last_patched_theme != Some(self.theme) {
+        let tokens = self.resolved_tokens();
+        if self.last_patched_theme != Some(self.theme) || self.last_patched_tokens != Some(tokens) {
             self.last_patched_theme = Some(self.theme);
-            let t = ThemeTokens::of(self.theme);
+            self.last_patched_tokens = Some(tokens);
             Some(ThemePatch {
-                bg: dom_hex(t.background),
-                ink: dom_hex(t.text_primary),
+                bg: dom_hex(tokens.background),
+                ink: dom_hex(tokens.text_primary),
                 dark: self.theme == ThemeMode::Dark,
             })
         } else {

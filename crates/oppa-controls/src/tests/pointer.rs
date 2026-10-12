@@ -129,6 +129,131 @@ fn drag_at(host: &ComponentHost, x1: f32, y: f32, x2: f32) {
     host.run_until_idle();
 }
 
+/// Decision 448: a still hold past the long-press deadline
+/// word-selects exactly like a double-tap (native long-press shape)
+/// on `TextInput` — Down inside "you", no moves, past 0.5s, then Up
+/// (consumed, never a tap): the session holds `(3, 6)` and the
+/// release does not collapse it.
+#[test]
+fn text_input_hold_selects_word_like_double_tap() {
+    use oppa::{PointerAction, PointerButton};
+    let clock = Rc::new(oppa::MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from("hi you"));
+    host.mount("TI", TextInputProps::new("Name", value.clone()), TextInput);
+    host.run_until_idle();
+    let (x, y) = field_tap_point(&host, "text-input", 30.0);
+    host.inject_input(InputEvent::Pointer {
+        id: Some(0),
+        action: PointerAction::Down {
+            button: PointerButton::Primary,
+        },
+        x,
+        y,
+        modifiers: oppa::Modifiers::NONE,
+    });
+    host.run_until_idle();
+    clock.advance(0.6);
+    host.fire_due_longpresses();
+    host.run_until_idle();
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (3, 6),
+        "hold selects the held word"
+    );
+    host.inject_input(InputEvent::Pointer {
+        id: Some(0),
+        action: PointerAction::Up {
+            button: PointerButton::Primary,
+        },
+        x,
+        y,
+        modifiers: oppa::Modifiers::NONE,
+    });
+    host.run_until_idle();
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (3, 6),
+        "the consumed release never taps (no collapse)"
+    );
+}
+
+/// Decision 448: the same hold shape on `TextArea` — single word
+/// selects whole.
+#[test]
+fn text_area_hold_selects_word() {
+    use oppa::{PointerAction, PointerButton};
+    let clock = Rc::new(oppa::MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from("hello"));
+    host.mount("TA", TextAreaProps::new("Notes", value.clone()), TextArea);
+    host.run_until_idle();
+    let (x, y) = field_tap_point(&host, "text-area", 20.0);
+    host.inject_input(InputEvent::Pointer {
+        id: Some(0),
+        action: PointerAction::Down {
+            button: PointerButton::Primary,
+        },
+        x,
+        y,
+        modifiers: oppa::Modifiers::NONE,
+    });
+    host.run_until_idle();
+    clock.advance(0.6);
+    host.fire_due_longpresses();
+    host.run_until_idle();
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (0, 5),
+        "hold selects the held word"
+    );
+}
+
+/// Decision 448: a hold on an empty field selects nothing (no word,
+/// no panic, selection stays collapsed); decision 459 arms the
+/// collapsed-caret Paste bar instead of leaving the hold bare.
+#[test]
+fn text_input_hold_on_empty_is_quiet_noop() {
+    use oppa::{PointerAction, PointerButton};
+    let clock = Rc::new(oppa::MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from(""));
+    host.mount("TI", TextInputProps::new("Name", value.clone()), TextInput);
+    host.run_until_idle();
+    let (x, y) = field_tap_point(&host, "text-input", 0.0);
+    host.inject_input(InputEvent::Pointer {
+        id: Some(0),
+        action: PointerAction::Down {
+            button: PointerButton::Primary,
+        },
+        x,
+        y,
+        modifiers: oppa::Modifiers::NONE,
+    });
+    host.run_until_idle();
+    clock.advance(0.6);
+    host.fire_due_longpresses();
+    host.run_until_idle();
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (0, 0),
+        "empty hold selects nothing"
+    );
+    // Decision 459: the collapsed hold arms the Paste bar instead
+    // (hold-to-paste needs no selection); a fresh Down supersedes.
+    assert!(
+        host.take_caret_toolbar(),
+        "collapsed hold arms the caret toolbar"
+    );
+    assert!(
+        !host.take_caret_toolbar(),
+        "the arm consumes once, never twice"
+    );
+}
+
 /// Round 8.2 (decision 298): drag byte 2→8 selects `(2, 8)` and the
 /// shared plan carries one themed background Rect with exact bounds
 /// (what CPU and Vello both paint — no backend selection logic).
@@ -326,5 +451,310 @@ fn text_area_triple_click_selects_hard_line() {
         sess.selection(),
         (3, 5),
         "triple-click selects the hard line"
+    );
+}
+
+/// Decision 454: renderer-drawn selection handles — a selected field
+/// publishes one pair (laid-cluster geometry, the highlight rule),
+/// the shared plan carries bar `Rect` + knob `Circle` ops per edge,
+/// and grabbing the start handle drags only that edge (the caret
+/// follows the finger; the consumed release never taps back).
+#[test]
+fn text_input_handles_paint_and_drag_the_armed_edge() {
+    use oppa::{DrawOp, HandleEdge, HANDLE_KNOB_R_PX, HANDLE_WIDTH_PX};
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from("hello world"));
+    host.mount("TI", TextInputProps::new("Name", value.clone()), TextInput);
+    host.run_until_idle();
+    // Word-select "world" (bytes 6..11) with two fast taps.
+    let (x, _) = field_tap_point(&host, "text-input", 7.0 * 8.75 + 2.0);
+    let field = node_by_debug(&host, "text-input");
+    let y = host.committed_box(field).expect("hit box").y + 16.0;
+    tap_at(&host, x, y, false);
+    tap_at(&host, x, y, false);
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (6, 11)
+    );
+    // The host publishes one pair on the laid line.
+    let (start, end) = host.focused_handles_paint().expect("handle pair");
+    assert_eq!(start.edge, HandleEdge::Start);
+    assert_eq!(end.edge, HandleEdge::End);
+    assert!(start.x < end.x, "edges order left-to-right");
+    assert!(start.h > 0.0 && end.h > 0.0);
+    // The grab resolves on the bar and misses far away.
+    assert_eq!(
+        host.handle_hit(start.x, start.y + start.h / 2.0),
+        Some(HandleEdge::Start)
+    );
+    assert_eq!(
+        host.handle_hit(end.x, end.y + end.h / 2.0),
+        Some(HandleEdge::End)
+    );
+    assert_eq!(host.handle_hit(start.x - 100.0, start.y - 100.0), None);
+    // The shared plan carries one bar Rect + one knob Circle per edge.
+    let builder = oppa_cpu::FramePlanBuilder::new(1.0);
+    builder.set_handles(Some((start, end)));
+    let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+    let bars = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, DrawOp::Rect { w, .. } if (*w - HANDLE_WIDTH_PX).abs() < f32::EPSILON))
+        .count();
+    let knobs: Vec<(f32, f32, f32)> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::Circle { cx, cy, r, .. } => Some((*cx, *cy, *r)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bars, 2, "one bar per edge");
+    assert_eq!(knobs.len(), 2, "one knob per edge");
+    for (cx, cy, r) in &knobs {
+        assert!(
+            (r - HANDLE_KNOB_R_PX).abs() < f32::EPSILON,
+            "knob radius pins"
+        );
+        let _ = (cx, cy);
+    }
+    // Grab the start bar and drag it right to byte 8: only the low
+    // edge moves, the caret follows the finger, and the release
+    // never collapses back to a tap.
+    let origin_x = host.text_origin_under(field).expect("text origin");
+    drag_at(
+        &host,
+        start.x,
+        start.y + start.h / 2.0,
+        origin_x + 8.0 * 8.75 + 2.0,
+    );
+    let sess = host.focused_field_session().expect("session");
+    assert_eq!(sess.selection(), (8, 11));
+    assert_eq!(sess.caret(), 8);
+}
+
+/// Decision 455: renderer-drawn text toolbar — the runner-published
+/// model floats a handlerless overlay (labels paint, taps resolve
+/// geometrically): item taps queue without stealing focus, and the
+/// release stays quiet (no tap dispatch collapses the selection).
+#[test]
+fn scene_toolbar_taps_queue_without_stealing_focus() {
+    use oppa::{PointerAction, PointerButton};
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from("hello world"));
+    host.mount("TI", TextInputProps::new("Name", value.clone()), TextInput);
+    host.run_until_idle();
+    // Word-select "world" (bytes 6..11) with two fast taps.
+    let (x, _) = field_tap_point(&host, "text-input", 7.0 * 8.75 + 2.0);
+    let field = node_by_debug(&host, "text-input");
+    let fbox = host.committed_box(field).expect("hit box");
+    tap_at(&host, x, fbox.y + 16.0, false);
+    tap_at(&host, x, fbox.y + 16.0, false);
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (6, 11)
+    );
+    // Publish the model like the Android pump does (anchor = the
+    // committed field box): the overlay mounts handlerless items.
+    host.set_toolbar_model(Some(oppa::ToolbarModel {
+        items: vec![
+            oppa::ToolbarItem::SelectAll,
+            oppa::ToolbarItem::Copy,
+            oppa::ToolbarItem::Cut,
+            oppa::ToolbarItem::Paste,
+        ],
+        anchor: (
+            fbox.x as i32,
+            fbox.y as i32,
+            (fbox.x + fbox.w) as i32,
+            (fbox.y + fbox.h) as i32,
+        ),
+    }));
+    host.run_until_idle();
+    assert_eq!(
+        find_retained_by_debug(&host, "oppa_toolbar_item_copy").len(),
+        1,
+        "copy item mounts"
+    );
+    let cbox = host
+        .committed_box_by_debug("oppa_toolbar_item_copy")
+        .expect("copy item box");
+    let (cx, cy) = (cbox.x + cbox.w / 2.0, cbox.y + cbox.h / 2.0);
+    assert_eq!(host.toolbar_hit(cx, cy), Some(oppa::ToolbarAction::Copy));
+    // Down queues the tap geometrically: focus stays in the field,
+    // the selection is untouched, and nothing dispatches.
+    host.inject_input(InputEvent::Pointer {
+        id: Some(0),
+        action: PointerAction::Down {
+            button: PointerButton::Primary,
+        },
+        x: cx,
+        y: cy,
+        modifiers: oppa::Modifiers::NONE,
+    });
+    host.run_until_idle();
+    assert_eq!(
+        host.drain_toolbar_actions(),
+        vec![oppa::ToolbarAction::Copy]
+    );
+    assert_eq!(
+        host.focused_node(),
+        Some(field),
+        "toolbar never steals focus"
+    );
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (6, 11)
+    );
+    host.inject_input(InputEvent::Pointer {
+        id: Some(0),
+        action: PointerAction::Up {
+            button: PointerButton::Primary,
+        },
+        x: cx,
+        y: cy,
+        modifiers: oppa::Modifiers::NONE,
+    });
+    host.run_until_idle();
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (6, 11),
+        "release stays quiet"
+    );
+    assert!(host.drain_toolbar_actions().is_empty());
+    // Clearing the model unmounts the overlay and the hit.
+    host.set_toolbar_model(None);
+    host.run_until_idle();
+    assert!(find_retained_by_debug(&host, "oppa_toolbar_item_copy").is_empty());
+    assert_eq!(host.toolbar_hit(cx, cy), None);
+}
+
+/// Decision 458: masked fields paint and hit-test in display
+/// space — select-all over "hello" highlights six bullets (18
+/// display bytes, not 6 content bytes), and tapping the second
+/// bullet lands the caret on content char 1 (not stranded
+/// mid-content at bullet byte 4).
+#[test]
+fn masked_field_paints_and_taps_in_display_space() {
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from("hello"));
+    host.mount(
+        "TI",
+        TextInputProps::new("PIN", value.clone()).masked(true),
+        TextInput,
+    );
+    host.run_until_idle();
+    let sess = host.focused_field_session();
+    assert!(sess.is_none(), "mount alone focuses nothing");
+    // Tap the field to focus, then select all through the session.
+    let (x0, y0) = field_tap_point(&host, "text-input", 0.0);
+    tap_at(&host, x0, y0, false);
+    let sess = host.focused_field_session().expect("session");
+    assert!(sess.is_masked(), "masked prop published to the session");
+    sess.select_all();
+    host.run_until_idle();
+    let sel = host.focused_selection_paint().expect("paint selection");
+    assert_eq!(
+        sel.range,
+        (0, 15),
+        "five 3-byte bullets, got {:?}",
+        sel.range
+    );
+    let (start, end) = host.focused_handles_paint().expect("handle pair");
+    assert!(start.x < end.x, "handles order across bullets");
+    drop(sess);
+    // Collapse with a distant tap (far enough to restart the
+    // multi-click chain at 1 — an adjacent tap would double-click),
+    // then tap the second bullet: it must land on content char 1.
+    let (x4, _) = field_tap_point(&host, "text-input", 4.0 * 8.75 + 2.0);
+    tap_at(&host, x4, y0, false);
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (4, 4)
+    );
+    let (x1, _) = field_tap_point(&host, "text-input", 8.75 + 2.0);
+    tap_at(&host, x1, y0, false);
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (1, 1),
+        "second bullet maps to content char 1"
+    );
+}
+/// while the model anchor arrives in device px — at DPR 2 the
+/// portal must land on the anchor, not overshoot by the ratio
+/// (feeding device px straight in parks the bar a screen off, as
+/// observed on a 420dpi phone).
+#[test]
+fn scene_toolbar_converts_anchor_by_dpr() {
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from("hello world"));
+    host.mount("TI", TextInputProps::new("Name", value.clone()), TextInput);
+    host.run_until_idle();
+    // Word-select "world" (bytes 6..11) with two fast taps.
+    let (x, _) = field_tap_point(&host, "text-input", 7.0 * 8.75 + 2.0);
+    let field = node_by_debug(&host, "text-input");
+    let fbox = host.committed_box(field).expect("hit box");
+    tap_at(&host, x, fbox.y + 16.0, false);
+    tap_at(&host, x, fbox.y + 16.0, false);
+    assert_eq!(
+        host.focused_field_session().expect("session").selection(),
+        (6, 11)
+    );
+    // Double the output scale: committed boxes double, the portal
+    // style must halve back to the same device point.
+    let mut cfg = host.layout_config();
+    cfg.device_pixel_ratio = 2.0;
+    host.set_layout_config(cfg);
+    host.run_until_idle();
+    let fbox2 = host.committed_box(field).expect("hit box at dpr 2");
+    host.set_toolbar_model(Some(oppa::ToolbarModel {
+        items: vec![oppa::ToolbarItem::Copy],
+        anchor: (
+            fbox2.x as i32,
+            fbox2.y as i32,
+            (fbox2.x + fbox2.w) as i32,
+            (fbox2.y + fbox2.h) as i32,
+        ),
+    }));
+    host.run_until_idle();
+    let portal = host
+        .committed_box_by_debug("oppa_toolbar_layer")
+        .expect("portal box");
+    assert!(
+        portal.x.abs() < 1e-3 && portal.y.abs() < 1e-3,
+        "offset-less portal anchors the viewport origin, got ({}, {})",
+        portal.x,
+        portal.y
+    );
+    let bar = host
+        .committed_box_by_debug("oppa_toolbar_bar")
+        .expect("bar box");
+    // Measured hug (FakeText 8.75px/char at dpr 2 → device px):
+    // "Copy" (4 chars) + item padding + bar border.
+    assert!(
+        (bar.w - (4.0 * 8.75 * 2.0 + 24.0 * 2.0 + 2.0 * 2.0)).abs() < 2.0,
+        "bar hugs measured content, got w={}",
+        bar.w
+    );
+    assert!(
+        (bar.x - fbox2.x).abs() < 1.0,
+        "bar parks on the anchor left, got {} vs {}",
+        bar.x,
+        fbox2.x
+    );
+    let at = fbox2.y / 2.0;
+    let expect_y = if at >= oppa::TOOLBAR_ROW_H_PX + 8.0 {
+        fbox2.y - (oppa::TOOLBAR_ROW_H_PX + 8.0) * 2.0
+    } else {
+        fbox2.y + fbox2.h + 8.0 * 2.0
+    };
+    assert!(
+        (bar.y - expect_y).abs() < 1.0,
+        "bar parks on the anchor row, got {} vs {expect_y}",
+        bar.y
     );
 }

@@ -229,12 +229,15 @@ fn textarea_multiline_selection_spans_lines() {
     );
 }
 
-/// Round 15.1 (decision 312): the focused field derives a synced
-/// `caret` bar div at the active cluster's leading edge (2 CSS px
-/// wide at DPR 1, in the field's text ink); the blink half-cycle
-/// removes it — synced visibility, no CSS animation, one host clock.
+/// Decision 472 (verdict-(b), locked #5): the browser owns the caret
+/// on Web, so the DOM backend emits NO caret bar — a framework bar
+/// would double the native one (and misplace it: wasm-measured
+/// geometry vs browser layout). The host session still tracks the
+/// caret (native backends paint it; tap parks it at byte 0), but
+/// sync derives no div in either blink phase — and blink toggles no
+/// longer touch the `sels` channel at all.
 #[test]
-fn caret_bar_div_tracks_focus_and_blink_phase() {
+fn no_caret_bar_div_on_web_in_either_blink_phase() {
     use oppa::{PointerAction, PointerButton};
     use oppa_controls::{TextInput, TextInputProps};
     let clock = Rc::new(MockClock::new());
@@ -274,46 +277,24 @@ fn caret_bar_div_tracks_focus_and_blink_phase() {
             backend.commit(&d).expect("commit");
         }
     }
-    backend.set_caret(host.focused_caret_paint());
     backend.with_sync(&host, &mut sheet).expect("sync");
     let html = backend.render_node(id);
     assert!(
-        html.contains("class=\"sel caret\""),
-        "caret div renders trailing the input: {html}"
+        !html.contains("caret"),
+        "no framework caret bar beside the native one: {html}"
     );
-    let el = backend.element(id).expect("field element");
-    let r = el.caret_rect.expect("caret rect while visible");
-    assert!(
-        ((r[2] - r[0]) - 2.0).abs() < 0.01,
-        "2 CSS px wide at DPR 1, got {r:?}"
-    );
-    assert!(r[3] > r[1], "positive bar height, got {r:?}");
-    assert!(!el.caret_ink.is_empty(), "ink snapshots with the rect");
-    assert!(
-        html.contains(&format!("background:{};", el.caret_ink)),
-        "bar paints in the field ink: {html}"
-    );
-    // Blink half-cycle: the host hides the caret, the re-sync drops
-    // the div (no stale bar survives the hidden phase).
+    // Blink half-cycle: still no div (nothing to drop, and the
+    // `sels` channel stays quiet — no per-blink DOM churn).
     clock.advance(0.6);
     assert!(
         host.focused_caret_paint().is_none(),
         "hidden half-cycle paints nothing"
     );
-    backend.set_caret(host.focused_caret_paint());
     backend.with_sync(&host, &mut sheet).expect("sync");
     let html = backend.render_node(id);
     assert!(
         !html.contains("caret"),
-        "hidden caret leaves no div: {html}"
-    );
-    assert!(
-        backend
-            .element(id)
-            .expect("field element")
-            .caret_rect
-            .is_none(),
-        "rect clears with the phase"
+        "hidden caret leaves no div either: {html}"
     );
 }
 

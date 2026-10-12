@@ -71,6 +71,17 @@ pub const INK: Color = Color(0x11_11_11);
 /// Fixed until the Phase-11 theme system owns it (recorded, not silent).
 pub const SELECTION_FILL: Color = Color(0xB3_D7_FF);
 
+/// Selected-text ink (decision 475): glyphs covered by the session
+/// selection paint in this ink instead of their resolved ink, on every
+/// pixel backend (the shared builder splits `Text` ops at selection
+/// boundaries — cluster granularity, the shaping atomicity rule).
+/// Fixed near-black against the fixed light-blue fill in both themes:
+/// dark-mode `text_primary` (~white) on light blue has no contrast,
+/// so selected runs invert to dark rather than keeping their ink.
+/// The DOM backend needs no twin (the browser inverts native
+/// selections itself, fields and plain text alike).
+pub const SELECTION_INK: Color = Color(0x11_11_11);
+
 /// Caret bar width in device px (Round 15.1, decision 312): the shared
 /// builder paints every focused caret as a vertical bar exactly this
 /// wide, so CPU, GPU, and DOM agree by construction (the DOM arm
@@ -103,6 +114,36 @@ pub struct CaretPaint {
 pub struct SelectionPaint {
     pub field: NodeId,
     pub range: (usize, usize),
+}
+
+/// Selection-handle bar width in device px (decision 454, enlarged
+/// round 458): handles paint as a caret-plus bar at each selection
+/// edge plus a filled knob below the line, so every backend agrees
+/// by construction (the caret-width precedent, decision 312).
+/// Sized for fingers, not cursors — knobs deliberately overflow
+/// the field box like native teardrops.
+pub const HANDLE_WIDTH_PX: f32 = 3.0;
+
+/// Selection-handle knob radius in device px (decision 454, enlarged
+/// round 458 for touch: one `Circle` op per handle, no new backend
+/// machinery). Reasoned, not a derived law.
+pub const HANDLE_KNOB_R_PX: f32 = 11.0;
+
+/// One renderer-drawn selection handle (decision 454): the selection
+/// edge (`edge`) plus the edge bar's absolute box-space origin
+/// (`x`, `y`, device px) and line height (`h`). The knob centres on
+/// (`x`, `y + h + HANDLE_KNOB_R_PX`). Constructed by the host from
+/// laid clusters (no shaper — handles paint headless); `None` paints
+/// exactly the pre-454 plan. A collapsed selection paints no handles
+/// (the caret bar owns that state — one overlay at a time).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct HandlePaint {
+    pub field: NodeId,
+    pub edge: crate::input::HandleEdge,
+    pub x: f32,
+    pub y: f32,
+    pub h: f32,
+    pub color: Color,
 }
 
 /// Which presenter family a backend belongs to (renderer-contract doc).

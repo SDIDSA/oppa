@@ -108,6 +108,55 @@ fn mixed_ink_line_splits_text_ops_per_ink() {
     assert_eq!(counts, vec![2, 2]);
 }
 
+/// Decision 477: a published palette override recolors the
+/// resolved default text ink (plain text with no span ink paints
+/// the override's `text_primary`); unset resolves through the mode
+/// exactly as before.
+#[test]
+fn custom_tokens_recolor_resolved_default_ink() {
+    use oppa::{Text, ThemeMode, ThemeTokens};
+    #[derive(Clone)]
+    struct PlainProps;
+    impl Props for PlainProps {}
+    fn plain_scene(ctx: &Ctx, _: &PlainProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        Div("wrap").child(VNode::from(Text::new("hi").size(14)))
+    }
+    let host = ComponentHost::new();
+    host.set_viewport(800.0, 600.0);
+    host.set_text_service(Box::new(FakeText));
+    host.mount("Plain", PlainProps, plain_scene);
+    host.run_until_idle();
+    let ink_of = |host: &ComponentHost| {
+        let builder = FramePlanBuilder::new(1.0);
+        builder.set_theme_tokens(host.theme_tokens());
+        let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+        plan.ops
+            .iter()
+            .filter_map(|op| match op {
+                DrawOp::Text { ink, .. } => Some(*ink),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ink_of(&host),
+        vec![ThemeTokens::of(ThemeMode::Light).text_primary],
+        "unset override resolves through the mode"
+    );
+    let custom = ThemeTokens {
+        text_primary: oppa::Color(0x12_34_56),
+        ..ThemeTokens::of(ThemeMode::Light)
+    };
+    host.set_theme_tokens_override(ThemeMode::Light, Some(custom));
+    host.run_until_idle();
+    assert_eq!(
+        ink_of(&host),
+        vec![custom.text_primary],
+        "published override recolors resolved ink"
+    );
+}
+
 #[derive(Clone)]
 struct CanvasProps;
 impl Props for CanvasProps {}

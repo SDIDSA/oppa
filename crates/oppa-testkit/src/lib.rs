@@ -295,7 +295,7 @@ mod tests {
     /// boxes, and per-tab CPU paints — never a stale census.
     #[test]
     fn kitchen_sink_mounts_lays_out_diffs_and_renders() {
-        use oppa_controls::KitchenSinkApp;
+        use oppa_controls::{KitchenSinkApp, KitchenSinkProps};
 
         let app = Harness::new();
         let (svc, _) = oppa_text_rustybuzz::RustybuzzService::from_bytes_with_chain(
@@ -308,7 +308,7 @@ mod tests {
             family: oppa_fonts::DEJAVU_SANS_FAMILY.to_string(),
             ..Default::default()
         });
-        app.mount("KitchenSink", (), KitchenSinkApp);
+        app.mount("KitchenSink", KitchenSinkProps::default(), KitchenSinkApp);
         assert!(app.host().diff_count() > 0, "mount produces diffs");
         // Form is the initial tab (fresh mount — its debugs are valid).
         assert!(
@@ -395,10 +395,10 @@ mod tests {
     /// switch and neither default following the theme.
     #[test]
     fn sink_dark_toggle_rethemes_furniture_and_ink() {
-        use oppa_controls::KitchenSinkApp;
+        use oppa_controls::{KitchenSinkApp, KitchenSinkProps};
         let app = Harness::new();
         dejavu(&app);
-        app.mount("KitchenSink", (), KitchenSinkApp);
+        app.mount("KitchenSink", KitchenSinkProps::default(), KitchenSinkApp);
         // The Form tab's Dark toggle flips the host palette through
         // its accessible label (no debug census needed).
         press_labeled_button(app.host(), "Dark mode");
@@ -569,8 +569,8 @@ mod tests {
     /// so any Primary there would be a smeared band).
     #[test]
     fn polished_controls_paint_proofs() {
-        use oppa_controls::KitchenSinkApp;
         use oppa_controls::{Button, ButtonProps};
+        use oppa_controls::{KitchenSinkApp, KitchenSinkProps};
 
         const WHITE: (u8, u8, u8, u8) = (255, 255, 255, 255);
         const PRIMARY: (u8, u8, u8, u8) = (0x22, 0x66, 0xCC, 255);
@@ -623,7 +623,7 @@ mod tests {
         // Tabs: the active tab underlines its bottom 3px in Primary.
         let app = Harness::new();
         dejavu(&app);
-        app.mount("KitchenSink", (), KitchenSinkApp);
+        app.mount("KitchenSink", KitchenSinkProps::default(), KitchenSinkApp);
         let tabs = oppa::find_retained_by_debug(app.host(), "tab-item");
         assert_eq!(tabs.len(), 5, "five tab buttons mount");
         press_node(app.host(), tabs[0]);
@@ -660,7 +660,7 @@ mod tests {
     /// sink's real TextInput and Select box.
     #[test]
     fn rectangular_controls_share_radius_4() {
-        use oppa_controls::KitchenSinkApp;
+        use oppa_controls::{KitchenSinkApp, KitchenSinkProps};
 
         const GRAY: (u8, u8, u8, u8) = (0xEE, 0xEE, 0xEE, 255);
 
@@ -675,7 +675,7 @@ mod tests {
             family: oppa_fonts::DEJAVU_SANS_FAMILY.to_string(),
             ..Default::default()
         });
-        app.mount("KitchenSink", (), KitchenSinkApp);
+        app.mount("KitchenSink", KitchenSinkProps::default(), KitchenSinkApp);
         let mut cpu = oppa_cpu::CpuBackend::new();
         let surf = cpu
             .create_surface(oppa::SurfaceDesc {

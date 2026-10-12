@@ -1,0 +1,10 @@
+{
+  "name": "Sera — sera-login",
+  "short_name": "sera-login",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2266cc",
+  "description": "Oppa web app."
+}

@@ -9,15 +9,34 @@
 <title>Hello, Oppa</title>
 <style>
   body { margin: 0; background: #eee; font-family: sans-serif; }
-  /* Module viewport must match the harness (800x600) so client
-     coords map 1:1 after the container offset. */
-  #oppa-root { width: 800px; height: 600px; background: #fff; }
+  /* Fluid scene shell (decision 470, status-aware): the body is a
+     100vh column — the status line keeps its natural height and the
+     scene container flex-fills exactly the remainder, so the module
+     viewport the ResizeObserver reports is the visible area, never
+     100vh-plus-chrome. Pin `#oppa-root` to fixed px for a
+     fixed-size app. */
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  #oppa-status { flex: 0 0 auto; padding: 8px 12px; color: #333; }
+  #oppa-root { flex: 1 1 auto; width: 100%; min-height: 0; background: #fff; }
   #oppa-status { padding: 8px 12px; color: #333; }
 </style>
 </head>
 <body>
 <div id="oppa-status">booting…</div>
 <div id="oppa-root" tabindex="0"></div>
-<script type="module" src="./bootstrap.js"></script>
+<script type="module">
+import { bootOppa } from "./oppa-bootstrap.js";
+
+// PWA shell + app boot in one place: the package stem below
+// follows the scaffold name (`cargo oppa new` renames it), the
+// app class stays HelloApp (the export_app! name in src/lib.rs).
+await bootOppa({
+  module: "./pkg/hello_web.js",
+  className: "HelloApp",
+  statusReady: "ready",
+  pwa: "./sw.js",
+});
+</script>
 </body>
 </html>

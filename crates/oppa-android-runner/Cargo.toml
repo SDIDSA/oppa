@@ -1,0 +1,23 @@
+[package]
+name = "oppa-android-runner"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Generic interactive Android runner: NativeActivity lifecycle + SceneCore + surface present + touch + text + IME + fullscreen for any root (the proof app's generic pieces live here; proof-only harness stays in oppa-android-app)"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+oppa = { path = "../oppa" }
+oppa-app = { path = "../oppa-app" }
+oppa-shell-android = { path = "../oppa-shell-android" }
+oppa-text-android = { path = "../oppa-text-android" }
+wgpu = "29"
+raw-window-handle = "0.6"
+jni = "0.21"
+ndk = { version = "0.9", features = ["rwh_06", "nativewindow"] }
+android-activity = { version = "0.6", features = ["native-activity"] }

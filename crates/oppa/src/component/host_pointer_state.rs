@@ -11,8 +11,11 @@ impl ComponentHost {
         self.inner.input.borrow_mut().positions.remove(&id);
         // Round 8.2: a cancelled pointer never chains into a
         // multi-click (only completed taps chain). Round 10.1: its
-        // drag state closes too (deltas already streamed).
+        // drag state closes too (deltas already streamed). Decision
+        // 454: its handle drag closes too (the edge already streamed).
         self.inner.input.borrow_mut().last_tap = None;
+        self.inner.input.borrow_mut().handle_drags.remove(&id);
+        self.inner.input.borrow_mut().handle_confirmed.remove(&id);
         self.inner.scroll_drags.borrow_mut().remove(&id);
         if let Some(cap) = cap {
             self.clear_pressed_unless_live(cap);
@@ -33,8 +36,11 @@ impl ComponentHost {
         self.inner.input.borrow_mut().capture_instances.clear();
         self.inner.input.borrow_mut().positions.clear();
         // Round 8.2: the tripwire breaks any multi-click chain.
-        // Round 10.1: drag states close with it.
+        // Round 10.1: drag states close with it. Decision 454: handle
+        // drags close with it.
         self.inner.input.borrow_mut().last_tap = None;
+        self.inner.input.borrow_mut().handle_drags.clear();
+        self.inner.input.borrow_mut().handle_confirmed.clear();
         self.inner.scroll_drags.borrow_mut().clear();
         let mut owners = caps;
         owners.sort_by_key(|n| (n.index(), n.generation()));
@@ -84,7 +90,10 @@ impl ComponentHost {
             self.inner.input.borrow_mut().capture_instances.remove(pid);
             self.inner.input.borrow_mut().positions.remove(pid);
             // Round 10.1: drag states die with their capture (a
-            // retired container scrolls no further).
+            // retired container scrolls no further). Decision 454:
+            // handle drags die the same way.
+            self.inner.input.borrow_mut().handle_drags.remove(pid);
+            self.inner.input.borrow_mut().handle_confirmed.remove(pid);
             self.inner.scroll_drags.borrow_mut().remove(pid);
         }
         let mut owners: Vec<(NodeId, Option<u64>)> =
@@ -131,6 +140,30 @@ impl ComponentHost {
         }
     }
 
+    /// Confirms `id`'s handle-drag candidate once the pointer moved
+    /// past tap slop from its Down origin (decision 454): marks the
+    /// arm consumed (blocking every release-side dispatch) and
+    /// disarmed (a confirmed drag never hold-fires mid-gesture), and
+    /// records the confirmation the drag stream reads. No-op without
+    /// a candidate, without an origin, inside slop, or twice.
+    pub(super) fn confirm_handle_drag_if_past_slop(&self, id: u32, x: f32, y: f32) {
+        if !self.inner.input.borrow().handle_drags.contains_key(&id)
+            || self.inner.input.borrow().handle_confirmed.contains(&id)
+        {
+            return;
+        }
+        let origin = self.press_origin(id);
+        let past = origin.is_some_and(|(ox, oy)| (x - ox).hypot(y - oy) > input::TAP_SLOP_PX);
+        if !past {
+            return;
+        }
+        self.inner.input.borrow_mut().handle_confirmed.insert(id);
+        if let Some(arm) = self.inner.longpress.borrow_mut().get_mut(&id) {
+            arm.consumed = true;
+            arm.disarmed = true;
+        }
+    }
+
     /// Disarms `id`'s long-press arm when the pointer moved past the
     /// slop (round 3.2: flags instead of removing — the hold-fire is
     /// cancelled either way, but the Down origin must survive for
@@ -171,11 +204,12 @@ impl ComponentHost {
         };
         if let Some((owner, press_hid, x, y)) = due {
             // Round 8.2: publish the hold point as the tap point (a
-            // hold-fire on a field places the caret where the finger
-            // held — the Up that follows is consumed, so this is the
-            // only placement the hold gets). Modifiers read NONE (the
-            // Down arm carries no modifier sample); the chain restarts
-            // (a hold is not a tap — the next fast tap counts 1).
+            // hold-fire on a field word-selects where the finger held
+            // (decision 448) — the Up that follows is consumed, so this
+            // is the only placement the hold gets). Modifiers read NONE
+            // (the Down arm carries no modifier sample); the chain
+            // restarts (a hold is not a tap — the next fast tap
+            // counts 1).
             {
                 let mut input = self.inner.input.borrow_mut();
                 input.last_press_pos = Some((x, y));

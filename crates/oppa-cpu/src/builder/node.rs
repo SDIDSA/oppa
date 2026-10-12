@@ -1,8 +1,8 @@
 //! Node dispatch: [`FramePlan`] ops for one dirty retained node (M4 damage discipline).
 
 use oppa::{
-    CaretPaint, DrawOp, FramePlan, Interner, LayoutBox, NodeId, PlacedGlyph, Reconciler,
-    SelectionPaint, Style, Tag, ThemeMode, CARET_WIDTH_PX,
+    CaretPaint, DrawOp, FramePlan, HandlePaint, Interner, LayoutBox, NodeId, PlacedGlyph,
+    Reconciler, SelectionPaint, Style, Tag, CARET_WIDTH_PX, HANDLE_KNOB_R_PX, HANDLE_WIDTH_PX,
 };
 
 use super::leaf::{emit_canvas_ops, emit_path_op};
@@ -23,7 +23,8 @@ pub(super) fn emit_node_ops(
     eval: Option<(&oppa::TransitionEvaluator, f64)>,
     selection: Option<SelectionPaint>,
     caret: Option<CaretPaint>,
-    theme: ThemeMode,
+    handles: Option<(HandlePaint, HandlePaint)>,
+    tokens: oppa::ThemeTokens,
 ) {
     // M8 evaluated values: live interpolations paint mid-flight, stamped
     // recycles paint their jumped targets, everything else paints the
@@ -293,6 +294,18 @@ pub(super) fn emit_node_ops(
                 }
             }
         }
+        // Ordered selected byte span for ink inversion below (`None`
+        // when nothing selects here: collapsed, foreign field, or no
+        // selection — the same gate as the highlight rects above, so
+        // rects and inverted glyphs always agree).
+        let sel_span: Option<(usize, usize)> = match selection {
+            Some(sel)
+                if sel.range.0 != sel.range.1 && oppa::input::is_within(rec, id, sel.field) =>
+            {
+                Some((sel.range.0.min(sel.range.1), sel.range.0.max(sel.range.1)))
+            }
+            _ => None,
+        };
         for line in &b.lines {
             // Flatten runs into cells while recording the per-run font
             // identity (M7, decision 110): consecutive same-font runs
@@ -301,7 +314,14 @@ pub(super) fn emit_node_ops(
             // splits at span-ink boundaries too (one op per ink run —
             // backends paint solid ink per op, so mixed-ink lines need
             // one op per ink; single-ink lines keep exactly one op —
-            // existing scenes stay byte-identical).
+            // existing scenes stay byte-identical). Decision 475 splits
+            // at selection boundaries the same way: runs overlapping
+            // the session range paint in SELECTION_INK (cluster
+            // granularity — clusters never split, the locked shaping
+            // rule — so the ink boundary always lands on a cluster
+            // edge, exactly where the highlight rect does);
+            // unselected runs keep their span/theme ink and
+            // selection-free scenes keep byte-identical ops.
             let mut glyphs: Vec<PlacedGlyph> = Vec::new();
             let mut fonts: Vec<oppa::FontRun> = Vec::new();
             let mut ink_run: Option<oppa::Color> = None;
@@ -327,7 +347,7 @@ pub(super) fn emit_node_ops(
                     fonts: std::mem::take(fonts),
                     ink: ink_run
                         .take()
-                        .unwrap_or_else(|| resolve_ink(rec, styles, id, style, theme)),
+                        .unwrap_or_else(|| resolve_ink(rec, styles, id, style, &tokens)),
                     opacity,
                 });
             };
@@ -335,15 +355,23 @@ pub(super) fn emit_node_ops(
                 if run.glyphs.is_empty() {
                     continue;
                 }
-                // Ink boundary: flush the open op before starting a new
-                // ink run (backends paint solid ink per op). `None`
-                // runs join the open op (single-style fast path — no
-                // extra ops).
-                if ink_run != run.ink && !glyphs.is_empty() {
+                // Selection ink boundary: a run overlapping the live
+                // range paints selected (any overlap selects the whole
+                // cluster — clusters are atomic); otherwise it keeps
+                // its span ink. `None` runs join the open op
+                // (single-style fast path — no extra ops).
+                let selected =
+                    sel_span.is_some_and(|(lo, hi)| run.byte_range.0 < hi && run.byte_range.1 > lo);
+                let eff_ink = if selected {
+                    Some(oppa::SELECTION_INK)
+                } else {
+                    run.ink
+                };
+                if ink_run != eff_ink && !glyphs.is_empty() {
                     flush(&mut glyphs, &mut fonts, &mut ink_run);
                 }
                 if ink_run.is_none() {
-                    ink_run = run.ink;
+                    ink_run = eff_ink;
                 }
                 let base = glyphs.len();
                 glyphs.extend(run.glyphs.iter().map(|g| PlacedGlyph {
@@ -383,6 +411,36 @@ pub(super) fn emit_node_ops(
                 color: c.color,
                 opacity,
             });
+        }
+    }
+    // Decision 454: renderer-drawn selection handles — one bar plus
+    // one grab knob per live edge, emitted exactly once on the field
+    // container itself (after the caret, so handles paint topmost).
+    // Degenerate heights paint nothing (the host already refuses
+    // them; belt-and-braces like the caret above). `None` (collapsed
+    // selections, unfocused fields) emits nothing — pre-454 plans are
+    // byte-identical.
+    if let Some((start, end)) = handles {
+        for h in [start, end] {
+            if h.field == id && h.h > 0.0 {
+                plan.ops.push(DrawOp::Rect {
+                    node: id,
+                    x: h.x,
+                    y: h.y,
+                    w: HANDLE_WIDTH_PX,
+                    h: h.h,
+                    color: h.color,
+                    opacity,
+                });
+                plan.ops.push(DrawOp::Circle {
+                    node: id,
+                    cx: h.x,
+                    cy: h.y + h.h + HANDLE_KNOB_R_PX,
+                    r: HANDLE_KNOB_R_PX,
+                    color: h.color,
+                    opacity,
+                });
+            }
         }
     }
 }

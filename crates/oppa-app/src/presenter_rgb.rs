@@ -35,11 +35,23 @@ pub(crate) struct RgbPresenter {
     /// enables GPU against a live window; runners flip it back on
     /// loud GPU failure (fallback, never silent).
     pub(crate) active: RendererKind,
+    /// Skip the CPU pixmap paint while a GPU arm serves the screen
+    /// (decision 436 — the full-scene software raster dominates tap
+    /// cost and nobody reads the pixmap then). Default true: CPU-only
+    /// runs and the proof harness keep painting it (GDI/softbuffer
+    /// source, CPU fallback pixels, oracle comparisons); GPU-serving
+    /// runners (generic Android per generation, desktop Windows/Linux
+    /// per bring-up — decision 473) opt out, `disable_gpu` re-arms
+    /// it, and [`SceneCore::refresh_cpu_pixmap`](crate::SceneCore::refresh_cpu_pixmap)
+    /// covers transient failures, so the loud-failure fallback
+    /// always finds fresh pixels.
+    pub(crate) cpu_paint: bool,
     /// Winning `wgpu` backend recorded at bring-up (see
     /// [`GpuApi`]). `None` until a runner records one.
     pub(crate) gpu_api: Option<GpuApi>,
-    /// Swapchain present mode once GPU is up (Immediate first, then
-    /// Mailbox, then Fifo). `None` while CPU-only.
+    /// Swapchain present mode once GPU is up (Fifo-first by
+    /// default; the benchmark row takes uncapped explicitly).
+    /// `None` while CPU-only.
     pub(crate) gpu_mode: Option<wgpu::PresentMode>,
     /// The last synced image cache (the static-image deposit source
     /// the present step scans the plan against).
@@ -78,10 +90,18 @@ impl RgbPresenter {
             gpu_backend,
             gpu_surface,
             active: RendererKind::Cpu,
+            cpu_paint: true,
             gpu_api: None,
             gpu_mode: None,
             images: ImageCache::default(),
         })
+    }
+
+    /// Opts the CPU pixmap paint in or out (decisions 436/473 —
+    /// GPU-serving runners opt out at bring-up; see
+    /// [`SceneCore::set_cpu_paint`]).
+    pub(crate) fn set_cpu_paint(&mut self, on: bool) {
+        self.cpu_paint = on;
     }
 
     /// Injects a raster face for one shaper font id (decision 200):
@@ -90,7 +110,12 @@ impl RgbPresenter {
     /// on both. Best-effort by contract (callers warn, never die,
     /// when the face is unreadable). Always lands in both backends
     /// so a later `enable_gpu` never paints tofu.
-    pub(crate) fn set_font_for(&mut self, id: oppa::text::FontId, bytes: Vec<u8>, index: u32) {
+    pub(crate) fn set_font_for(
+        &mut self,
+        id: oppa::text::FontId,
+        bytes: std::sync::Arc<[u8]>,
+        index: u32,
+    ) {
         self.cpu.set_font_for(id, bytes.clone(), index);
         self.gpu_backend.set_font_for(id, bytes, index);
     }
@@ -204,6 +229,13 @@ impl ScenePresenter for RgbPresenter {
     /// images deposit into the active arm(s) first. Pixels failures
     /// are loud `Err`s. Returns the plan's damage-rect count.
     fn paint(&mut self, _host: &ComponentHost, plan: &FramePlan) -> Result<usize, String> {
+        // Twin-split profiler (diagnosis only, same `OPPA_PROFILE_PAINT`
+        // gate as the session stages): which arm costs the paint.
+        // Decision 469: timestamps capture lazily behind the flag —
+        // `Instant::now()` traps on wasm32-unknown-unknown (this module
+        // compiles into `oppa-web` through the shared session).
+        let profile = std::env::var_os("OPPA_PROFILE_PAINT").is_some();
+        let t_arms = profile.then(std::time::Instant::now);
         let images = &self.images;
         for op in &plan.ops {
             if let oppa::DrawOp::RImg { image, .. } = op {
@@ -218,13 +250,26 @@ impl ScenePresenter for RgbPresenter {
                 }
             }
         }
-        self.cpu
-            .paint(self.surface, plan)
-            .map_err(|e| format!("desktop loop: cpu paint: {e:?}"))?;
+        let mut ms_cpu = 0u128;
+        if self.cpu_paint {
+            self.cpu
+                .paint(self.surface, plan)
+                .map_err(|e| format!("desktop loop: cpu paint: {e:?}"))?;
+            ms_cpu = t_arms.map(|t| t.elapsed().as_millis()).unwrap_or(ms_cpu);
+        }
+        let t_gpu = profile.then(std::time::Instant::now);
         if self.active.is_gpu() {
             self.gpu_backend
                 .paint(self.gpu_surface, plan)
                 .map_err(|e| format!("desktop loop: gpu paint: {e:?}"))?;
+        }
+        if profile {
+            let ms_gpu = t_gpu.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+            eprintln!(
+                "oppa-paint: cpu={ms_cpu}ms gpu={ms_gpu}ms ops={} damage={}",
+                plan.ops.len(),
+                plan.damage.len(),
+            );
         }
         Ok(plan.damage.len())
     }

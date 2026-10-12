@@ -6,21 +6,19 @@ use std::sync::Arc;
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use oppa::FontId;
 
-/// Validated font bytes.
+/// Validated font bytes. Shared (`Arc`) — one allocation per face
+/// referenced by every consumer (decision 437).
 #[derive(Clone)]
 pub struct FaceBytes {
-    pub bytes: Arc<Vec<u8>>,
+    pub bytes: Arc<[u8]>,
     pub index: u32,
 }
 
 impl FaceBytes {
-    pub fn checked(bytes: Vec<u8>, index: u32, which: &str) -> Self {
+    pub fn checked(bytes: Arc<[u8]>, index: u32, which: &str) -> Self {
         FontRef::try_from_slice_and_index(&bytes, index)
             .unwrap_or_else(|e| panic!("oppa-gpu: {which} font bytes rejected: {e}"));
-        Self {
-            bytes: Arc::new(bytes),
-            index,
-        }
+        Self { bytes, index }
     }
 }
 

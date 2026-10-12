@@ -14,7 +14,7 @@
 use android_activity::AndroidApp;
 use oppa_shell_android::{dirs_record, resolve_app_dirs, validate_dirs, AppDirs};
 
-use crate::ime_bridge::with_attached;
+use oppa_android_runner::ime_bridge::with_attached;
 
 /// Reads an absolute dir path off the activity
 /// (`getFilesDir`/`getCacheDir` + `getAbsolutePath` — the

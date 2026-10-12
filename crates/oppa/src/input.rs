@@ -52,6 +52,116 @@ use crate::reconciler::Reconciler;
 use crate::shell::EventKind;
 use crate::vnode::Tag;
 
+pub mod actions;
+
+/// Which selection edge a handle owns (renderer-drawn handles,
+/// decision 454): grabbing `Start` drags the selection's low edge,
+/// `End` the high edge. The router tracks one live edge per pointer
+/// id; moves re-anchor through `select_range` semantics with the
+/// caret following the dragged edge.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HandleEdge {
+    Start,
+    End,
+}
+
+/// Handle grab slop in device px (decision 454, widened round 458
+/// for touch): a Down landing within this of a handle bar or knob
+/// starts an edge drag instead of a tap (same touch-slop class as
+/// [`TAP_SLOP_PX`] — a finger covers the drawn handle, so the target
+/// runs wider than the ink; clean lifts still tap via the
+/// slop-confirm rule, so nearby taps never die on the grab target).
+/// Reasoned, not a derived law.
+pub const HANDLE_HIT_SLOP_PX: f32 = 20.0;
+
+/// One renderer-drawn toolbar item (decision 455): labels and ink
+/// live scene-side; the controller only names the available actions
+/// for the current selection + clipboard state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ToolbarItem {
+    SelectAll,
+    Copy,
+    Cut,
+    Paste,
+    /// Explicit selection delete (decision 459 — masked fields refuse
+    /// copy/cut, so deletion gets its own item instead of hiding
+    /// behind Cut).
+    Delete,
+}
+
+impl ToolbarItem {
+    /// Scene debug label of the item's overlay node (the router's
+    /// toolbar hit-test reads these boxes — stable, never restyled).
+    pub fn debug_name(self) -> &'static str {
+        match self {
+            ToolbarItem::SelectAll => "oppa_toolbar_item_select_all",
+            ToolbarItem::Copy => "oppa_toolbar_item_copy",
+            ToolbarItem::Cut => "oppa_toolbar_item_cut",
+            ToolbarItem::Paste => "oppa_toolbar_item_paste",
+            ToolbarItem::Delete => "oppa_toolbar_item_delete",
+        }
+    }
+
+    /// Painted label (the proxy menu's plain-English strings —
+    /// localized menus arrive with the system-menu retirement).
+    pub fn label(self) -> &'static str {
+        match self {
+            ToolbarItem::SelectAll => "Select all",
+            ToolbarItem::Copy => "Copy",
+            ToolbarItem::Cut => "Cut",
+            ToolbarItem::Paste => "Paste",
+            ToolbarItem::Delete => "Delete",
+        }
+    }
+
+    /// The tap action the item fires.
+    pub fn action(self) -> ToolbarAction {
+        match self {
+            ToolbarItem::SelectAll => ToolbarAction::SelectAll,
+            ToolbarItem::Copy => ToolbarAction::Copy,
+            ToolbarItem::Cut => ToolbarAction::Cut,
+            ToolbarItem::Paste => ToolbarAction::Paste,
+            ToolbarItem::Delete => ToolbarAction::Delete,
+        }
+    }
+}
+
+/// Renderer-drawn toolbar frame: which items to paint plus the anchor
+/// rect in committed (device px) boxes — the focused field's box,
+/// stable across shift-extends so the bar never chases the caret.
+/// The overlay converts to CSS px once at build (styles scale by
+/// DPR — device px fed straight in overshoots).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolbarModel {
+    pub items: Vec<ToolbarItem>,
+    pub anchor: (i32, i32, i32, i32),
+}
+
+/// One scene-toolbar tap crossing from the router (decision 455):
+/// overlay items are handlerless presentational nodes (never focus,
+/// never tab stops), so taps resolve geometrically into these and
+/// the runner applies them through the loop clipboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolbarAction {
+    SelectAll,
+    Copy,
+    Cut,
+    Paste,
+    Delete,
+}
+
+/// Toolbar row height in CSS px (decision 455): the overlay bar
+/// floats one row above the anchor (below it when the anchor hugs
+/// the top). Fixed — the overlay measures intrinsically, but the
+/// anchor math needs a stable row edge. Reasoned, not derived.
+pub const TOOLBAR_ROW_H_PX: f32 = 40.0;
+
+/// Toolbar row width estimate in CSS px (decision 455): pre-measure
+/// clamp fallback only (the wrap re-reads the committed bar box
+/// once laid and converges exact). The laid row keeps its own
+/// width afterwards — the estimate never paints.
+pub const TOOLBAR_EST_W_PX: f32 = 320.0;
+
 /// Pointer button transition (the normalized shape; shells map
 /// DOWN/DBLCLK/UP/MOVE/CANCEL platform messages into it).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

@@ -5,7 +5,7 @@
 //! (translate → shell → `take_cmds` → `to_input_event` → inject →
 //! repaint → redraw) minus its diagnostics/bounded-run harness, with
 //! Vulkan-attempt swapchain bring-up (pipeline-cache round-trip,
-//! Immediate/Mailbox/Fifo pick).
+//! vsync Fifo-first mode pick).
 //! Under Wayland the GPU path creates hardware swapchains
 //! (`zwp_linux_dmabuf_v1`) running natively on the compositor
 //! (including WSLg) without touching Weston's software SHM
@@ -19,6 +19,9 @@
 //! the surface/window boundary).
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use oppa::shell::PlatformShell;
 use oppa::{Ctx, InputEvent, KeyState, Props, VNode};
@@ -45,29 +48,62 @@ struct LinuxGpu {
 }
 
 /// Ordered GPU backend attempts: Linux probes Vulkan first, then
-/// GL (decision 391 — same argument as Windows decision 390, and
-/// stronger here: GL is native Mesa, with llvmpipe as the software
-/// backstop; pre-Vulkan hardware and bare VMs still get
-/// acceleration). An explicit backend pin still attempts exactly
-/// that backend once so the refusal falls back loudly to CPU
-/// (never a silent substitution when the user named one —
-/// including the meaningless-on-Linux `gpu-dx12`, which fails
-/// loudly rather than substituting).
-fn backend_attempts() -> Vec<(&'static str, wgpu::Backends)> {
-    match crate::renderer_override() {
-        Some(crate::RendererKind::GpuDx12) => vec![("dx12", wgpu::Backends::DX12)],
-        Some(crate::RendererKind::GpuVulkan) => vec![("vulkan", wgpu::Backends::VULKAN)],
-        Some(crate::RendererKind::GpuGl) => vec![("gl", wgpu::Backends::GL)],
-        _ => vec![
-            ("vulkan", wgpu::Backends::VULKAN),
-            ("gl", wgpu::Backends::GL),
-        ],
+/// GL — see [`LINUX_GPU_ORDER`](crate::LINUX_GPU_ORDER) (decision
+/// 391). An explicit backend pin still attempts exactly that backend
+/// once so the refusal falls back loudly to CPU (never a silent
+/// substitution when the user named one — including the
+/// meaningless-on-Linux `gpu-dx12`, which fails loudly rather than
+/// substituting) — the pin match lives once in
+/// [`presenter_rows`](crate::presenter_rows).
+struct LinuxSurfaceFactory {
+    raw_window_handle: raw_window_handle::RawWindowHandle,
+    raw_display_handle: raw_window_handle::RawDisplayHandle,
+}
+
+impl LinuxSurfaceFactory {
+    /// Snapshots the winit window into raw handles once (a refused
+    /// handle aborts bring-up before any row probes — the old
+    /// per-attempt `?` shape, without repeating the query per row).
+    fn new(
+        window: &winit::window::Window,
+        display: raw_window_handle::RawDisplayHandle,
+    ) -> Result<Self, String> {
+        let raw_window_handle = window
+            .window_handle()
+            .map_err(|e| format!("window handle: {e:?}"))?
+            .as_raw();
+        Ok(Self {
+            raw_window_handle,
+            raw_display_handle: display,
+        })
     }
 }
 
-/// Builds the GPU swapchain against `window`, or returns the loud
-/// reason to fall back to CPU: one leaked instance per attempt,
-/// present-mode pick, surface configure, loop enable.
+impl<'a> crate::SurfaceFactory<'a> for LinuxSurfaceFactory {
+    fn make_surface(
+        &mut self,
+        backends: wgpu::Backends,
+    ) -> Result<crate::BuiltSurface<'a>, String> {
+        // One leaked instance per attempt (the surface borrows it;
+        // the winner lives for the process).
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = backends;
+        let instance: &'static wgpu::Instance = Box::leak(Box::new(wgpu::Instance::new(desc)));
+        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
+            raw_display_handle: Some(self.raw_display_handle),
+            raw_window_handle: self.raw_window_handle,
+        };
+        let surface =
+            unsafe { instance.create_surface_unsafe(target) }.map_err(|e| format!("{e}"))?;
+        Ok(crate::BuiltSurface { instance, surface })
+    }
+}
+
+/// Builds the GPU swapchain against `window` through the shared
+/// presenter ladder ([`LINUX_GPU_ORDER`](crate::LINUX_GPU_ORDER) +
+/// terminal CPU row), or returns the loud reason to fall back to
+/// CPU: one leaked instance per attempt, present-mode pick, surface
+/// configure, loop enable.
 fn build_gpu(
     window: &winit::window::Window,
     display: raw_window_handle::RawDisplayHandle,
@@ -75,56 +111,57 @@ fn build_gpu(
     size: (u32, u32),
 ) -> Result<LinuxGpu, String> {
     let (w, h) = (size.0.max(1), size.1.max(1));
-    for (name, backends) in backend_attempts() {
-        let raw_window = window
-            .window_handle()
-            .map_err(|e| format!("window handle: {e:?}"))?
-            .as_raw();
-        // One leaked instance per attempt (the surface borrows it;
-        // the winner lives for the process).
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = backends;
-        let instance: &'static wgpu::Instance = Box::leak(Box::new(wgpu::Instance::new(desc)));
-        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-            raw_display_handle: Some(display),
-            raw_window_handle: raw_window,
-        };
-        let surface = match unsafe { instance.create_surface_unsafe(target) } {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("oppa-app: {name} surface failed: {e}");
-                continue;
-            }
-        };
-        match loop_.ensure_gpu_for_surface(instance, &surface) {
-            Ok(adapter) => {
-                eprintln!("oppa-app: {name} {adapter}");
-                let mode = loop_.pick_gpu_mode(&surface);
-                loop_
-                    .configure_gpu_surface(&surface, w, h, mode)
-                    .map_err(|e| format!("configure surface: {e}"))?;
-                loop_.enable_gpu(mode);
-                // Record the winning backend for the debug badge
-                // (decision 387): a closed row vocabulary, so an
-                // unknown name refuses loudly instead of guessing.
-                match crate::GpuApi::from_row_name(name) {
-                    Some(api) => loop_.set_gpu_api(api),
-                    None => {
-                        return Err(format!("winning gpu backend {name:?} is not a known row"));
-                    }
-                }
-                return Ok(LinuxGpu {
-                    surface,
-                    mode,
-                    name: name.to_string(),
-                });
-            }
-            Err(e) => {
-                eprintln!("oppa-app: {name} gpu failed: {e}");
+    let rows = crate::presenter_rows(&crate::LINUX_GPU_ORDER, true);
+    let mut factory = LinuxSurfaceFactory::new(window, display)?;
+    let mut attempt = move |scene: &mut crate::SceneCore,
+                            row: crate::GpuRow,
+                            instance: &wgpu::Instance,
+                            surface: &wgpu::Surface<'_>|
+          -> Result<crate::GpuApplied, crate::RowFail> {
+        let adapter = scene
+            .ensure_gpu_for_surface(instance, surface)
+            .map_err(|e| crate::RowFail::Next(format!("{} gpu failed: {e}", row.name)))?;
+        eprintln!("oppa-app: {} {adapter}", row.name);
+        let mode = scene.pick_gpu_mode(surface);
+        let format = scene
+            .configure_gpu_surface(surface, w, h, mode)
+            .map_err(|e| crate::RowFail::Abort(format!("configure surface: {e}")))?;
+        scene.enable_gpu(mode);
+        // Decision 473: nobody reads the CPU pixmap while the
+        // swapchain serves — skip the redundant full-scene software
+        // raster (the Android per-generation precedent, same safety:
+        // transient failures refresh once without leaving GPU mode,
+        // `disable_gpu` re-arms on the loud-failure fallback).
+        scene.set_cpu_paint(false);
+        // Record the winning backend for the debug badge
+        // (decision 387): a closed row vocabulary, so an unknown
+        // name refuses loudly instead of guessing.
+        match crate::GpuApi::from_row_name(row.name) {
+            Some(api) => scene.set_gpu_api(api),
+            None => {
+                return Err(crate::RowFail::Abort(format!(
+                    "winning gpu backend {:?} is not a known row",
+                    row.name
+                )));
             }
         }
+        Ok(crate::GpuApplied {
+            adapter,
+            mode,
+            format,
+        })
+    };
+    match crate::walk_presenter_rows(&rows, &mut factory, &mut attempt, loop_.scene_mut()) {
+        Ok(crate::LadderOutcome::Gpu(up)) => Ok(LinuxGpu {
+            surface: up.surface,
+            mode: up.mode,
+            name: up.name.to_string(),
+        }),
+        // The ladder logs the refusal line; the CPU wording stays
+        // here (the runner owns its softbuffer leg).
+        Ok(crate::LadderOutcome::Cpu) => Err("no working GPU backend".to_string()),
+        Err(e) => Err(e.to_string()),
     }
-    Err("no working GPU backend".to_string())
 }
 
 /// Presents one CPU frame through softbuffer (the fallback half):
@@ -150,7 +187,9 @@ fn cpu_present_to_window(loop_: &DesktopLoop, window: &mut ShellWindow) {
 /// sustained storms reconfigure per frame rather than sleeping the
 /// event loop); any other failure logs the exact error and falls
 /// back to softbuffer for this frame (the next frame retries GPU —
-/// no silent permanent downgrade).
+/// no silent permanent downgrade). Decision 473: the pixmap may be
+/// opted out while GPU serves, so every fallback edge refreshes it
+/// once without leaving GPU mode (no-op when already painting).
 fn gpu_present_or_cpu(
     loop_: &mut DesktopLoop,
     gpu: &LinuxGpu,
@@ -165,17 +204,26 @@ fn gpu_present_or_cpu(
                 Ok(_) => {
                     if let Err(e2) = loop_.present_gpu(&gpu.surface) {
                         eprintln!("oppa-app: gpu retry failed: {e2}; CPU fallback");
+                        if let Err(e3) = loop_.scene_mut().refresh_cpu_pixmap() {
+                            eprintln!("oppa-app: cpu catch-up repaint failed: {e3}");
+                        }
                         cpu_present_to_window(loop_, window);
                     }
                 }
                 Err(ce) => {
                     eprintln!("oppa-app: gpu reconfigure failed: {ce}; CPU fallback");
+                    if let Err(e3) = loop_.scene_mut().refresh_cpu_pixmap() {
+                        eprintln!("oppa-app: cpu catch-up repaint failed: {e3}");
+                    }
                     cpu_present_to_window(loop_, window);
                 }
             }
         }
         Err(e) => {
             eprintln!("oppa-app: gpu present failed: {e}; CPU fallback");
+            if let Err(e3) = loop_.scene_mut().refresh_cpu_pixmap() {
+                eprintln!("oppa-app: cpu catch-up repaint failed: {e3}");
+            }
             cpu_present_to_window(loop_, window);
         }
     }
@@ -291,7 +339,9 @@ impl LinuxRunner {
             .configure_gpu_surface(&gpu.surface, w, h, gpu.mode)
         {
             eprintln!("oppa-app: gpu reconfigure failed: {e}; CPU fallback");
-            self.loop_.disable_gpu();
+            if let Err(e) = self.loop_.disable_gpu() {
+                eprintln!("oppa-app: cpu catch-up repaint failed: {e}");
+            }
         }
     }
 
@@ -552,6 +602,9 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                         }
                         _ => {
                             eprintln!("oppa-app: gpu active without surface; CPU fallback");
+                            if let Err(e) = self.loop_.scene_mut().refresh_cpu_pixmap() {
+                                eprintln!("oppa-app: cpu catch-up repaint failed: {e}");
+                            }
                             if let Some(window) = self.window.as_mut() {
                                 cpu_present_to_window(&self.loop_, window);
                             }
@@ -851,7 +904,7 @@ pub fn run_linux<P: Props>(
     let mut font_pairs = Vec::with_capacity(all_font_ids.len());
     for id in all_font_ids {
         if let Some((bytes, index)) = texts.face_bytes(id) {
-            font_pairs.push((id, bytes.to_vec(), index));
+            font_pairs.push((id, bytes.into(), index));
         }
     }
 
@@ -899,16 +952,25 @@ pub fn run_linux<P: Props>(
     // unused slot costs no thread).
     runner
         .loop_
-        .set_save_dialog(Box::new(LinuxFileDialog::new(StdRunner)));
+        .set_save_dialog(Rc::new(RefCell::new(LinuxFileDialog::new(StdRunner))));
     runner
         .loop_
-        .set_folder_dialog(Box::new(LinuxFileDialog::new(StdRunner)));
+        .set_folder_dialog(Rc::new(RefCell::new(LinuxFileDialog::new(StdRunner))));
+    // Native open dialog (decision 425 — same backend family, its
+    // own instance behind the loop's open slot for request/poll).
+    runner
+        .loop_
+        .set_open_dialog(Rc::new(RefCell::new(LinuxFileDialog::new(StdRunner))));
     // OS theme at startup (Round 16.2, decision 315): install the
     // portal reader and sync before mount so the first paint already
     // matches the system (unreadable stays a quiet no-op, never a
     // repaint spin); the watcher below covers live flips.
     runner.loop_.set_theme_source(Box::new(LinuxSystemTheme));
     let _ = runner.loop_.sync_system_theme()?;
+    // Selection handles are a mobile affordance (decision 474):
+    // mouse selections never grow touch bars/knobs — same rule as
+    // the Windows runner above.
+    runner.loop_.host().set_selection_handles_visible(false);
     runner.theme_watcher = Some(LinuxThemeWatcher::new());
     // Runtime window chrome (Round 16.3, decision 316 — the loop
     // forwards into the shared control; the runner attaches the

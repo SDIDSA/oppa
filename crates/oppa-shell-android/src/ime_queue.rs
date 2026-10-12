@@ -21,6 +21,16 @@ pub enum ImeTextItem {
     CommitText(String),
     /// `deleteSurroundingText` char counts.
     DeleteSurrounding { before_chars: u32, after_chars: u32 },
+    /// `setComposingText` payload (decision 438): the live composing
+    /// string, caret at its end (see the runner's preedit feed for
+    /// the documented simplification).
+    ComposeText(String),
+    /// `finishComposingText` (decision 461): no payload — the pump
+    /// commits the session's open composing buffer with its own
+    /// text (a bare commit arriving after this would otherwise
+    /// replace the word with the suffix alone, e.g. space eating
+    /// "ok"). Quiet no-op with no open composition.
+    FinishComposing,
 }
 
 /// Thread-safe FIFO from the IME thread to the pump.
@@ -59,6 +69,18 @@ impl ImeTextQueue {
         });
     }
 
+    /// Pushes a composition update (the `onComposeText` native
+    /// entry's body).
+    pub fn push_compose(&self, text: String) {
+        self.push(ImeTextItem::ComposeText(text));
+    }
+
+    /// Pushes a finish-composing (the `onFinishComposing` native
+    /// entry's body).
+    pub fn push_finish(&self) {
+        self.push(ImeTextItem::FinishComposing);
+    }
+
     /// Drains everything in FIFO order (the pump path — one drain
     /// per frame, then each item becomes shell intake).
     pub fn drain(&self) -> Vec<ImeTextItem> {
@@ -93,8 +115,10 @@ mod tests {
         assert!(q.is_empty());
         q.push_commit("ni".to_string());
         q.push_delete(1, 0);
+        q.push_compose("ha".to_string());
+        q.push_finish();
         q.push_commit("\u{4F60}".to_string());
-        assert_eq!(q.len(), 3);
+        assert_eq!(q.len(), 5);
         assert_eq!(
             q.drain(),
             vec![
@@ -103,6 +127,8 @@ mod tests {
                     before_chars: 1,
                     after_chars: 0,
                 },
+                ImeTextItem::ComposeText("ha".to_string()),
+                ImeTextItem::FinishComposing,
                 ImeTextItem::CommitText("\u{4F60}".to_string()),
             ]
         );
@@ -131,6 +157,8 @@ mod tests {
             .into_iter()
             .map(|item| match item {
                 ImeTextItem::CommitText(t) => t,
+                ImeTextItem::ComposeText(t) => t,
+                ImeTextItem::FinishComposing => String::new(),
                 ImeTextItem::DeleteSurrounding { .. } => panic!("only commits pushed"),
             })
             .collect();

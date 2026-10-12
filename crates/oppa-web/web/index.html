@@ -23,6 +23,67 @@
   <button id="oppa-settings" type="button">Settings</button>
   <button id="oppa-back" type="button">Back</button>
 </span>
-<script type="module" src="./bootstrap.js"></script>
+<script type="module">
+import { bootOppa } from "./oppa-bootstrap.js";
+
+const status = document.getElementById("oppa-status");
+const readChecked = (root) => {
+  const el = root.querySelector('[role="switch"]');
+  return el ? el.getAttribute("aria-checked") : null;
+};
+// The current aria-checked value mirrors into window.__oppaState
+// for the harness to assert without parsing.
+const { app, paint, root } = await bootOppa({
+  module: "./pkg/oppa_web.js",
+  className: "WebApp",
+  onPaint: (app, paint, root) => {
+    window.__oppaState = readChecked(root);
+    if (status) {
+      status.textContent = "switch=" + window.__oppaState;
+    }
+  },
+});
+window.__oppaState = readChecked(root);
+if (status) {
+  status.textContent = "switch=" + window.__oppaState;
+}
+
+// Round 4.1 fetch bridge: start (Loading renders) then resolve the
+// promise into Ready/Failed (generation-qualified — a stale
+// response paints nothing). Failures are state, never exceptions:
+// HTTP errors resolve Failed with the status, network errors with
+// the message.
+document.getElementById("oppa-fetch").addEventListener("click", () => {
+  const gen = app.fetch_start("demo:quote");
+  fetch("./quote.json")
+    .then((res) =>
+      res
+        .text()
+        .then((body) =>
+          paint(
+            res.ok
+              ? app.fetch_resolve("demo:quote", gen, true, body)
+              : app.fetch_resolve("demo:quote", gen, false, `http ${res.status}`)
+          )
+        )
+    )
+    .catch((err) =>
+      paint(app.fetch_resolve("demo:quote", gen, false, `${err}`))
+    );
+});
+
+// Round 4.2 history bridge (OQ-G6-1): app->history pushes through
+// the bindings (pushState inside), history->app replaces through
+// popstate (the URL is the state — back and forward both land).
+document.getElementById("oppa-settings").addEventListener("click", () => {
+  paint(app.nav_push("settings"));
+});
+document.getElementById("oppa-back").addEventListener("click", () => {
+  window.history.back();
+});
+window.addEventListener("popstate", () => {
+  paint(app.nav_pop());
+});
+</script>
 </body>
 </html>

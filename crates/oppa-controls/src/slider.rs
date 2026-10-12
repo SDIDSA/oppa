@@ -117,6 +117,8 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
             );
             action(move || apply_slider_value(&value, &notify, value.get() - step, min, max, step))
         },
+        icon: None,
+        icon_size: 16.0,
     };
     let inc_props = ButtonProps {
         label: SharedString::from("+"),
@@ -134,6 +136,8 @@ pub fn Slider(ctx: &Ctx, props: &SliderProps) -> VNode {
             );
             action(move || apply_slider_value(&value, &notify, value.get() + step, min, max, step))
         },
+        icon: None,
+        icon_size: 16.0,
     };
     // Track drag (round 5.3): the pointer x over the track box maps
     // to the value range (snapped + clamped — out-of-box drags pin

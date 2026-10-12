@@ -23,8 +23,14 @@ never fail and never pass silently.
 
 ## Entry points
 
-- Desktop: `run_desktop(WindowOptions, props, root)` / `run_desktop_with` hook.
-- Web: `WasmHost::mount_root / click / key / tick`.
+- Desktop: `run_desktop(WindowOptions, props, root)` /
+  `run_desktop_with` hook, or one-line `oppa_app::desktop_main!`.
+- Apps: `cargo oppa check|build|run --desktop|--web|--android`
+  (exactly one target; `serve` is `run --web`); Android refuses
+  loudly without a pipeline/device.
+- Web: app roots via `oppa_web::export_app!` over
+  `WasmHost::mount_root`; pages boot
+  the shared `web/oppa-bootstrap.js`; bindings `click / key / tick`.
 - Headless tests: testkit `Harness::new / mount / tap / assert` (public API only);
   `Harness::key / key_with / type_text / press_labeled` for keyboard/text.
 - Hot reload: `HotRegistry` + static/dylib source + `reload_to` → `ReloadReport`.
