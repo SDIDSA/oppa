@@ -39,6 +39,30 @@ pub fn style_blurb(style: WindowStyle) -> &'static str {
     }
 }
 
+/// Move hint per style (decision 482 shape: only `Extended`
+/// publishes an OS drag region — every other style moves through
+/// the system menu, and the card says so instead of leaving a
+/// dead-feeling window).
+pub fn style_hint(style: WindowStyle) -> &'static str {
+    match style {
+        WindowStyle::Extended => {
+            "drag the bar · double-click it to maximize · right-click it for the system menu"
+        }
+        _ => "this style never drags — Alt+Space, then M, then arrow keys moves it",
+    }
+}
+
+/// Relaunch spelling per style (the card footer names the exact
+/// command running it).
+pub fn style_arg(style: WindowStyle) -> &'static str {
+    match style {
+        WindowStyle::Decorated => "decorated",
+        WindowStyle::Undecorated => "undecorated",
+        WindowStyle::Transparent => "transparent",
+        WindowStyle::Extended => "extended",
+    }
+}
+
 /// Runner-visible caption outbox (the studio `StudioHooks`
 /// publish-once precedent — signals are runtime-bound, so the root
 /// publishes them on first render and the desktop poll hook drains
@@ -131,7 +155,14 @@ pub fn StylebookRoot(ctx: &Ctx, props: &StylebookProps) -> VNode {
                     ),
                 ]),
             VNode::from(Text {
-                text: SharedString::from("cargo run -p stylebook -- --style transparent"),
+                text: SharedString::from(format!(
+                    "cargo run -p stylebook -- --style {}",
+                    style_arg(style)
+                )),
+                style: Text::body_secondary,
+            }),
+            VNode::from(Text {
+                text: SharedString::from(style_hint(style)),
                 style: Text::body_secondary,
             }),
         ]);

@@ -23,7 +23,9 @@
 
 mod app;
 
-pub use app::{style_blurb, style_title, ChromeHooks, StylebookProps, StylebookRoot};
+pub use app::{
+    style_arg, style_blurb, style_hint, style_title, ChromeHooks, StylebookProps, StylebookRoot,
+};
 
 #[cfg(target_arch = "wasm32")]
 use oppa_web::export_app;

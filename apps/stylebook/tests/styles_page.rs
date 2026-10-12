@@ -3,7 +3,9 @@
 
 use oppa::{drag_regions_for_style, find_retained_by_debug, WindowStyle};
 use oppa_testkit::Harness;
-use stylebook::{style_blurb, style_title, ChromeHooks, StylebookProps, StylebookRoot};
+use stylebook::{
+    style_arg, style_blurb, style_hint, style_title, ChromeHooks, StylebookProps, StylebookRoot,
+};
 
 fn mount_style(style: WindowStyle) -> Harness {
     let app = Harness::new();
@@ -118,6 +120,14 @@ fn style_metadata_covers_every_variant() {
         assert!(
             !style_blurb(style).is_empty(),
             "{style:?} carries its contract line"
+        );
+        assert!(
+            !style_hint(style).is_empty(),
+            "{style:?} names how it moves"
+        );
+        assert!(
+            ["decorated", "undecorated", "transparent", "extended"].contains(&style_arg(style)),
+            "{style:?} relaunches by name"
         );
     }
 }
