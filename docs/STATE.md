@@ -803,8 +803,9 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   lives in `WM_NCCALCSIZE` (strip + maximized work-area clamp) and
   `WM_NCHITTEST` only. `Transparent` adds blur-behind with an empty
   region + `WM_ERASEBKGND` skip + style-aware `fit_client_to_scene`
-  (`WS_CAPTION|WS_SIZEBOX` masked). Awaiting user re-proof on both
-  styles. Gates: fmt clean, workspace clippy zero warnings,
+  (`WS_CAPTION|WS_SIZEBOX` masked). User re-proof 2026-10-12:
+  Transparent shows the desktop around the floating card with a live
+  counter (screenshot); Extended tiling/snap still open. Gates: fmt clean, workspace clippy zero warnings,
   `oppa-shell-win` 30/30 (incl. live frame-bits, blur HRESULT,
   erase claim, clamp math).
 
