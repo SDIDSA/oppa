@@ -1047,8 +1047,14 @@ pub fn run_linux<P: Props>(
         .set_continuous_repaint(options.continuous_repaint || continuous_repaint_override());
     // Decision 482: same chrome recording as the Windows runner
     // (swapchain reconfigures re-apply the matching alpha mode;
-    // transparent windows clear to alpha-0).
+    // transparent windows clear to alpha-0). Decision 485: native
+    // caption zones are a Windows-only seam (no OS zones exist under
+    // server-side CSD), so the flag is recorded but never publishes
+    // here — the app's bridged buttons always own the press on Linux.
     runner.loop_.set_window_style(options.window_style);
+    runner
+        .loop_
+        .set_native_caption_buttons(options.native_caption_buttons);
     runner
         .loop_
         .set_transparent_clear(options.window_style.is_transparent());

@@ -1,34 +1,27 @@
 //! Desktop entry (Windows + Linux, same source): the launch style
 //! rides `--style=` (default `extended`), so one binary exercises
-//! all four chromes. Run with `cargo run -p stylebook` or
+//! all four chromes; `--native-buttons` enables the OS caption zones
+//! in `Extended` mode (default off — the custom bridge owns every
+//! press here). Run with `cargo run -p stylebook` or
 //! `cargo run -p stylebook -- --style transparent`.
 
-use oppa::WindowStyle;
 use oppa_app::{run_desktop_with, WindowOptions};
-use stylebook::{ChromeHooks, StylebookProps, StylebookRoot};
+use stylebook::{
+    parse_native_buttons_flag, parse_style_arg, ChromeHooks, StylebookProps, StylebookRoot,
+};
 
 const STYLES: &str = "decorated|undecorated|transparent|extended";
 
-/// Parses one `--style=` argument (pure — headless-testable):
-/// `None` (flag absent) means `Extended`. Anything else is a loud
-/// `Err` naming the valid spellings (never a silent default — an
-/// unknown chrome must not boot looking like a choice).
-fn parse_style_arg(arg: Option<&str>) -> Result<WindowStyle, String> {
-    match arg {
-        None => Ok(WindowStyle::Extended),
-        Some("decorated") => Ok(WindowStyle::Decorated),
-        Some("undecorated") => Ok(WindowStyle::Undecorated),
-        Some("transparent") => Ok(WindowStyle::Transparent),
-        Some("extended") => Ok(WindowStyle::Extended),
-        Some(other) => Err(format!(
-            "stylebook: unknown style {other:?} (expected {STYLES})"
-        )),
-    }
-}
-
 fn main() {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "stylebook: cargo run -p stylebook -- --style=<{STYLES}> [--native-buttons] (defaults: extended, bridged)"
+        );
+        return;
+    }
     let mut style_arg: Option<String> = None;
-    let mut args = std::env::args().skip(1).peekable();
+    let mut args = raw.iter().peekable();
     while let Some(arg) = args.next() {
         if let Some(value) = arg.strip_prefix("--style=") {
             style_arg = Some(value.to_string());
@@ -37,17 +30,16 @@ fn main() {
             // must follow as the next argument (missing it is a loud
             // refusal, never a silent default).
             match args.next() {
-                Some(value) => style_arg = Some(value),
+                Some(value) => style_arg = Some(value.clone()),
                 None => {
                     eprintln!("stylebook: --style needs a value (expected --style=<{STYLES}>)");
                     std::process::exit(2);
                 }
             }
-        } else if arg == "--help" || arg == "-h" {
-            println!("stylebook: cargo run -p stylebook -- --style=<{STYLES}> (default extended)");
-            return;
+        } else if arg == "--native-buttons" {
+            // Handled below through `parse_native_buttons_flag`.
         } else {
-            eprintln!("stylebook: unknown argument {arg:?} (expected --style=<{STYLES}>)");
+            eprintln!("stylebook: unknown argument {arg:?} (expected --style=<{STYLES}> [--native-buttons])");
             std::process::exit(2);
         }
     }
@@ -58,14 +50,22 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // Decision 485 opt-in demo: native zones default off here so the
+    // custom bridge below owns every press; `--native-buttons` lets
+    // the OS answer first (the wired actions stand down harmlessly
+    // and stay as the Linux fallback).
+    let native = parse_native_buttons_flag(&raw);
     let hooks = ChromeHooks::default();
     let props = StylebookProps {
         style,
+        native,
         hooks: hooks.clone(),
     };
     let title = format!("Stylebook — {}", stylebook::style_title(style));
     if let Err(e) = run_desktop_with(
-        WindowOptions::new(&title, 640, 440).with_window_style(style),
+        WindowOptions::new(&title, 640, 440)
+            .with_window_style(style)
+            .with_native_caption_buttons(native),
         props,
         StylebookRoot,
         |loop_| {

@@ -110,6 +110,18 @@ pub struct WindowOptions {
     /// runners map it into shell creation flags before the window
     /// exists and never restyle a live window.
     pub window_style: WindowStyle,
+    /// Native caption buttons (decision 485): in `Extended` mode the
+    /// OS answers minimize/maximize/close over the `HeaderBar`
+    /// caption zones with fully native behavior (real actions,
+    /// hover glow, Win11 snap layouts). Default `true` (the JavaFX
+    /// `EXTENDED` shape — platform buttons present unless the app
+    /// implements its own, in which case disable this so the custom
+    /// buttons keep their presses). Honored in `Extended` on
+    /// Windows only: Linux keeps server-side CSD (no OS zones
+    /// exist), so the app's bridged buttons always own the press
+    /// there — wire `HeaderBar` `on_*` actions unconditionally as
+    /// the Linux/off fallback. Launch-only, like `window_style`.
+    pub native_caption_buttons: bool,
     /// Debug performance overlay configuration.
     pub debug_overlay: DebugOverlayConfig,
     /// Uncapped continuous repaint (benchmark mode): the runner polls
@@ -129,6 +141,7 @@ impl WindowOptions {
             width: width.max(1),
             height: height.max(1),
             window_style: WindowStyle::Decorated,
+            native_caption_buttons: true,
             debug_overlay: DebugOverlayConfig::default(),
             continuous_repaint: false,
         }
@@ -167,6 +180,15 @@ impl WindowOptions {
     /// managing drag/resize/snap over the app's `HeaderBar` region.
     pub fn extended(mut self) -> Self {
         self.window_style = WindowStyle::Extended;
+        self
+    }
+
+    /// Native caption buttons in `Extended` mode (decision 485 —
+    /// launch-only, see [`WindowOptions::native_caption_buttons`]).
+    /// `false` disables the OS zones so app-implemented buttons
+    /// (wired `HeaderBar` `on_*` actions) keep their presses.
+    pub fn with_native_caption_buttons(mut self, enabled: bool) -> Self {
+        self.native_caption_buttons = enabled;
         self
     }
 
@@ -515,6 +537,11 @@ pub struct DesktopLoop {
     /// the same alpha mode instead of silently reverting to opaque.
     /// Default [`WindowStyle::Decorated`].
     window_style: WindowStyle,
+    /// Native caption buttons (decision 485): recorded from
+    /// [`WindowOptions::native_caption_buttons`] at runner startup
+    /// so the Windows runner publishes the OS caption zones live.
+    /// Default `true`.
+    native_caption_buttons: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

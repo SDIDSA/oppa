@@ -24,6 +24,72 @@ use crate::shell::EventKind;
 /// drag region — the loud-rule precedent: use the control).
 pub const HEADER_BAR_DEBUG: &str = "oppa::HeaderBar";
 
+/// Caption-button slot (decision 485): which native caption zone a
+/// committed box maps to. The runner publishes one zone per wired
+/// `HeaderBar` caption button (`header-min` / `header-max` /
+/// `header-close` debug labels, in that order — see
+/// [`native_caption_zones`]); shells answer their platform caption
+/// codes over them (Windows `HTMINBUTTON` / `HTMAXBUTTON` /
+/// `HTCLOSE`, with hover glow, press, and snap layouts owned by the
+/// OS — the JavaFX `EXTENDED` superimposed-buttons shape).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum CaptionButton {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+impl CaptionButton {
+    /// Debug label of the matching `HeaderBar` caption node, in
+    /// zone order (minimize, maximize, close — left to right).
+    pub fn debug_label(self) -> &'static str {
+        match self {
+            CaptionButton::Minimize => "header-min",
+            CaptionButton::Maximize => "header-max",
+            CaptionButton::Close => "header-close",
+        }
+    }
+}
+
+/// Native caption zones for `WindowStyle::Extended` (decision 485):
+/// the committed boxes of the `HeaderBar` caption buttons, in
+/// min/max/close order, skipping missing or unlaid nodes (a subset
+/// renders a subset — never a fabricated zone). The boxes are the
+/// app's own button geometry, so OS zones and button visuals align
+/// by construction. Untracked (paint/runner bookkeeping, never
+/// effects).
+///
+/// The zones only take effect where the shell implements them
+/// (Windows answers the `HT*BUTTON` codes with fully native
+/// behavior — real actions, hover glow, Win11 snap layouts — while
+/// the app's `on_*` actions stay wired as the Linux/custom/off
+/// fallback, shadowed harmlessly where the OS answers first; the
+/// close veto still consults through the shared `WM_CLOSE` path on
+/// every close, native or bridged).
+pub fn native_caption_zones(host: &ComponentHost) -> Vec<(CaptionButton, [f32; 4])> {
+    host.with_retained_mut(|rec, _| {
+        let mut out = Vec::new();
+        for button in [
+            CaptionButton::Minimize,
+            CaptionButton::Maximize,
+            CaptionButton::Close,
+        ] {
+            let mut ids = rec.find_by_debug(button.debug_label());
+            ids.sort();
+            for id in ids {
+                let Some(node) = rec.get(id) else {
+                    continue;
+                };
+                let Some(layout) = node.layout.clone() else {
+                    continue;
+                };
+                out.push((button, [layout.x, layout.y, layout.w, layout.h]));
+            }
+        }
+        out
+    })
+}
+
 /// OS window-drag regions for `WindowStyle::Extended` (decision
 /// 482): the committed boxes of every `HeaderBar` node, minus the
 /// boxes of press-owning descendants (buttons, fields, menus keep
@@ -445,5 +511,66 @@ mod tests {
         );
         // Full cover: nothing remains draggable.
         assert!(subtract_rect(vec![[0.0, 0.0, 100.0, 40.0]], [0.0, 0.0, 100.0, 40.0]).is_empty());
+    }
+
+    /// Decision 485: `native_caption_zones` returns the caption
+    /// button boxes in min/max/close order with exact geometry,
+    /// skipping missing nodes (a subset renders a subset — never a
+    /// fabricated zone). The tree below mounts reversed
+    /// (close/max/min) to prove the order comes from the slot
+    /// vocabulary, never tree order.
+    #[test]
+    fn native_caption_zones_follow_slot_order_with_exact_boxes() {
+        use crate::component::{ComponentHost, Ctx, Props};
+        use crate::style::Style;
+        use crate::vnode::{Div, Row, VNode};
+        #[derive(Clone)]
+        struct ZoneProps {
+            skip_close: bool,
+        }
+        impl Props for ZoneProps {}
+        fn zone_root(_ctx: &Ctx, p: &ZoneProps) -> VNode {
+            let mut kids = vec![
+                Div("header-close").style(Style::new().size(46, 40)).build(),
+                Div("header-max").style(Style::new().size(46, 40)).build(),
+                Div("header-min").style(Style::new().size(46, 40)).build(),
+            ];
+            if p.skip_close {
+                kids.remove(0);
+            }
+            Row(HEADER_BAR_DEBUG)
+                .style(Style::new().size(300, 40))
+                .children(kids)
+        }
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        host.mount("Zones", ZoneProps { skip_close: false }, zone_root);
+        host.run_until_idle();
+        assert_eq!(
+            native_caption_zones(&host),
+            vec![
+                (CaptionButton::Minimize, [92.0, 0.0, 46.0, 40.0]),
+                (CaptionButton::Maximize, [46.0, 0.0, 46.0, 40.0]),
+                (CaptionButton::Close, [0.0, 0.0, 46.0, 40.0]),
+            ],
+            "slot order wins over tree order, boxes exact"
+        );
+        let bare = ComponentHost::new();
+        bare.set_viewport(800.0, 600.0);
+        bare.mount("Zones", ZoneProps { skip_close: true }, zone_root);
+        bare.run_until_idle();
+        assert_eq!(
+            native_caption_zones(&bare),
+            vec![
+                (CaptionButton::Minimize, [46.0, 0.0, 46.0, 40.0]),
+                (CaptionButton::Maximize, [0.0, 0.0, 46.0, 40.0]),
+            ],
+            "missing nodes skip quietly"
+        );
+        assert_eq!(
+            CaptionButton::Minimize.debug_label(),
+            "header-min",
+            "labels name the control's nodes"
+        );
     }
 }

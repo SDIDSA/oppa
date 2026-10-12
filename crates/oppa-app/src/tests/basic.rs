@@ -189,3 +189,28 @@ fn loop_records_window_style_with_opaque_default() {
         CompositeAlphaMode::PreMultiplied
     );
 }
+
+/// Decision 485: native caption buttons default on (the JavaFX
+/// `EXTENDED` shape — platform buttons unless the app implements
+/// its own) and flip through the builder; headless loops record the
+/// choice for the Windows runner to publish zones from.
+#[test]
+fn window_options_native_caption_defaults_on_and_builder_flips() {
+    assert!(
+        WindowOptions::new("App", 400, 300).native_caption_buttons,
+        "native caption zones default on"
+    );
+    assert!(
+        !WindowOptions::new("A", 1, 1)
+            .with_native_caption_buttons(false)
+            .native_caption_buttons,
+        "opt-out disables the OS zones"
+    );
+    let (mut loop_, _) = harness();
+    assert!(loop_.native_caption_buttons(), "headless loops record on");
+    loop_.set_native_caption_buttons(false);
+    assert!(
+        !loop_.native_caption_buttons(),
+        "the runner publishes from the recorded flag"
+    );
+}

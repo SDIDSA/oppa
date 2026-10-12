@@ -260,18 +260,25 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             }
         }
         WM_NCHITTEST => {
-            // Decision 482: frameless hit-testing — the pure
-            // `frameless_hit_test` classifier over the live client
-            // rect plus the runner-published drag regions, so OS
-            // drag (HTCAPTION), edge/corner resize, and snap keep
-            // working without a title bar. Decorated windows keep
-            // the default (byte-identical).
+            // Decisions 482–485: frameless hit-testing — native
+            // caption zones first (`HT*BUTTON`, so the OS owns hover
+            // glow, press, and snap layouts over the `HeaderBar`
+            // buttons), then the pure `frameless_hit_test`
+            // classifier over the live client rect plus the
+            // runner-published drag regions (OS drag on `HTCAPTION`,
+            // edge/corner resize, snap), so a title bar is never
+            // needed for full window management. Decorated windows
+            // keep the default (byte-identical).
             if shared.borrow().style.is_frameless() {
                 // Screen point packs as i16 pairs in lParam.
                 let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
                 let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;
                 let mut pt = POINT { x: sx, y: sy };
                 let _ = ScreenToClient(hwnd, &mut pt);
+                let zones = shared.borrow().caption_buttons.clone();
+                if let Some(code) = caption_button_at(pt.x as f32, pt.y as f32, &zones) {
+                    return LRESULT(code);
+                }
                 let mut client = RECT::default();
                 let _ = GetClientRect(hwnd, &mut client);
                 let maximized = IsZoomed(hwnd).as_bool();

@@ -104,11 +104,26 @@ impl AppState {
 /// settled decorated loops never walk the tree). The modal sizing
 /// loop needs no twin: the thread is captured by the OS sizing drag
 /// there, so no press can arrive with stale regions.
+///
+/// Decision 485 rides alongside: the native caption zones
+/// (`oppa::native_caption_zones` over the `HeaderBar` caption
+/// buttons) publish on the same cadence whenever `Extended` meets
+/// `native_caption_buttons` — the shell answers the `HT*BUTTON`
+/// codes over them ahead of everything else, so the OS owns hover
+/// glow, press, and snap layouts. Disabled (or any other style)
+/// clears the zones and the app's bridged buttons keep their
+/// presses.
 pub(crate) fn sync_drag_regions(shell: &Win32Shell, loop_: &DesktopLoop) {
-    shell.set_drag_regions(oppa::drag_regions_for_style(
-        loop_.host(),
-        loop_.window_style(),
-    ));
+    let host = loop_.host();
+    let style = loop_.window_style();
+    shell.set_drag_regions(oppa::drag_regions_for_style(host, style));
+    shell.set_caption_buttons(
+        if style == oppa::WindowStyle::Extended && loop_.native_caption_buttons() {
+            oppa::native_caption_zones(host)
+        } else {
+            Vec::new()
+        },
+    );
 }
 
 /// Builds the `WM_SIZE` hook installed via
@@ -341,7 +356,10 @@ pub fn run_windows<P: Props>(
     // reconfigures re-apply the matching alpha mode from it) and
     // transparent windows clear to alpha-0 (paired with the
     // premultiplied swapchain the bring-up below negotiates).
+    // Decision 485 rides alongside: native caption zones default on
+    // (disable for app-implemented buttons).
     loop_.set_window_style(options.window_style);
+    loop_.set_native_caption_buttons(options.native_caption_buttons);
     loop_.set_transparent_clear(options.window_style.is_transparent());
     loop_.mount("App", props, component);
     // App ownership (Round 25.3, decision 338): after mount (host

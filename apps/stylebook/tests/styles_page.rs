@@ -4,7 +4,8 @@
 use oppa::{drag_regions_for_style, find_retained_by_debug, WindowStyle};
 use oppa_testkit::Harness;
 use stylebook::{
-    style_arg, style_blurb, style_hint, style_title, ChromeHooks, StylebookProps, StylebookRoot,
+    parse_native_buttons_flag, parse_style_arg, style_arg, style_blurb, style_hint, style_title,
+    ChromeHooks, StylebookProps, StylebookRoot,
 };
 
 fn mount_style(style: WindowStyle) -> Harness {
@@ -13,6 +14,7 @@ fn mount_style(style: WindowStyle) -> Harness {
         "Stylebook",
         StylebookProps {
             style,
+            native: false,
             hooks: ChromeHooks::default(),
         },
         StylebookRoot,
@@ -130,4 +132,31 @@ fn style_metadata_covers_every_variant() {
             "{style:?} relaunches by name"
         );
     }
+}
+
+/// Decision 485: argv parsing is total and loud — every style
+/// parses, garbage refuses naming the spellings, absence defaults
+/// to `Extended`, and `--native-buttons` is a pure presence flag.
+#[test]
+fn argv_parsing_selects_style_and_native_flag() {
+    use oppa::WindowStyle as S;
+    assert_eq!(parse_style_arg(None).expect("default"), S::Extended);
+    assert_eq!(
+        parse_style_arg(Some("transparent")).expect("named"),
+        S::Transparent
+    );
+    assert!(
+        parse_style_arg(Some("borderless")).is_err(),
+        "unknown chrome refuses loudly"
+    );
+    let on = [
+        "--style".to_string(),
+        "extended".to_string(),
+        "--native-buttons".to_string(),
+    ];
+    assert!(parse_native_buttons_flag(&on), "flag present arms native");
+    assert!(
+        !parse_native_buttons_flag(&on[..2]),
+        "flag absent keeps the bridge"
+    );
 }

@@ -85,7 +85,14 @@ fn showcase_root(ctx: &Ctx, props: &ShowcaseProps) -> VNode {
 }
 
 fn main() {
-    let options = WindowOptions::new("Extended showcase", 720, 480).extended();
+    // Decision 485 opt-out demo: native caption zones default on,
+    // which would shadow these custom buttons on Windows — this
+    // showcase disables them so the poll-hook bridge below owns
+    // every press (the `apps/stylebook` `--native-buttons` flag
+    // demos the other half).
+    let options = WindowOptions::new("Extended showcase", 720, 480)
+        .extended()
+        .with_native_caption_buttons(false);
     let hooks = ChromeHooks::default();
     let props = ShowcaseProps {
         hooks: hooks.clone(),

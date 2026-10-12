@@ -126,10 +126,20 @@ contract test suite — not prose — defines sameness.
   (area-exact: bar area minus caption-button boxes; nested buttons
   and fields keep normal hit-testing while bare chrome drags);
   maximized windows never answer sizing codes; an absent `HeaderBar`
-  publishes nothing. Caption buttons are app-bridged: minimize /
-  maximize through `WindowControl` (quiet no-op with no control),
-  close through `ctx.request_close()` (the close veto still
-  consults). Regions refresh live (per pump iteration on Windows,
+  publishes nothing. Caption buttons come in two bridged modes
+  (decision 485): native OS zones by default in `Extended` on
+  Windows (`WindowOptions::native_caption_buttons`, opt out with
+  `false`) — the shell answers `HTMINBUTTON` / `HTMAXBUTTON` /
+  `HTCLOSE` over the `HeaderBar` caption-button boxes (zones align
+  with the button visuals by construction), so the OS owns real
+  actions, hover glow, and Win11 snap layouts; or app-bridged
+  (minimize / maximize through `WindowControl`, quiet no-op with no
+  control) when disabled — and always app-bridged on Linux, where no
+  OS zones exist. Apps wire `HeaderBar` `on_*` actions
+  unconditionally as the Linux/off fallback (shadowed harmlessly
+  where the OS answers first). Close honors `ctx.request_close()`
+  (the close veto still consults) on every close, native or
+  bridged. Regions refresh live (per pump iteration on Windows,
   per press on Linux).
 - Backends never compute chrome: `Color` stays alpha-less (the
   alpha-0 clear rides a backend flag, not the palette), and the

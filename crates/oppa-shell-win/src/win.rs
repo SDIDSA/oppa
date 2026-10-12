@@ -77,6 +77,37 @@ pub(crate) const HTTOPRIGHT_PX: isize = 14;
 pub(crate) const HTBOTTOM_PX: isize = 15;
 pub(crate) const HTBOTTOMLEFT_PX: isize = 16;
 pub(crate) const HTBOTTOMRIGHT_PX: isize = 17;
+/// Native caption-button answers (decision 485 — real `HT*BUTTON`
+/// values so `DefWindowProcW` owns hover glow, press, and Win11 snap
+/// layouts over the zones; plain `isize` like the frameless codes
+/// above).
+pub(crate) const HTMINBUTTON_PX: isize = 8;
+pub(crate) const HTMAXBUTTON_PX: isize = 9;
+pub(crate) const HTCLOSE_PX: isize = 20;
+
+/// Pure native-caption matcher (decision 485): client point against
+/// the published `(button, rect)` zones, in order — first hit wins
+/// (zones never overlap by construction: they are disjoint button
+/// boxes). `None` falls through to the frameless classifier below.
+/// Pure (headless-testable — the proc supplies the live point +
+/// the runner-published zones; see `caption_button_at_*`).
+pub(crate) fn caption_button_at(
+    x: f32,
+    y: f32,
+    zones: &[(oppa::CaptionButton, [f32; 4])],
+) -> Option<isize> {
+    zones.iter().find_map(|(button, r)| {
+        if x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3] {
+            Some(match button {
+                oppa::CaptionButton::Minimize => HTMINBUTTON_PX,
+                oppa::CaptionButton::Maximize => HTMAXBUTTON_PX,
+                oppa::CaptionButton::Close => HTCLOSE_PX,
+            })
+        } else {
+            None
+        }
+    })
+}
 
 /// Frameless resize-border thickness in client px (decision 482):
 /// an 8px band on every edge answers the sizing codes so border
@@ -359,6 +390,14 @@ pub struct ShellShared {
     /// because their boxes were subtracted before publish. Empty =
     /// no caption region (undecorated windows stay fully client).
     pub drag_rects: Vec<[f32; 4]>,
+    /// Native caption zones (decision 485): the `HeaderBar` caption
+    /// button boxes published by the runner (Windows `Extended` +
+    /// `native_caption_buttons` only) so the `WM_NCHITTEST` arm
+    /// answers the `HT*BUTTON` codes ahead of drag regions and
+    /// borders — the OS owns hover glow, press, and snap layouts
+    /// over them. Empty = custom/off (the app's bridged buttons
+    /// keep their presses).
+    pub caption_buttons: Vec<(oppa::CaptionButton, [f32; 4])>,
 }
 
 pub struct Win32Shell {
@@ -392,6 +431,7 @@ impl Win32Shell {
             max_size: None,
             style: cfg.style,
             drag_rects: Vec::new(),
+            caption_buttons: Vec::new(),
         }));
 
         SHELL_RC.with(|rc| *rc.borrow_mut() = Some(shared.clone()));
@@ -513,6 +553,23 @@ impl Win32Shell {
     #[cfg(test)]
     pub(crate) fn drag_regions(&self) -> Vec<[f32; 4]> {
         self.shared.borrow().drag_rects.clone()
+    }
+
+    /// Publishes the native caption zones (decision 485 — the runner
+    /// recomputes these from `oppa::native_caption_zones` alongside
+    /// the drag regions; the `WM_NCHITTEST` arm answers the
+    /// `HT*BUTTON` codes over them ahead of everything else).
+    /// Empty clears the zones (custom/off — bridged buttons keep
+    /// their presses).
+    pub fn set_caption_buttons(&self, zones: Vec<(oppa::CaptionButton, [f32; 4])>) {
+        self.shared.borrow_mut().caption_buttons = zones;
+    }
+
+    /// Published caption zones, in order (test observability — same
+    /// live-proc bound as [`Win32Shell::drag_regions`]).
+    #[cfg(test)]
+    pub(crate) fn caption_zones(&self) -> Vec<(oppa::CaptionButton, [f32; 4])> {
+        self.shared.borrow().caption_buttons.clone()
     }
 
     /// TSF-aware association for the shell window (this round's fix).

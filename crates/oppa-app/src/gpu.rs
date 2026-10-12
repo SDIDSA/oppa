@@ -51,6 +51,7 @@ impl DesktopLoop {
             poll_hook: None,
             continuous_repaint: false,
             window_style: WindowStyle::Decorated,
+            native_caption_buttons: true,
         })
     }
 

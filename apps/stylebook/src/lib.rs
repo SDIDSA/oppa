@@ -24,7 +24,8 @@
 mod app;
 
 pub use app::{
-    style_arg, style_blurb, style_hint, style_title, ChromeHooks, StylebookProps, StylebookRoot,
+    parse_native_buttons_flag, parse_style_arg, style_arg, style_blurb, style_hint, style_title,
+    ChromeHooks, StylebookProps, StylebookRoot,
 };
 
 #[cfg(target_arch = "wasm32")]

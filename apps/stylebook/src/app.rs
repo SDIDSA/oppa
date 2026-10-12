@@ -63,6 +63,33 @@ pub fn style_arg(style: WindowStyle) -> &'static str {
     }
 }
 
+const STYLE_NAMES: &str = "decorated|undecorated|transparent|extended";
+
+/// Parses one `--style=` value (pure — headless-testable): `None`
+/// (flag absent) means `Extended`. Anything else is a loud `Err`
+/// naming the valid spellings (never a silent default — an unknown
+/// chrome must not boot looking like a choice).
+pub fn parse_style_arg(arg: Option<&str>) -> Result<WindowStyle, String> {
+    match arg {
+        None => Ok(WindowStyle::Extended),
+        Some("decorated") => Ok(WindowStyle::Decorated),
+        Some("undecorated") => Ok(WindowStyle::Undecorated),
+        Some("transparent") => Ok(WindowStyle::Transparent),
+        Some("extended") => Ok(WindowStyle::Extended),
+        Some(other) => Err(format!(
+            "stylebook: unknown style {other:?} (expected {STYLE_NAMES})"
+        )),
+    }
+}
+
+/// Reads the `--native-buttons` opt-in (pure — headless-testable):
+/// present means the OS answers the caption zones first in
+/// `Extended` mode (decision 485); absent keeps the custom bridge
+/// owning every press.
+pub fn parse_native_buttons_flag(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--native-buttons")
+}
+
 /// Runner-visible caption outbox (the studio `StudioHooks`
 /// publish-once precedent — signals are runtime-bound, so the root
 /// publishes them on first render and the desktop poll hook drains
@@ -94,10 +121,13 @@ impl ChromeHooks {
 }
 
 /// Stylebook props: the launch style (desktop argv selects it; web
-/// and Android mount `Decorated`) plus the caption outbox.
+/// and Android mount `Decorated`), whether the OS answers the
+/// caption zones first (decision 485 `--native-buttons` demo — the
+/// card footer names the live mode), plus the caption outbox.
 #[derive(Clone)]
 pub struct StylebookProps {
     pub style: WindowStyle,
+    pub native: bool,
     pub hooks: ChromeHooks,
 }
 
@@ -156,13 +186,26 @@ pub fn StylebookRoot(ctx: &Ctx, props: &StylebookProps) -> VNode {
                 ]),
             VNode::from(Text {
                 text: SharedString::from(format!(
-                    "cargo run -p stylebook -- --style {}",
-                    style_arg(style)
+                    "cargo run -p stylebook -- --style {}{}",
+                    style_arg(style),
+                    if props.native {
+                        " --native-buttons"
+                    } else {
+                        ""
+                    },
                 )),
                 style: Text::body_secondary,
             }),
             VNode::from(Text {
                 text: SharedString::from(style_hint(style)),
+                style: Text::body_secondary,
+            }),
+            VNode::from(Text {
+                text: SharedString::from(if props.native {
+                    "caption: native OS zones (fallback wired)"
+                } else {
+                    "caption: bridged buttons"
+                }),
                 style: Text::body_secondary,
             }),
         ]);

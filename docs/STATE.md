@@ -808,6 +808,21 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   counter (screenshot); Extended tiling/snap still open. Gates: fmt clean, workspace clippy zero warnings,
   `oppa-shell-win` 30/30 (incl. live frame-bits, blur HRESULT,
   erase claim, clamp math).
+- Toggleable native caption buttons (decision 485, from the linked
+  JavaFX `EXTENDED` spec's superimposed-buttons requirement):
+  `WindowOptions::with_native_caption_buttons(bool)` (default true,
+  `Extended`-only, Windows-only — Linux has no OS zones, so bridged
+  buttons always own the press there). The Windows runner publishes
+  `native_caption_zones` (the `HeaderBar` caption-button boxes, so
+  zones align with visuals by construction) and the shell answers
+  `HTMINBUTTON`/`HTMAXBUTTON`/`HTCLOSE` ahead of everything — real
+  actions, hover glow, Win11 snap layouts, close veto intact.
+  Apps wire `on_*` unconditionally as the Linux/off fallback
+  (shadowed harmlessly where the OS answers first). Opt-out demos:
+  sera `extended` example + Stylebook `--native-buttons` (footer
+  names the live mode; 5/5 headless). Gates: fmt clean, workspace
+  clippy zero warnings, `oppa` 249/249, `oppa-app` 91/91, shell-win
+  live HT-code proof green. Awaiting user hover/snap proof.
 
 ## Now (in progress)
 

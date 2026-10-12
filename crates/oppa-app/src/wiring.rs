@@ -321,4 +321,20 @@ impl DesktopLoop {
     pub fn set_window_style(&mut self, style: WindowStyle) {
         self.window_style = style;
     }
+
+    /// Native caption buttons (decision 485): recorded from
+    /// [`WindowOptions::native_caption_buttons`](crate::WindowOptions::native_caption_buttons)
+    /// at runner startup. Default `true`.
+    pub fn native_caption_buttons(&self) -> bool {
+        self.native_caption_buttons
+    }
+
+    /// Records the native-caption choice (decision 485 — the runners
+    /// call this once from `WindowOptions` before the pump starts;
+    /// the Windows runner publishes the OS caption zones from it on
+    /// every pump iteration, so showing/hiding the header flips the
+    /// zones live).
+    pub fn set_native_caption_buttons(&mut self, enabled: bool) {
+        self.native_caption_buttons = enabled;
+    }
 }

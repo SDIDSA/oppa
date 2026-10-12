@@ -26,6 +26,15 @@ pub const CAPTION_BUTTON_W: f32 = 46.0;
 /// unsaved-changes modal can mount instead of dying). Missing
 /// buttons render nothing (never a dead affordance, the disabled
 /// structural precedent — decision 213).
+///
+/// Decision 485 (native caption buttons): wire the actions
+/// unconditionally — on Windows `Extended` with
+/// `native_caption_buttons` (the default) the OS answers first over
+/// the published zones (real actions, hover glow, snap layouts)
+/// and the wired actions stand down harmlessly; with the flag off
+/// (or on Linux, where no OS zones exist) the same actions bridge
+/// the press. Either way the close veto still consults through the
+/// shared close path.
 #[derive(Clone)]
 pub struct HeaderBarProps {
     pub title: SharedString,

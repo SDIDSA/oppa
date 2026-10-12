@@ -749,3 +749,82 @@ fn clamp_rect_to_work_pins_maximized_rect() {
         "maximized rect owns the work area only"
     );
 }
+
+/// Decision 485: the pure caption matcher maps each zone to its
+/// `HT*BUTTON` code in order (first hit wins — zones never overlap
+/// by construction) and misses fall through (`None` — the frameless
+/// classifier below owns the point).
+#[test]
+fn caption_button_at_maps_zones_in_order() {
+    use oppa::CaptionButton;
+    let zones = vec![
+        (CaptionButton::Minimize, [154.0, 0.0, 46.0, 40.0]),
+        (CaptionButton::Maximize, [200.0, 0.0, 46.0, 40.0]),
+        (CaptionButton::Close, [246.0, 0.0, 46.0, 40.0]),
+    ];
+    assert_eq!(
+        super::caption_button_at(160.0, 20.0, &zones),
+        Some(HTMINBUTTON_PX),
+        "minimize zone answers HTMINBUTTON"
+    );
+    assert_eq!(
+        super::caption_button_at(223.0, 20.0, &zones),
+        Some(HTMAXBUTTON_PX),
+        "maximize zone answers HTMAXBUTTON"
+    );
+    assert_eq!(
+        super::caption_button_at(269.0, 20.0, &zones),
+        Some(HTCLOSE_PX),
+        "close zone answers HTCLOSE"
+    );
+    assert_eq!(
+        super::caption_button_at(100.0, 20.0, &zones),
+        None,
+        "bar chrome falls through to caption/drag handling"
+    );
+    assert_eq!(
+        super::caption_button_at(160.0, 20.0, &[]),
+        None,
+        "no zones means no codes (custom/off)"
+    );
+}
+
+/// Decision 485, live OS proof: a real extended window with
+/// published caption zones answers `WM_NCHITTEST` with the `HT*BUTTON`
+/// codes through the proc — ahead of the drag region beneath them —
+/// so `DefWindowProcW` owns hover glow, press, and snap layouts.
+#[test]
+fn caption_zones_answer_htbutton_codes_through_proc() {
+    use ::windows::Win32::Foundation::{LPARAM, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SendMessageW, WM_NCHITTEST};
+    use oppa::CaptionButton;
+    use windows::Win32::Foundation::RECT;
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
+    // Three 46x40 zones packed at the top-right of the 200x150
+    // client area (the runner publishes these from the retained
+    // button boxes — here asserted verbatim through the proc).
+    shell.set_caption_buttons(vec![
+        (CaptionButton::Minimize, [62.0, 0.0, 46.0, 40.0]),
+        (CaptionButton::Maximize, [108.0, 0.0, 46.0, 40.0]),
+        (CaptionButton::Close, [154.0, 0.0, 46.0, 40.0]),
+    ]);
+    assert_eq!(shell.caption_zones().len(), 3, "zones publish");
+    let mut rect = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(shell.hwnd(), &mut rect);
+    }
+    let hit = |cx: i32, cy: i32| unsafe {
+        let (sx, sy) = (rect.left + cx, rect.top + cy);
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCHITTEST,
+            Some(WPARAM(0)),
+            Some(LPARAM(((sy << 16) | (sx & 0xFFFF)) as isize)),
+        )
+        .0
+    };
+    assert_eq!(hit(85, 20), HTMINBUTTON_PX, "minimize zone codes");
+    assert_eq!(hit(131, 20), HTMAXBUTTON_PX, "maximize zone codes");
+    assert_eq!(hit(177, 20), HTCLOSE_PX, "close zone codes");
+    assert_eq!(hit(30, 100), HTCLIENT_PX, "away from zones stays client");
+}
