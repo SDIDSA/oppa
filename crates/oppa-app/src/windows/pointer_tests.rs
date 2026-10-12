@@ -1029,32 +1029,26 @@ fn resize_callback_skips_quietly_while_state_borrowed() {
     );
 }
 
-/// Decision 485 publish-path proof (found live: native caption
-/// buttons never reacted — the proc answers the codes, so the
-/// suspect is runner→shell publishing): a headless `Extended` loop
-/// mounting a wired `HeaderBar`, synced into a hidden window,
-/// answers a real `WM_NCHITTEST` over the maximize button with
-/// `HTMAXBUTTON` end to end (mount → sync → OS message → code).
-/// A silent `HTCLIENT` here would mean the live arm has nothing to
-/// answer with.
-#[test]
-fn sync_publishes_caption_zones_from_header_buttons() {
-    use oppa_controls::{HeaderBar, HeaderBarProps};
-    use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SendMessageW, WM_NCHITTEST};
-    #[derive(Clone)]
-    struct HeaderCase {
-        props: HeaderBarProps,
-    }
-    impl Props for HeaderCase {}
-    fn header_root(ctx: &Ctx, p: &HeaderCase) -> VNode {
-        ctx.child("oppa::HeaderBar", 1, &p.props, HeaderBar)
-    }
+#[derive(Clone)]
+struct HeaderCase {
+    props: oppa_controls::HeaderBarProps,
+}
+impl oppa::Props for HeaderCase {}
+
+fn header_root(ctx: &oppa::Ctx, p: &HeaderCase) -> oppa::VNode {
+    ctx.child("oppa::HeaderBar", 1, &p.props, oppa_controls::HeaderBar)
+}
+
+/// Shared rig for the caption-publish proofs: a headless `Extended`
+/// loop mounting a fully wired `HeaderBar`, synced once into a
+/// hidden `Extended` window (warmup repaint + publish, the runner's
+/// startup shape).
+fn header_loop_and_shell() -> (DesktopLoop, Win32Shell) {
     let mut loop_ =
         DesktopLoop::new(400, 300, Box::new(FakeText), "Test").expect("headless loop builds");
     loop_.set_window_style(oppa::WindowStyle::Extended);
     loop_.set_native_caption_buttons(true);
-    let props = HeaderBarProps::new("T")
+    let props = oppa_controls::HeaderBarProps::new("T")
         .on_minimize(|| {})
         .on_maximize(|| {})
         .on_close(|| {});
@@ -1071,6 +1065,22 @@ fn sync_publishes_caption_zones_from_header_buttons() {
     })
     .expect("hidden test window builds");
     sync_drag_regions(&shell, &loop_);
+    (loop_, shell)
+}
+
+/// Decision 485 publish-path proof (found live: native caption
+/// buttons never reacted — the proc answers the codes, so the
+/// suspect is runner→shell publishing): a headless `Extended` loop
+/// mounting a wired `HeaderBar`, synced into a hidden window,
+/// answers a real `WM_NCHITTEST` over the maximize button with
+/// `HTMAXBUTTON` end to end (mount → sync → OS message → code).
+/// A silent `HTCLIENT` here would mean the live arm has nothing to
+/// answer with.
+#[test]
+fn sync_publishes_caption_zones_from_header_buttons() {
+    use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SendMessageW, WM_NCHITTEST};
+    let (loop_, shell) = header_loop_and_shell();
     // Center of the live maximize button box (committed layout —
     // the same boxes the runner published as zones).
     let max = loop_

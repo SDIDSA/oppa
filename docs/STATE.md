@@ -859,6 +859,19 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   by construction). Gates: fmt clean, clippy zero warnings,
   shell-win glass-frame proof green, header dock proof green.
   Awaiting user border/shadow/dock proof.
+- Native resize metrics + no OS snap flyout (decision 490,
+  user-asked twice): delivered border points now resize by genuine
+  OS frame metrics (the proc consults `DefWindowProcW` first and
+  accepts only sizing codes — zones/drag still primary, button codes
+  stay ours-alone, `HTCAPTION` maps to client so nested controls keep
+  working). But the snap flyout is unreachable: `DWMWA_CAPTION_BUTTON_BOUNDS`
+  is get-only (the `DwmSetWindowAttribute` publish failed loud with
+  `E_INVALIDARG` and was reverted, not shipped), and a
+  `WindowFromPoint` probe locks that outside points never route to
+  stripped windows — true outside-grab needs an owned transparent
+  margin ring (major surgery, explicitly deferred). A scene-drawn
+  snap flyout remains the deterministic follow-up if wanted. Gates:
+  fmt clean, clippy zero warnings, workspace suite green.
 
 ## Now (in progress)
 

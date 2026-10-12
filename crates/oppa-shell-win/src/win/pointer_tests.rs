@@ -740,6 +740,50 @@ fn frameless_window_extends_glass_frame() {
     }
 }
 
+/// Decision 490 probe (locks the native-resize design): the OS does
+/// NOT route points just outside a frameless rect back to it
+/// (`WindowFromPoint` — the feed of `WM_NCHITTEST` delivery), so no
+/// invisible border ring exists to receive — outside pickup needs an
+/// owned transparent margin ring (window bigger than the scene with
+/// a glassed NC ring: NCCALCSIZE insets, per-resize blur regions —
+/// major surgery, explicitly deferred, never silently assumed).
+/// Inside-edge points keep answering through the proc below with
+/// genuine OS frame metrics (decision 490 def-deferral).
+#[test]
+fn outside_points_do_not_route_to_frameless_window() {
+    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, WindowFromPoint};
+    use windows::Win32::Foundation::{POINT, RECT};
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
+    let mut rect = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(shell.hwnd(), &mut rect);
+    }
+    // A point far outside can never be ours (robust on every
+    // machine, no other window can own it... it owns nothing — the
+    // assertion is only that IT ISN'T US).
+    let far = unsafe {
+        WindowFromPoint(POINT {
+            x: rect.right + 200,
+            y: rect.bottom + 200,
+        })
+    };
+    assert_ne!(far, shell.hwnd(), "far points never route to the window");
+    // Near-edge points report for the record (informational only —
+    // DWM versions may differ, so no assertion pins them).
+    for (x, y, edge) in [
+        (rect.left - 3, (rect.top + rect.bottom) / 2, "left"),
+        (rect.right + 3, (rect.top + rect.bottom) / 2, "right"),
+        ((rect.left + rect.right) / 2, rect.top - 3, "top"),
+        ((rect.left + rect.right) / 2, rect.bottom + 3, "bottom"),
+    ] {
+        let hit = unsafe { WindowFromPoint(POINT { x, y }) };
+        eprintln!(
+            "oppa-shell-win: outside probe {edge}: routed={}",
+            hit == shell.hwnd()
+        );
+    }
+}
+
 /// Decision 484: the maximized frameless clamp pins the proposed
 /// rect to the work origin + work size (the winit `WM_NCCALCSIZE`
 /// mirror — no decoration offsets survive the strip, so a

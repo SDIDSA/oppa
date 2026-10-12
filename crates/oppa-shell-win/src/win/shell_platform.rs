@@ -296,16 +296,26 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             }
         }
         WM_NCHITTEST => {
-            // Decisions 482–486: frameless hit-testing — native
+            // Decisions 482–490: frameless hit-testing — native
             // caption zones first (`HT*BUTTON`, so the OS owns press
             // and snap layouts over the `HeaderBar` buttons; hover
             // glow paints in-scene from the published hover state
             // below, since DWM paints no glow on a stripped frame),
-            // then the pure `frameless_hit_test` classifier over the
-            // live client rect plus the runner-published drag regions
-            // (OS drag on `HTCAPTION`, edge/corner resize, snap), so
-            // a title bar is never needed for full window management.
-            // Decorated windows keep the default (byte-identical).
+            // then genuine OS frame metrics (`DefWindowProcW` maps
+            // the point through the real thick-frame metrics —
+            // decision 490 — so delivered border points resize by OS
+            // logic with native cursors downstream, never ours), then
+            // the pure `frameless_hit_test` fallback over the live
+            // client rect plus the runner-published drag regions (OS
+            // drag on `HTCAPTION`, edge/corner resize, snap), so a
+            // title bar is never needed for full window management.
+            // The default answer narrows on the way down: only sizing
+            // codes pass from `DefWindowProcW` (button codes stay
+            // ours-alone — standard positions would phantom where
+            // visuals differ — and `HTCAPTION` maps to client so
+            // nested header controls keep their presses while our
+            // drag regions own the bare chrome). Decorated windows
+            // keep the default (byte-identical).
             if shared.borrow().style.is_frameless() {
                 // Screen point packs as i16 pairs in lParam.
                 let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
@@ -320,6 +330,24 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
                 publish_caption_hover(&shared, pt.x as f32, pt.y as f32, &zones, hwnd);
                 if let Some(code) = caption_button_at(pt.x as f32, pt.y as f32, &zones) {
                     return LRESULT(code);
+                }
+                // Decision 490 native resize: the default maps the
+                // point through the OS frame metrics. Pure
+                // computation (no dispatch, no reentrancy) — safe to
+                // consult mid-proc.
+                let def = DefWindowProcW(hwnd, msg, wparam, lparam);
+                if matches!(
+                    def.0,
+                    HTLEFT_PX
+                        | HTRIGHT_PX
+                        | HTTOP_PX
+                        | HTTOPLEFT_PX
+                        | HTTOPRIGHT_PX
+                        | HTBOTTOM_PX
+                        | HTBOTTOMLEFT_PX
+                        | HTBOTTOMRIGHT_PX
+                ) {
+                    return def;
                 }
                 let mut client = RECT::default();
                 let _ = GetClientRect(hwnd, &mut client);

@@ -249,9 +249,7 @@ pub(crate) fn extend_glass_frame(hwnd: HWND) -> Result<(), String> {
     unsafe {
         let hr = DwmExtendFrameIntoClientArea(hwnd, &margins);
         if hr.is_err() {
-            return Err(format!(
-                "DwmExtendFrameIntoClientArea refused: {hr:?}"
-            ));
+            return Err(format!("DwmExtendFrameIntoClientArea refused: {hr:?}"));
         }
         Ok(())
     }
@@ -555,9 +553,7 @@ impl Win32Shell {
             // stays fully usable).
             if cfg.style.is_frameless() {
                 if let Err(e) = extend_glass_frame(hwnd) {
-                    eprintln!(
-                        "oppa-shell-win: glass frame unavailable: {e} (no border/shadow)"
-                    );
+                    eprintln!("oppa-shell-win: glass frame unavailable: {e} (no border/shadow)");
                 }
             }
 
