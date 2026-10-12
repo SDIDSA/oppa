@@ -226,6 +226,37 @@ pub(crate) fn enable_transparent_blur(hwnd: HWND) -> Result<(), String> {
     }
 }
 
+/// Extends the DWM glass frame 1px into the client area (decision
+/// 489 — the standard borderless recipe for native borders and drop
+/// shadows: stripping `WM_NCCALCSIZE` takes the frame visuals with
+/// it, so without this a frameless window is a flat edgeless rect).
+/// The 1px glass edge hides under opaque scene pixels (only the
+/// border line + outside shadow show); on `Transparent` it reads as
+/// a faint edge defining the floating shape. Corners stay
+/// OS-rounded, colors OS-owned (the gist's no-control rule). Pure OS
+/// call (same headless test bound as the blur helper). A refusal is
+/// a loud `Err` (the shell logs it and keeps the shadowless window —
+/// presentational backstop, never a creation failure).
+pub(crate) fn extend_glass_frame(hwnd: HWND) -> Result<(), String> {
+    use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+    use windows::Win32::UI::Controls::MARGINS;
+    let margins = MARGINS {
+        cxLeftWidth: 1,
+        cxRightWidth: 1,
+        cyTopHeight: 1,
+        cyBottomHeight: 1,
+    };
+    unsafe {
+        let hr = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        if hr.is_err() {
+            return Err(format!(
+                "DwmExtendFrameIntoClientArea refused: {hr:?}"
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Clamps a maximized borderless rect into the monitor work area
 /// (decision 484 — the winit `WM_NCCALCSIZE` mirror: without
 /// decorations to offset it, a maximized frameless window would
@@ -513,6 +544,19 @@ impl Win32Shell {
                 if let Err(e) = enable_transparent_blur(hwnd) {
                     eprintln!(
                         "oppa-shell-win: transparent composition unavailable: {e} (opaque window)"
+                    );
+                }
+            }
+
+            // Decision 489: every frameless window extends the 1px
+            // glass frame (native border line + drop shadow — the
+            // `WM_NCCALCSIZE` strip takes them with the visuals).
+            // Loud on refusal but never fatal (a shadowless window
+            // stays fully usable).
+            if cfg.style.is_frameless() {
+                if let Err(e) = extend_glass_frame(hwnd) {
+                    eprintln!(
+                        "oppa-shell-win: glass frame unavailable: {e} (no border/shadow)"
                     );
                 }
             }

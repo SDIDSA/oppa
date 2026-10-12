@@ -850,6 +850,15 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   the `CloseRequested` veto path, double-clicks swallowed). Gates:
   fmt clean, clippy zero warnings, shell-win live click/double/
   queue proofs green. Awaiting user click + snap-flyout proof.
+- Native borders/shadows + flush caption buttons (decision 489,
+  user-asked): every frameless window extends the 1px DWM glass
+  frame (the `WM_NCCALCSIZE` strip takes border+shadow with the
+  visuals — border line and drop shadow survive; corners/colors stay
+  OS-owned), and `HeaderBar` drops its trailing pad whenever buttons
+  render so the close box ends exactly at the bar edge (zones follow
+  by construction). Gates: fmt clean, clippy zero warnings,
+  shell-win glass-frame proof green, header dock proof green.
+  Awaiting user border/shadow/dock proof.
 
 ## Now (in progress)
 

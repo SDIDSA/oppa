@@ -307,3 +307,35 @@ fn caption_glyphs_follow_theme_toggles() {
         .expect("glyph leaf carries an image");
     assert_ne!(before, after, "toggle swaps the ink variant");
 }
+
+/// Decision 489: caption buttons dock flush to the bar's top-right
+/// (native position, zero inset) — the close box ends exactly at
+/// the bar edge, so the published zones sit where the OS expects
+/// caption buttons.
+#[test]
+fn caption_buttons_dock_flush_right() {
+    let (min, _) = press_count();
+    let (max, _) = press_count();
+    let (close, _) = press_count();
+    let mut props = HeaderBarProps::new("Docked").height(40.0);
+    props.on_minimize = Some(min);
+    props.on_maximize = Some(max);
+    props.on_close = Some(close);
+    let host = mount_bar(props);
+    let bar = host
+        .committed_box(node_by_debug(&host, oppa::HEADER_BAR_DEBUG))
+        .expect("bar laid out");
+    let close_box = host
+        .committed_box(node_by_debug(&host, "header-close"))
+        .expect("close laid out");
+    assert!(
+        ((close_box.x + close_box.w) - (bar.x + bar.w)).abs() < 1.0,
+        "close ends at the bar edge ({} vs {})",
+        close_box.x + close_box.w,
+        bar.x + bar.w
+    );
+    assert!(
+        (close_box.y - bar.y).abs() < 1.0,
+        "buttons ride the bar top"
+    );
+}

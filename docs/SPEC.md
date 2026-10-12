@@ -121,7 +121,9 @@ contract test suite — not prose — defines sameness.
   stay set, so snap, tiling, shadows, and minimize/maximize
   animations survive); only the non-client *visuals* go
   (`WM_NCCALCSIZE` strip, maximized windows clamped to the work
-  area so the taskbar stays visible). The runner publishes the committed `HeaderBar`
+  area so the taskbar stays visible). A 1px DWM glass frame survives
+  the strip (decision 489 — native border line + drop shadow; corners
+  and colors stay OS-owned). The runner publishes the committed `HeaderBar`
   boxes minus press-owning descendants as the drag region
   (area-exact: bar area minus caption-button boxes; nested buttons
   and fields keep normal hit-testing while bare chrome drags);
@@ -139,7 +141,8 @@ contract test suite — not prose — defines sameness.
   swallow after the single-click acted); button glyphs are true Win11
   caption shapes (decision 487 — 16px Segoe-metric strokes baked
   per palette at 4x, centered exactly in their targets, close-hover
-  white on signal red); hover glow paints in-scene from
+  white on signal red, docked flush top-right with zero inset);
+  hover glow paints in-scene from
   the runner-drained hover signal (decision 486 — DWM draws no hover
   on a stripped frame); or app-bridged
   (minimize / maximize through `WindowControl`, quiet no-op with no

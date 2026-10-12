@@ -170,13 +170,21 @@ impl HeaderBarProps {
 /// reads as chrome on every palette.
 pub fn HeaderBar(ctx: &Ctx, props: &HeaderBarProps) -> VNode {
     let t = ctx.theme().tokens();
-    let bar_style = Style::new()
+    // Decision 489: caption buttons dock flush to the bar's top-right
+    // (native position, zero inset) — the trailing pad drops whenever
+    // buttons render, so the close box ends exactly at the bar edge
+    // (and the published zones with it, by construction). The title
+    // keeps its leading inset either way.
+    let mut bar_style = Style::new()
         .fill_width()
         .h(props.height)
         .bg(t.surface)
         .align_items(AlignItems::Center)
         .justify_content(JustifyContent::SpaceBetween)
-        .pad_x(12);
+        .pad_left(12);
+    if props.on_minimize.is_none() && props.on_maximize.is_none() && props.on_close.is_none() {
+        bar_style = bar_style.pad_right(12);
+    }
     // Decision 487 baked glyphs (replacing the ASCII `_`/`□`/`×`
     // approximations with true Win11 caption shapes): the themed set
     // follows the palette live — a theme toggle re-renders with the

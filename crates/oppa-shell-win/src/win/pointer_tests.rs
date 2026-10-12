@@ -721,6 +721,25 @@ fn transparent_window_composites_and_skips_gdi_erase() {
     );
 }
 
+/// Decision 489: every frameless window extends the 1px glass frame
+/// (native border line + drop shadow — the `WM_NCCALCSIZE` strip
+/// takes them with the visuals). Proven against a hidden window on
+/// the live compositor (same environment bound as creation).
+#[test]
+fn frameless_window_extends_glass_frame() {
+    for style in [
+        oppa::WindowStyle::Undecorated,
+        oppa::WindowStyle::Transparent,
+        oppa::WindowStyle::Extended,
+    ] {
+        let shell = hidden_shell_with_style(style);
+        assert!(
+            super::extend_glass_frame(shell.hwnd()).is_ok(),
+            "{style:?} takes the glass frame"
+        );
+    }
+}
+
 /// Decision 484: the maximized frameless clamp pins the proposed
 /// rect to the work origin + work size (the winit `WM_NCCALCSIZE`
 /// mirror — no decoration offsets survive the strip, so a
