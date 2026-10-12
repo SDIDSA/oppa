@@ -281,6 +281,15 @@ impl Ctx {
         self.host.set_system_bars_visible(visible);
     }
 
+    /// Native caption hover (decision 486): tracked signal with the
+    /// live caption button under the cursor, if any (the Windows
+    /// runner publishes the shell hover state; everywhere else it
+    /// stays `None`). `HeaderBar` reads it to paint the hover glow
+    /// DWM never draws on a stripped frame.
+    pub fn caption_hover(&self) -> Signal<Option<crate::CaptionButton>> {
+        self.host.caption_hover()
+    }
+
     /// Product editing session over an author-owned content signal (G1,
     /// decision 205): `let field = ctx.edit_session(ctx.signal("".into()))`.
     /// Per-instance, keyed by call-site (same re-seed rule as

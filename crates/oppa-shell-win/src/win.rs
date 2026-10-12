@@ -398,6 +398,12 @@ pub struct ShellShared {
     /// over them. Empty = custom/off (the app's bridged buttons
     /// keep their presses).
     pub caption_buttons: Vec<(oppa::CaptionButton, [f32; 4])>,
+    /// Hovered native caption zone (decision 486): refreshed on
+    /// every `WM_NCHITTEST` (zone hit or miss) and cleared on
+    /// `WM_NCMOUSELEAVE`, so the runner can paint the in-scene hover
+    /// glow DWM never draws on a stripped frame. `None` means no
+    /// hover (or no zones — custom/off never hovers).
+    pub hover_caption: Option<oppa::CaptionButton>,
 }
 
 pub struct Win32Shell {
@@ -432,6 +438,7 @@ impl Win32Shell {
             style: cfg.style,
             drag_rects: Vec::new(),
             caption_buttons: Vec::new(),
+            hover_caption: None,
         }));
 
         SHELL_RC.with(|rc| *rc.borrow_mut() = Some(shared.clone()));
@@ -570,6 +577,13 @@ impl Win32Shell {
     #[cfg(test)]
     pub(crate) fn caption_zones(&self) -> Vec<(oppa::CaptionButton, [f32; 4])> {
         self.shared.borrow().caption_buttons.clone()
+    }
+
+    /// Hovered native caption zone, if any (decision 486 — drained
+    /// by the Windows runner per pump iteration into the host hover
+    /// signal the `HeaderBar` paints its glow from).
+    pub fn hover_caption(&self) -> Option<oppa::CaptionButton> {
+        self.shared.borrow().hover_caption
     }
 
     /// TSF-aware association for the shell window (this round's fix).

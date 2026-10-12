@@ -103,6 +103,32 @@ impl ComponentHost {
         }
     }
 
+    /// Native caption hover (decision 486): the live caption button
+    /// under the cursor, if any. Tracked (the `HeaderBar` reads it —
+    /// hover flips re-render the bar with the glow, clearing reverts
+    /// to bare chrome). Lazy like the toolbar signal above.
+    pub fn caption_hover(&self) -> Signal<Option<crate::CaptionButton>> {
+        let mut slot = self.inner.caption_hover_sig.borrow_mut();
+        if let Some(sig) = slot.clone() {
+            return sig;
+        }
+        let sig = self.inner.rt.signal(None);
+        *slot = Some(sig.clone());
+        sig
+    }
+
+    /// Publishes the native caption hover (runner-side — the Windows
+    /// pump drains the shell hover state per iteration). Change-only
+    /// (an identical re-publish never re-renders — per-pump repeats
+    /// with the same hover stay free, so hovering never spins the
+    /// loop).
+    pub fn set_caption_hover(&self, hover: Option<crate::CaptionButton>) {
+        let sig = self.caption_hover();
+        if untrack(|| sig.get()) != hover {
+            sig.set(hover);
+        }
+    }
+
     /// Queues one scene-toolbar tap (router-side — overlay items
     /// resolve geometrically on the loop thread; the runner drains
     /// per pump and applies through the loop clipboard).

@@ -132,7 +132,9 @@ contract test suite — not prose — defines sameness.
   `false`) — the shell answers `HTMINBUTTON` / `HTMAXBUTTON` /
   `HTCLOSE` over the `HeaderBar` caption-button boxes (zones align
   with the button visuals by construction), so the OS owns real
-  actions, hover glow, and Win11 snap layouts; or app-bridged
+  actions and Win11 snap layouts; hover glow paints in-scene from
+  the runner-drained hover signal (decision 486 — DWM draws no hover
+  on a stripped frame); or app-bridged
   (minimize / maximize through `WindowControl`, quiet no-op with no
   control) when disabled — and always app-bridged on Linux, where no
   OS zones exist. Apps wire `HeaderBar` `on_*` actions

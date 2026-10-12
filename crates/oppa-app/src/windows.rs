@@ -116,14 +116,14 @@ impl AppState {
 pub(crate) fn sync_drag_regions(shell: &Win32Shell, loop_: &DesktopLoop) {
     let host = loop_.host();
     let style = loop_.window_style();
-    shell.set_drag_regions(oppa::drag_regions_for_style(host, style));
-    shell.set_caption_buttons(
-        if style == oppa::WindowStyle::Extended && loop_.native_caption_buttons() {
-            oppa::native_caption_zones(host)
-        } else {
-            Vec::new()
-        },
-    );
+    let drag = oppa::drag_regions_for_style(host, style);
+    let zones = if style == oppa::WindowStyle::Extended && loop_.native_caption_buttons() {
+        oppa::native_caption_zones(host)
+    } else {
+        Vec::new()
+    };
+    shell.set_drag_regions(drag);
+    shell.set_caption_buttons(zones);
 }
 
 /// Builds the `WM_SIZE` hook installed via
@@ -620,6 +620,14 @@ pub fn run_windows<P: Props>(
         // tree (one cheap publish per iteration, gated on the
         // style — decorated loops skip the walk entirely).
         sync_drag_regions(&shell, &state.borrow().loop_);
+        // Decision 486: the native caption hover follows into the
+        // host signal (change-gated inside — repeats never
+        // re-render — so hovering never spins the loop).
+        state
+            .borrow()
+            .loop_
+            .host()
+            .set_caption_hover(shell.hover_caption());
         // Overlay meter tick (both modes): present cadence drives the
         // FPS clock, throttled badge refresh included.
         state.borrow().loop_.note_frame_presented();

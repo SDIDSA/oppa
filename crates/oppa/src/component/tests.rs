@@ -265,6 +265,33 @@ fn selection_handles_visible_defaults_on_and_sets() {
     assert!(host.selection_handles_visible(), "restore works");
 }
 
+/// Decision 486: the caption hover signal defaults to no hover;
+/// runner publishes follow change-only (repeats never invalidate —
+/// hovering must not spin the loop).
+#[test]
+fn caption_hover_defaults_none_and_publishes_change_only() {
+    use crate::CaptionButton;
+    let host = ComponentHost::new();
+    let hover = host.caption_hover();
+    assert_eq!(
+        crate::reactive::untrack(|| hover.get()),
+        None,
+        "boot hover is none"
+    );
+    host.set_caption_hover(Some(CaptionButton::Maximize));
+    assert_eq!(
+        crate::reactive::untrack(|| hover.get()),
+        Some(CaptionButton::Maximize),
+        "signal follows the publish"
+    );
+    host.set_caption_hover(None);
+    assert_eq!(
+        crate::reactive::untrack(|| hover.get()),
+        None,
+        "clearing reverts"
+    );
+}
+
 #[test]
 fn custom_theme_tokens_override_per_mode_and_republish() {
     // Decision 477: per-mode custom palettes — unset slots fall

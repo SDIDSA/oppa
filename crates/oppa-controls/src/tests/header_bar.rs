@@ -27,6 +27,56 @@ fn press_count() -> (Action, Rc<Cell<usize>>) {
     (action(move || c.set(c.get() + 1)), n)
 }
 
+fn cell_bg(host: &ComponentHost, debug: &str) -> Option<oppa::Color> {
+    let id = node_by_debug(host, debug);
+    host.with_retained_mut(|rec, styles| {
+        let n = rec.get(id).expect("live node");
+        styles.get(n.style).cloned().unwrap_or_default().bg
+    })
+}
+
+/// Decision 486: the tracked hover signal re-renders the bar with
+/// the glow — hovered buttons tint (close goes signal red, others
+/// the themed wash), clearing reverts to bare chrome. Paint-only:
+/// geometry never moves.
+#[test]
+fn caption_hover_paints_glow_on_the_hovered_button() {
+    let (min, _) = press_count();
+    let (max, _) = press_count();
+    let (close, _) = press_count();
+    let mut props = HeaderBarProps::new("Glow").height(40.0);
+    props.on_minimize = Some(min);
+    props.on_maximize = Some(max);
+    props.on_close = Some(close);
+    let host = mount_bar(props);
+    for debug in ["header-min", "header-max", "header-close"] {
+        assert_eq!(cell_bg(&host, debug), None, "{debug} starts bare");
+    }
+    host.set_caption_hover(Some(oppa::CaptionButton::Maximize));
+    host.run_until_idle();
+    let wash = host.theme_tokens().border;
+    assert_eq!(
+        cell_bg(&host, "header-max"),
+        Some(wash),
+        "hovered button takes the themed wash"
+    );
+    assert_eq!(cell_bg(&host, "header-min"), None, "rest stays bare");
+    assert_eq!(cell_bg(&host, "header-close"), None, "rest stays bare");
+    host.set_caption_hover(Some(oppa::CaptionButton::Close));
+    host.run_until_idle();
+    assert_eq!(
+        cell_bg(&host, "header-close"),
+        Some(CLOSE_HOVER_BG),
+        "close hover goes signal red"
+    );
+    assert_eq!(cell_bg(&host, "header-max"), None, "glow follows");
+    host.set_caption_hover(None);
+    host.run_until_idle();
+    for debug in ["header-min", "header-max", "header-close"] {
+        assert_eq!(cell_bg(&host, debug), None, "{debug} reverts on clear");
+    }
+}
+
 /// Decision 482: the bar renders its title with the three bridged
 /// caption buttons; the chrome root is handlerless (the OS owns the
 /// drag gesture over it) while each provided button owns a press.

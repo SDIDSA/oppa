@@ -42,6 +42,7 @@ impl ComponentHost {
             theme_token_overrides: RefCell::new(None),
             toolbar_model_sig: RefCell::new(None),
             toolbar_actions: RefCell::new(std::collections::VecDeque::new()),
+            caption_hover_sig: RefCell::new(None),
             longpress: RefCell::new(HashMap::new()),
             scroll_drags: RefCell::new(HashMap::new()),
             flings: RefCell::new(Vec::new()),

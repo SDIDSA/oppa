@@ -500,6 +500,13 @@ struct HostInner {
     /// thread — no cross-thread queue needed, unlike the Java
     /// `MenuActionQueue` this retires).
     toolbar_actions: RefCell<std::collections::VecDeque<crate::input::ToolbarAction>>,
+    /// Runner-published native caption hover (decision 486): the
+    /// live caption button under the cursor, if any — the Windows
+    /// runner drains the shell hover state per pump (change-only —
+    /// repeats never re-run the header) and the `HeaderBar` paints
+    /// its glow from it (DWM paints no hover on a stripped frame).
+    /// Lazy like the toolbar signal above.
+    caption_hover_sig: RefCell<Option<Signal<Option<crate::CaptionButton>>>>,
     /// Long-press arms by pointer id (G11, decision 228): armed on
     /// Down, disarmed on Up/Cancel/move-past-slop, fired on the first
     /// host pump or matching input event at/after the deadline (never

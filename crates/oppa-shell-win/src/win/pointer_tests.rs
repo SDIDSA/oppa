@@ -828,3 +828,65 @@ fn caption_zones_answer_htbutton_codes_through_proc() {
     assert_eq!(hit(177, 20), HTCLOSE_PX, "close zone codes");
     assert_eq!(hit(30, 100), HTCLIENT_PX, "away from zones stays client");
 }
+
+/// Decision 486: every `WM_NCHITTEST` refreshes the published
+/// caption hover (zone hits set it, anything else clears it) and
+/// `WM_NCMOUSELEAVE` clears it on window exit — the runner drains
+/// this into the host hover signal the `HeaderBar` glow paints
+/// from.
+#[test]
+fn nchittest_publishes_caption_hover_and_leave_clears() {
+    use ::windows::Win32::Foundation::{LPARAM, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, SendMessageW, WM_NCHITTEST, WM_NCMOUSELEAVE,
+    };
+    use oppa::CaptionButton;
+    use windows::Win32::Foundation::RECT;
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
+    shell.set_caption_buttons(vec![
+        (CaptionButton::Minimize, [62.0, 0.0, 46.0, 40.0]),
+        (CaptionButton::Maximize, [108.0, 0.0, 46.0, 40.0]),
+        (CaptionButton::Close, [154.0, 0.0, 46.0, 40.0]),
+    ]);
+    let mut rect = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(shell.hwnd(), &mut rect);
+    }
+    let probe = |cx: i32, cy: i32| unsafe {
+        let (sx, sy) = (rect.left + cx, rect.top + cy);
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCHITTEST,
+            Some(WPARAM(0)),
+            Some(LPARAM(((sy << 16) | (sx & 0xFFFF)) as isize)),
+        )
+    };
+    assert_eq!(shell.hover_caption(), None, "boot hover is none");
+    probe(131, 20);
+    assert_eq!(
+        shell.hover_caption(),
+        Some(CaptionButton::Maximize),
+        "zone hit publishes the hover"
+    );
+    probe(30, 100);
+    assert_eq!(shell.hover_caption(), None, "client hit clears the hover");
+    probe(177, 20);
+    assert_eq!(
+        shell.hover_caption(),
+        Some(CaptionButton::Close),
+        "close hover publishes"
+    );
+    unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCMOUSELEAVE,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
+        );
+    }
+    assert_eq!(
+        shell.hover_caption(),
+        None,
+        "leaving the window clears the hover"
+    );
+}

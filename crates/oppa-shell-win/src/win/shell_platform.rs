@@ -7,9 +7,44 @@ use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, IsZoomed, NCCALCSIZE_PARAMS, WM_ERASEBKGND,
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClientRect, IsZoomed, NCCALCSIZE_PARAMS, WM_ERASEBKGND, WM_NCMOUSELEAVE,
+};
+
+/// Publishes the hovered caption zone (decision 486): maps the
+/// hit-test point through the zones and stores the live hover (`None`
+/// on a miss — every `WM_NCHITTEST` refreshes, so the in-scene glow
+/// tracks the cursor exactly while it is over the window). Arms
+/// `TrackMouseEvent(TME_LEAVE | TME_NONCLIENT)` on entry so leaving
+/// the window clears through `WM_NCMOUSELEAVE` below (re-armed per
+/// entry — steady hovering never re-arms).
+fn publish_caption_hover(
+    shared: &Rc<RefCell<ShellShared>>,
+    x: f32,
+    y: f32,
+    zones: &[(oppa::CaptionButton, [f32; 4])],
+    hwnd: HWND,
+) {
+    let hover = zones.iter().find_map(|(button, r)| {
+        (x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]).then_some(*button)
+    });
+    let mut s = shared.borrow_mut();
+    if s.hover_caption != hover {
+        s.hover_caption = hover;
+        if hover.is_some() {
+            let mut track = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE | TME_NONCLIENT,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            let _ = unsafe { TrackMouseEvent(&mut track) };
+        }
+    }
+}
 
 /// Live monitor work area for `hwnd` (decision 484): the maximized
 /// frameless clamp keeps the taskbar visible. `None` when the
@@ -260,15 +295,16 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             }
         }
         WM_NCHITTEST => {
-            // Decisions 482–485: frameless hit-testing — native
-            // caption zones first (`HT*BUTTON`, so the OS owns hover
-            // glow, press, and snap layouts over the `HeaderBar`
-            // buttons), then the pure `frameless_hit_test`
-            // classifier over the live client rect plus the
-            // runner-published drag regions (OS drag on `HTCAPTION`,
-            // edge/corner resize, snap), so a title bar is never
-            // needed for full window management. Decorated windows
-            // keep the default (byte-identical).
+            // Decisions 482–486: frameless hit-testing — native
+            // caption zones first (`HT*BUTTON`, so the OS owns press
+            // and snap layouts over the `HeaderBar` buttons; hover
+            // glow paints in-scene from the published hover state
+            // below, since DWM paints no glow on a stripped frame),
+            // then the pure `frameless_hit_test` classifier over the
+            // live client rect plus the runner-published drag regions
+            // (OS drag on `HTCAPTION`, edge/corner resize, snap), so
+            // a title bar is never needed for full window management.
+            // Decorated windows keep the default (byte-identical).
             if shared.borrow().style.is_frameless() {
                 // Screen point packs as i16 pairs in lParam.
                 let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
@@ -276,6 +312,11 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
                 let mut pt = POINT { x: sx, y: sy };
                 let _ = ScreenToClient(hwnd, &mut pt);
                 let zones = shared.borrow().caption_buttons.clone();
+                // Decision 486 hover publish (every hit-test
+                // refreshes, zone hits and misses alike, so the
+                // in-scene glow tracks the cursor exactly; leaving
+                // the window clears through `WM_NCMOUSELEAVE` below).
+                publish_caption_hover(&shared, pt.x as f32, pt.y as f32, &zones, hwnd);
                 if let Some(code) = caption_button_at(pt.x as f32, pt.y as f32, &zones) {
                     return LRESULT(code);
                 }
@@ -295,9 +336,15 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
         }
+        WM_NCMOUSELEAVE => {
+            // Decision 486: the cursor left the window — clear a live
+            // caption hover so no in-scene glow sticks (the NCHITTEST
+            // arm re-arms tracking on the next hover entry).
+            shared.borrow_mut().hover_caption = None;
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_SETCURSOR => {
-            // Round 8.3 (decision 299): the runner publishes the
-            // hovered style's cursor through `set_cursor`; the OS
+            // Round 8.3 (decision 299): the runner publishes the            // hovered style's cursor through `set_cursor`; the OS
             // queries here per mouse move, so this applies the stored
             // shape now (eager `SetCursor` calls would die at the next
             // `DefWindowProcW` reset). Returning nonzero claims the

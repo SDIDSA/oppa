@@ -8,6 +8,11 @@ use oppa::*;
 /// narrow press targets packed at the bar's trailing edge).
 pub const CAPTION_BUTTON_W: f32 = 46.0;
 
+/// Native close-hover fill (decision 486): the OS close-hover red
+/// (`#E81123` on both palettes — the one caption color that never
+/// themes, matching the native button).
+pub const CLOSE_HOVER_BG: Color = Color(0xFF_E81123);
+
 /// `HeaderBar` props: the in-app title bar for
 /// [`WindowStyle::Extended`](oppa::WindowStyle) windows.
 ///
@@ -103,26 +108,51 @@ pub fn HeaderBar(ctx: &Ctx, props: &HeaderBarProps) -> VNode {
         .align_items(AlignItems::Center)
         .justify_content(JustifyContent::SpaceBetween)
         .pad_x(12);
-    let buttons: Vec<(&str, &Option<Action>, &str)> = vec![
-        ("header-min", &props.on_minimize, "_"),
-        ("header-max", &props.on_maximize, "□"),
-        ("header-close", &props.on_close, "×"),
+    let buttons: Vec<(CaptionButton, &str, &Option<Action>, &str)> = vec![
+        (
+            CaptionButton::Minimize,
+            "header-min",
+            &props.on_minimize,
+            "_",
+        ),
+        (
+            CaptionButton::Maximize,
+            "header-max",
+            &props.on_maximize,
+            "□",
+        ),
+        (CaptionButton::Close, "header-close", &props.on_close, "×"),
     ];
+    // Decision 486 hover glow (the OS paints no hover on a stripped
+    // frame): the tracked hover signal re-renders the bar on flips;
+    // the hovered button tints — close goes signal red with light
+    // ink (the native close-hover shape), others take a quiet
+    // themed wash. Paint-only (bg + ink never move boxes, so laid
+    // geometry is identical hovered or not).
+    let hover = ctx.caption_hover().get();
     let mut trailing: Vec<VNode> = Vec::new();
-    for (debug, slot, glyph) in buttons {
+    for (button, debug, slot, glyph) in buttons {
         if let Some(on_press) = slot {
             let press = on_press.clone();
+            let mut cell = Style::new()
+                .size(CAPTION_BUTTON_W, props.height)
+                .align_items(AlignItems::Center)
+                .justify_content(JustifyContent::Center)
+                .cursor(CursorIcon::Pointer);
+            let mut glyph_node = VNode::from(Text::new(glyph).size(14));
+            if hover == Some(button) {
+                if button == CaptionButton::Close {
+                    cell = cell.bg(CLOSE_HOVER_BG);
+                    glyph_node = with_ink(glyph_node, CONTRAST_INK);
+                } else {
+                    cell = cell.bg(t.border);
+                }
+            }
             trailing.push(
                 Div(debug)
-                    .style(
-                        Style::new()
-                            .size(CAPTION_BUTTON_W, props.height)
-                            .align_items(AlignItems::Center)
-                            .justify_content(JustifyContent::Center)
-                            .cursor(CursorIcon::Pointer),
-                    )
+                    .style(cell)
                     .on_press(move || press())
-                    .child(VNode::from(Text::new(glyph).size(14))),
+                    .child(glyph_node),
             );
         }
     }

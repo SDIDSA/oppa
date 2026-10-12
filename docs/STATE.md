@@ -816,13 +816,26 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   `native_caption_zones` (the `HeaderBar` caption-button boxes, so
   zones align with visuals by construction) and the shell answers
   `HTMINBUTTON`/`HTMAXBUTTON`/`HTCLOSE` ahead of everything — real
-  actions, hover glow, Win11 snap layouts, close veto intact.
+  actions with the close veto intact (hover glow paints in-scene —
+  decision 486 below — since DWM draws none on a stripped frame).
   Apps wire `on_*` unconditionally as the Linux/off fallback
   (shadowed harmlessly where the OS answers first). Opt-out demos:
   sera `extended` example + Stylebook `--native-buttons` (footer
   names the live mode; 5/5 headless). Gates: fmt clean, workspace
   clippy zero warnings, `oppa` 249/249, `oppa-app` 91/91, shell-win
-  live HT-code proof green. Awaiting user hover/snap proof.
+  live HT-code proof green. User-verified live: zones fire
+  (hundreds of hit-test hits, close acting) but nothing glows —
+  DWM paints no hover on a stripped frame.
+- In-scene native caption hover glow (decision 486): shell
+  publishes the hovered zone per `WM_NCHITTEST` (cleared on
+  `WM_NCMOUSELEAVE` via non-client tracking) and the Windows runner
+  drains it per pump into a change-gated host signal
+  (`caption_hover`, the toolbar-model precedent); `HeaderBar`
+  paints the glow (signal red + light ink on close, themed wash
+  elsewhere — paint-only, geometry identical). Gates: fmt clean,
+  clippy zero warnings, `oppa` 250/250, `oppa-app` 92/92,
+  `oppa-controls` hover paint green, shell hover set/clear green.
+  Awaiting user glow + snap-flyout proof.
 
 ## Now (in progress)
 
