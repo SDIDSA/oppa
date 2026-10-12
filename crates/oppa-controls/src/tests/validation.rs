@@ -42,6 +42,7 @@ fn validation_marks_announce_and_footer_stacks() {
         borderless: false,
         icon: None,
         icon_size: 16.0,
+        focused: None,
     };
     host.mount(
         "Val",
@@ -86,6 +87,7 @@ fn validation_marks_announce_and_footer_stacks() {
         borderless: false,
         icon: None,
         icon_size: 16.0,
+        focused: None,
     };
     host2.mount(
         "ValHelp",

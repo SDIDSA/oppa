@@ -448,6 +448,30 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   workspace clippy zero warnings, wasm check clean, `oppa-gpu`
   11/11 on hardware (all oracle bounds hold, incl. new
   caps-agrees-with-probe test), full workspace suite green.
+- Focus signal binding on fields (decision 480, 2026-10-12):
+  `TextInputProps` and `TextAreaProps` accept an author-owned
+  `focused: Option<Signal<bool>>` (builder `.focused(sig)` /
+  `.focus_signal(sig)`); field instances synchronize their
+  `ctx.focused()` signal into the author's signal untracked,
+  enabling compound container chrome (such as `apps/sera-login`'s
+  `credential_field` chrome border) to react to child focus without
+  cascade or remounting; unset signals keep byte-identical trees.
+  Gates: fmt clean, workspace clippy zero warnings, wasm check
+  clean, `oppa-controls` 152 tests green (incl. new focus-and-blur
+  signal sync test), `sera-login` 8 tests green.
+- Optical text input caret tuning (decision 481, 2026-10-12):
+  Text input carets were previously anchored at raw unconstrained line
+  ascent/height bounds (`rect.y = -metrics.ascent`, `rect.height = ascent + descent` ≈ 1.33em),
+  causing the blinking bar to extend ~5px above capital letters and
+  float into the field's top padding. `focused_caret_paint` now computes
+  caret height and baseline vertical offset optically:
+  `caret_h = (em * 1.10).min(line_h)` and
+  `y_offset = (line_baseline - em * 0.85).max(0.0).min(line_h - caret_h)`
+  (where `em = line.em_size`), framing capital letters snugly with ~1.5px
+  headroom across empty and populated text fields; headless/unlaid fallback
+  uses 0.82h centered. Gates: fmt clean, workspace clippy zero warnings,
+  `oppa` 16+10+5+7+15+18+10+7+4+6+5 tests green, `oppa-controls` 152 tests green,
+  `sera-login` 8 tests green.
 - Layout loudness + viewport-tall roots (decision 476,
   2026-10-12): `Div` children carrying `flex_grow`/`flex_shrink`
   used to size intrinsically with no diagnostic — now they refuse

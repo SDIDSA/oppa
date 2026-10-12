@@ -34,6 +34,7 @@ pub struct TextAreaProps {
     pub required: bool,
     pub error_message: Option<SharedString>,
     pub helper_text: Option<SharedString>,
+    pub focused: Option<Signal<bool>>,
 }
 
 impl Props for TextAreaProps {}
@@ -53,6 +54,7 @@ impl TextAreaProps {
             required: false,
             error_message: None,
             helper_text: None,
+            focused: None,
         }
     }
 
@@ -75,6 +77,19 @@ impl TextAreaProps {
         self.style = style;
         self
     }
+
+    /// Focus state binding: mirrors the field's focus state into the author's
+    /// signal.
+    pub fn focused(mut self, sig: Signal<bool>) -> Self {
+        self.focused = Some(sig);
+        self
+    }
+
+    /// Alias for [`focused`](Self::focused).
+    pub fn focus_signal(mut self, sig: Signal<bool>) -> Self {
+        self.focused = Some(sig);
+        self
+    }
 }
 
 /// Multi-line text input: bordered auto-height box + [`TextArea`](oppa::TextArea)
@@ -91,6 +106,12 @@ impl TextAreaProps {
 /// (presentational span, never the value; on DOM a native
 /// `placeholder` attribute, decision 293).
 pub fn TextArea(ctx: &Ctx, props: &TextAreaProps) -> VNode {
+    if let Some(ref sig) = props.focused {
+        let is_focused = ctx.focused().get();
+        if oppa::untrack(|| sig.get()) != is_focused {
+            sig.set(is_focused);
+        }
+    }
     let t = ctx.theme().tokens();
     let session = ctx.edit_session(props.value.clone());
     // Multi-line wrap rides the session (Round 22.2, decision 332):
@@ -212,9 +233,22 @@ pub struct UncontrolledTextAreaProps {
     pub required: bool,
     pub error_message: Option<SharedString>,
     pub helper_text: Option<SharedString>,
+    pub focused: Option<Signal<bool>>,
 }
 
 impl Props for UncontrolledTextAreaProps {}
+
+impl UncontrolledTextAreaProps {
+    pub fn focused(mut self, sig: Signal<bool>) -> Self {
+        self.focused = Some(sig);
+        self
+    }
+
+    pub fn focus_signal(mut self, sig: Signal<bool>) -> Self {
+        self.focused = Some(sig);
+        self
+    }
+}
 
 pub fn UncontrolledTextArea(ctx: &Ctx, props: &UncontrolledTextAreaProps) -> VNode {
     let value = ctx.signal(props.initial.clone());
@@ -232,6 +266,7 @@ pub fn UncontrolledTextArea(ctx: &Ctx, props: &UncontrolledTextAreaProps) -> VNo
             required: props.required,
             error_message: props.error_message.clone(),
             helper_text: props.helper_text.clone(),
+            focused: props.focused.clone(),
         },
         TextArea,
     )

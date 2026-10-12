@@ -14,8 +14,8 @@ mod app;
 // runner drive this — the wasm export below is only the browser
 // binding).
 pub use app::{
-    default_logins, deposit_icons, email_error, password_error, sera_root, Icons, SavedLogin,
-    SeraApp, SeraState,
+    default_icons, default_logins, deposit_icons, email_error, password_error, sera_root, IconSpec,
+    Icons, SavedLogin, SeraApp, SeraState,
 };
 
 #[cfg(target_arch = "wasm32")]

@@ -292,6 +292,7 @@ pub fn DatePicker(ctx: &Ctx, props: &DatePickerProps) -> VNode {
         borderless: true,
         icon: None,
         icon_size: 16.0,
+        focused: None,
     };
     let toggle = {
         let open = props.open.clone();

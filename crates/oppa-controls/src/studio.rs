@@ -680,6 +680,7 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
                 helper_text: None,
                 icon: None,
                 icon_size: 16.0,
+                focused: None,
             },
             UncontrolledTextInput,
         ),

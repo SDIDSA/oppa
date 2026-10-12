@@ -30,13 +30,11 @@
 #![allow(non_snake_case)]
 
 use oppa::{
-    AlignItems, Color, Column, Ctx, CursorIcon, Div, ImageCache, ImageId, JustifyContent, Portal,
+    AlignItems, Color, Column, Ctx, CursorIcon, Div, ImageCache, JustifyContent, Path, Portal,
     Props, Row, Semantics, SharedString, Signal, Style, Text, ThemeMode, VNode,
 };
 
-use oppa_controls::{
-    with_ink, Checkbox, CheckboxProps, ImageView, ImageViewProps, TextInput, TextInputProps,
-};
+use oppa_controls::{with_ink, Checkbox, CheckboxProps, TextInput, TextInputProps};
 
 // ---------------------------------------------------------------------------
 // Palette — every literal sampled off the reference screenshot (median
@@ -64,6 +62,7 @@ const TEXT_DIM: Color = Color(0xFF_D7D7D7);
 const TEXT_FAINT: Color = Color(0xFF_919191);
 const INPUT_BG: Color = Color(0xFF_171A1E);
 const INPUT_EDGE: Color = Color(0xFF_2E3238);
+const INPUT_FOCUS: Color = Color(0xFF_548DEB);
 const BUTTON_BG: Color = Color(0xFF_6BA3FF);
 const BUTTON_PRESS: Color = Color(0xFF_548DEB);
 const BUTTON_INK: Color = Color(0xFF_171A1E);
@@ -121,6 +120,8 @@ pub struct SeraState {
     pub status: Signal<SharedString>,
     pub logins: Signal<Vec<SavedLogin>>,
     pub icons: Icons,
+    pub email_focused: Signal<bool>,
+    pub password_focused: Signal<bool>,
 }
 
 impl Props for SeraState {}
@@ -164,112 +165,220 @@ fn caption(text: &str) -> VNode {
 
 // ---------------------------------------------------------------------------
 // Icons — Remix Icon v4.9.1 (© Remix Design, Apache-2.0;
-// https://github.com/Remix-Design/remixicon/blob/master/LICENSE),
-// files of record under `icons/`: `mail.svg` (`Business/mail-line`),
-// `lock.svg` (`System/lock-line`), `trash.svg`
-// (`System/delete-bin-line`), `login.svg`
-// (`System/login-box-line`), `bell.svg`
-// (`Media/notification-3-line`), `info.svg`
-// (`System/information-line`), `cloud.svg` (`Weather/cloudy-line`),
-// `more.svg` (`System/more-line`), fills baked per usage.
-//
-// Why baked pixels instead of `Path` leaves: the GPU backend
-// tessellates paths at `sample_count: 1` (no MSAA), so vector fills
-// rasterize with hard aliased edges. Here each SVG is rasterized once
-// through the framework's own `oppa-image::decode_svg` (resvg, full
-// AA) at 4× (80/72px) and deposited into the shared `ImageCache` —
-// every backend then serves the same smooth pixels (GPU texture
-// filtering, DOM data-URI PNG, CPU blit).
+// https://github.com/Remix-Design/remixicon/blob/master/LICENSE).
+// Rendered as native `Path` leaves (decision 291) at exact 1× target sizes
+// (20px top-bar/inputs, 18px submit/trash). Vector paths are rendered
+// directly by each backend without minification aliasing: inline <svg>
+// on Web, tiny-skia on CPU, and Lyon tessellation on GPU.
 // ---------------------------------------------------------------------------
 
-/// Rasterized icon set (4× supersampled, deposited once per root
-/// mount — re-deposits replace, last wins).
-#[derive(Clone)]
+/// Specification for a single native vector icon.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IconSpec {
+    pub debug: &'static str,
+    pub data: SharedString,
+    pub color: Color,
+    pub size: f32,
+}
+
+impl IconSpec {
+    /// Constructs an `IconSpec` by parsing SVG markup (e.g. from `include_str!("../icons/foo.svg")`),
+    /// extracting its `<path d="...">` and `viewBox`, and scaling the vector coordinates
+    /// to the requested `target_size`.
+    pub fn from_svg(debug: &'static str, svg: &str, target_size: f32, color: Color) -> Self {
+        let (view_w, path_d) = extract_svg_path(svg)
+            .unwrap_or_else(|| panic!("failed to extract path from SVG for {debug}"));
+        let scale = if view_w > 0.0 {
+            target_size / view_w
+        } else {
+            1.0
+        };
+        let scaled = scale_svg_path(&path_d, scale);
+        Self {
+            debug,
+            data: SharedString::from(scaled),
+            color,
+            size: target_size,
+        }
+    }
+
+    /// Constructs an `IconSpec` from an SVG file path on disk (native desktop/test targets).
+    #[allow(dead_code)]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_file(debug: &'static str, file_path: &str, target_size: f32, color: Color) -> Self {
+        let content = std::fs::read_to_string(file_path)
+            .unwrap_or_else(|e| panic!("failed to read SVG file at {file_path} for {debug}: {e}"));
+        Self::from_svg(debug, &content, target_size, color)
+    }
+}
+
+/// Helper to extract viewBox width and path data `d` from single-path SVG markup.
+fn extract_svg_path(svg: &str) -> Option<(f32, String)> {
+    let view_w = if let Some(vb_start) = svg.find("viewBox=\"") {
+        let vb_val = &svg[vb_start + 9..];
+        if let Some(vb_end) = vb_val.find('"') {
+            let parts: Vec<&str> = vb_val[..vb_end].split_whitespace().collect();
+            if parts.len() == 4 {
+                parts[2].parse::<f32>().ok().unwrap_or(24.0)
+            } else {
+                24.0
+            }
+        } else {
+            24.0
+        }
+    } else {
+        24.0
+    };
+
+    let d_start = svg.find(" d=\"")?;
+    let d_val = &svg[d_start + 4..];
+    let d_end = d_val.find('"')?;
+    let path_d = d_val[..d_end].to_string();
+
+    Some((view_w, path_d))
+}
+
+/// Scales SVG path coordinates by `scale`.
+fn scale_svg_path(d: &str, scale: f32) -> String {
+    let bytes = d.as_bytes();
+    let mut out = String::with_capacity(d.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_whitespace() || b == b',' {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b',') {
+                i += 1;
+            }
+        } else if b.is_ascii_alphabetic() {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            out.push(b as char);
+            out.push(' ');
+            i += 1;
+        } else if b.is_ascii_digit() || b == b'.' || b == b'-' || b == b'+' {
+            let start = i;
+            if b == b'-' || b == b'+' {
+                i += 1;
+            }
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+                i += 1;
+                if i < bytes.len() && (bytes[i] == b'-' || bytes[i] == b'+') {
+                    i += 1;
+                }
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            let s = std::str::from_utf8(&bytes[start..i]).unwrap_or("0");
+            let val: f32 = s.parse().unwrap_or(0.0);
+            let scaled = val * scale;
+            let formatted = format!("{scaled:.4}");
+            let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            out.push_str(trimmed);
+        } else {
+            i += 1;
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Native vector icon set.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Icons {
-    pub mail: ImageId,
-    pub lock: ImageId,
-    pub trash: ImageId,
-    pub login: ImageId,
-    pub bell: ImageId,
-    pub info: ImageId,
-    pub cloud: ImageId,
-    pub more: ImageId,
+    pub mail: IconSpec,
+    pub lock: IconSpec,
+    pub trash: IconSpec,
+    pub login: IconSpec,
+    pub bell: IconSpec,
+    pub info: IconSpec,
+    pub cloud: IconSpec,
+    pub more: IconSpec,
 }
 
-/// Decodes the vendored Remix SVGs at 4× and deposits them into
-/// `images` (loud on failure — a broken asset refuses, never a blank
-/// icon).
-pub fn deposit_icons(images: &ImageCache) -> Icons {
-    fn dep(images: &ImageCache, key: &str, svg: &[u8], px: u32) -> ImageId {
-        let img =
-            oppa_image::decode_svg(svg, Some(px), Some(px)).expect("vendored icon svg decodes");
-        images.insert_pixels(key, img.width, img.height, img.rgba)
-    }
+/// Returns the native vector icons parsed and scaled from the vendored SVG files.
+pub fn default_icons() -> Icons {
     Icons {
-        mail: dep(
-            images,
+        mail: IconSpec::from_svg(
             "sera-icon-mail",
-            include_bytes!("../icons/mail.svg"),
-            80,
+            include_str!("../icons/mail.svg"),
+            20.0,
+            TEXT_FAINT,
         ),
-        lock: dep(
-            images,
+        lock: IconSpec::from_svg(
             "sera-icon-lock",
-            include_bytes!("../icons/lock.svg"),
-            80,
+            include_str!("../icons/lock.svg"),
+            20.0,
+            TEXT_FAINT,
         ),
-        trash: dep(
-            images,
+        trash: IconSpec::from_svg(
             "sera-icon-trash",
-            include_bytes!("../icons/trash.svg"),
-            72,
+            include_str!("../icons/trash.svg"),
+            18.0,
+            TEXT_FAINT,
         ),
-        login: dep(
-            images,
+        login: IconSpec::from_svg(
             "sera-icon-login",
-            include_bytes!("../icons/login.svg"),
-            72,
+            include_str!("../icons/login.svg"),
+            18.0,
+            BUTTON_INK,
         ),
-        bell: dep(
-            images,
+        bell: IconSpec::from_svg(
             "sera-icon-bell",
-            include_bytes!("../icons/bell.svg"),
-            80,
+            include_str!("../icons/bell.svg"),
+            20.0,
+            TEXT_DIM,
         ),
-        info: dep(
-            images,
+        info: IconSpec::from_svg(
             "sera-icon-info",
-            include_bytes!("../icons/info.svg"),
-            80,
+            include_str!("../icons/info.svg"),
+            20.0,
+            TEXT_DIM,
         ),
-        cloud: dep(
-            images,
+        cloud: IconSpec::from_svg(
             "sera-icon-cloud",
-            include_bytes!("../icons/cloud.svg"),
-            80,
+            include_str!("../icons/cloud.svg"),
+            20.0,
+            TEXT_DIM,
         ),
-        more: dep(
-            images,
+        more: IconSpec::from_svg(
             "sera-icon-more",
-            include_bytes!("../icons/more.svg"),
-            80,
+            include_str!("../icons/more.svg"),
+            20.0,
+            TEXT_DIM,
         ),
     }
 }
 
-/// One baked icon as a static image leaf. `ImageView` is stateless
-/// (no press/focus flags of its own), so it is called directly —
-/// no `ctx.child` identity needed.
-fn icon(ctx: &Ctx, id: ImageId, alt: &str, size: f32) -> VNode {
-    ImageView(
-        ctx,
-        &ImageViewProps {
-            image: id,
-            size,
-            radius: 0.0,
-            alt: SharedString::from(alt),
-        },
-    )
+/// Compatibility deposit hook (preserved for runners and harness calls —
+/// vector leaves require no cache deposits, so this returns `default_icons()`).
+pub fn deposit_icons(_images: &ImageCache) -> Icons {
+    default_icons()
+}
+
+/// One vector icon as a native `Path` leaf (decision 291).
+fn icon(_ctx: &Ctx, spec: &IconSpec, alt: &str, size: f32) -> VNode {
+    let mut vnode = Path::new(spec.debug)
+        .data(&spec.data)
+        .fill(spec.color)
+        .size(size, size)
+        .build();
+    if let VNode::Element(ref mut el) = vnode {
+        if !alt.is_empty() {
+            el.semantics = Some(Semantics::default().label(alt));
+        }
+    }
+    vnode
 }
 
 /// Top-bar icon box: 30px bordered square centering one baked glyph.
@@ -333,6 +442,7 @@ fn signin_button(ctx: &Ctx, glyph: VNode, on_press: impl Fn() + 'static) -> VNod
 /// flex-squeeze beside the field. So `TextInputProps.error_message`
 /// stays `None` while `invalid`/`required` still announce through the
 /// field's own semantics.
+#[allow(clippy::too_many_arguments)]
 fn credential_field(
     ctx: &Ctx,
     debug: &str,
@@ -341,6 +451,7 @@ fn credential_field(
     field: VNode,
     error: Option<SharedString>,
     margin_top: u16,
+    is_focused: bool,
 ) -> VNode {
     let t = ctx.theme().tokens();
     // Fixed 22px icon slot so both fields' text starts at the same x.
@@ -352,6 +463,13 @@ fn credential_field(
                 .justify_content(JustifyContent::Center),
         )
         .child(icon);
+    let edge_color = if is_focused {
+        INPUT_FOCUS
+    } else if error.is_some() {
+        t.error
+    } else {
+        INPUT_EDGE
+    };
     let chrome = Row(debug)
         .style(
             Style::new()
@@ -359,7 +477,7 @@ fn credential_field(
                 .h(48)
                 .bg(INPUT_BG)
                 .radius(12)
-                .border(1, if error.is_some() { t.error } else { INPUT_EDGE })
+                .border(if is_focused { 1.5 } else { 1.0 }, edge_color)
                 .pad_x(12)
                 .gap(10)
                 .align_items(AlignItems::Center),
@@ -448,7 +566,7 @@ fn saved_row(ctx: &Ctx, state: &SeraState, login: &SavedLogin) -> VNode {
                         .collect();
                     delete_logins.set(kept);
                 })
-                .child(icon(ctx, state.icons.trash, "Remove saved login", 18.0)),
+                .child(icon(ctx, &state.icons.trash, "Remove saved login", 18.0)),
         ])
 }
 
@@ -478,7 +596,8 @@ pub fn SeraApp(ctx: &Ctx, state: &SeraState) -> VNode {
 
     let mut email_props = TextInputProps::new("Email address", state.email.clone())
         .placeholder("you@clinic.com")
-        .borderless(true);
+        .borderless(true)
+        .focused(state.email_focused.clone());
     email_props.width = 344.0;
     email_props.height = 30.0;
     email_props.debug = SharedString::from("sera-email");
@@ -487,7 +606,8 @@ pub fn SeraApp(ctx: &Ctx, state: &SeraState) -> VNode {
     let mut pass_props = TextInputProps::new("Password", state.password.clone())
         .placeholder("Enter your password")
         .masked(true)
-        .borderless(true);
+        .borderless(true)
+        .focused(state.password_focused.clone());
     pass_props.width = 344.0;
     pass_props.height = 30.0;
     pass_props.debug = SharedString::from("sera-password");
@@ -535,16 +655,16 @@ pub fn SeraApp(ctx: &Ctx, state: &SeraState) -> VNode {
                 .children([
                     sys_box(
                         "sys-bell",
-                        icon(ctx, state.icons.bell, "Notifications", 20.0),
+                        icon(ctx, &state.icons.bell, "Notifications", 20.0),
                     ),
-                    sys_box("sys-info", icon(ctx, state.icons.info, "About", 20.0)),
+                    sys_box("sys-info", icon(ctx, &state.icons.info, "About", 20.0)),
                     sys_box(
                         "sys-cloud",
-                        icon(ctx, state.icons.cloud, "Sync status", 20.0),
+                        icon(ctx, &state.icons.cloud, "Sync status", 20.0),
                     ),
                     sys_box(
                         "sys-more",
-                        icon(ctx, state.icons.more, "More options", 20.0),
+                        icon(ctx, &state.icons.more, "More options", 20.0),
                     ),
                 ]),
         ]);
@@ -585,19 +705,21 @@ pub fn SeraApp(ctx: &Ctx, state: &SeraState) -> VNode {
                         ctx,
                         "sera-email-chrome",
                         "Email address",
-                        icon(ctx, state.icons.mail, "Email", 20.0),
+                        icon(ctx, &state.icons.mail, "Email", 20.0),
                         ctx.child_auto(&email_props, TextInput),
                         show_email_err,
                         28,
+                        state.email_focused.get(),
                     ),
                     credential_field(
                         ctx,
                         "sera-password-chrome",
                         "Password",
-                        icon(ctx, state.icons.lock, "Password", 20.0),
+                        icon(ctx, &state.icons.lock, "Password", 20.0),
                         ctx.child_auto(&pass_props, TextInput),
                         show_pass_err,
                         21,
+                        state.password_focused.get(),
                     ),
                     Div("sera-save-wrap")
                         .style(Style::new().fill_width().margin_top(30))
@@ -618,7 +740,7 @@ pub fn SeraApp(ctx: &Ctx, state: &SeraState) -> VNode {
                         .style(Style::new().fill_width().margin_top(21))
                         .child(signin_button(
                             ctx,
-                            icon(ctx, state.icons.login, "Sign in", 18.0),
+                            icon(ctx, &state.icons.login, "Sign in", 18.0),
                             on_sign_in,
                         )),
                     Div("sera-new")
@@ -700,6 +822,8 @@ pub fn sera_root(ctx: &Ctx, _props: &()) -> VNode {
         status: ctx.signal(SharedString::from("")),
         logins: ctx.signal(default_logins()),
         icons: deposit_icons(&ctx.images()),
+        email_focused: ctx.signal(false),
+        password_focused: ctx.signal(false),
     };
     ctx.child_auto(&state, SeraApp)
 }

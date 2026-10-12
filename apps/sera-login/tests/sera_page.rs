@@ -13,6 +13,8 @@ fn mount_sera() -> (
     Signal<SharedString>,
     Signal<SharedString>,
     Signal<Vec<SavedLogin>>,
+    Signal<bool>,
+    Signal<bool>,
 ) {
     let app = Harness::new();
     let email = app.host().runtime().signal(SharedString::from(""));
@@ -22,6 +24,8 @@ fn mount_sera() -> (
     let status = app.host().runtime().signal(SharedString::from(""));
     let logins = app.host().runtime().signal(default_logins());
     let icons = deposit_icons(&app.host().images());
+    let email_focused = app.host().runtime().signal(false);
+    let password_focused = app.host().runtime().signal(false);
     app.mount(
         "Sera",
         SeraState {
@@ -32,15 +36,25 @@ fn mount_sera() -> (
             status: status.clone(),
             logins: logins.clone(),
             icons,
+            email_focused: email_focused.clone(),
+            password_focused: password_focused.clone(),
         },
         SeraApp,
     );
-    (app, email, password, status, logins)
+    (
+        app,
+        email,
+        password,
+        status,
+        logins,
+        email_focused,
+        password_focused,
+    )
 }
 
 #[test]
 fn sera_saved_row_fills_email() {
-    let (app, email, _password, _status, _logins) = mount_sera();
+    let (app, email, _password, _status, _logins, ..) = mount_sera();
     app.tap("saved-1");
     assert_eq!(
         email.get(),
@@ -51,7 +65,7 @@ fn sera_saved_row_fills_email() {
 
 #[test]
 fn sera_delete_removes_row() {
-    let (app, _email, _password, _status, logins) = mount_sera();
+    let (app, _email, _password, _status, logins, ..) = mount_sera();
     assert_eq!(logins.get().len(), 3, "three shortcuts at boot");
     app.tap("delete-3");
     let kept = logins.get();
@@ -64,7 +78,7 @@ fn sera_delete_removes_row() {
 
 #[test]
 fn sera_empty_submit_asks_for_fixes() {
-    let (app, _email, _password, status, _logins) = mount_sera();
+    let (app, _email, _password, status, _logins, ..) = mount_sera();
     app.tap("sera-submit");
     assert_eq!(
         status.get(),
@@ -75,7 +89,7 @@ fn sera_empty_submit_asks_for_fixes() {
 
 #[test]
 fn sera_valid_submit_welcomes() {
-    let (app, email, password, status, _logins) = mount_sera();
+    let (app, email, password, status, _logins, ..) = mount_sera();
     email.set(SharedString::from("you@clinic.com"));
     password.set(SharedString::from("long-enough"));
     app.run_idle();
@@ -88,31 +102,61 @@ fn sera_valid_submit_welcomes() {
 }
 
 #[test]
-fn sera_icons_deposit_smooth_pixels() {
+fn sera_input_focuses_and_updates_focus_signal() {
+    let (app, _email, _password, _status, _logins, email_focused, password_focused) = mount_sera();
+    assert!(!email_focused.get(), "email unfocused at start");
+    assert!(!password_focused.get(), "password unfocused at start");
+
+    // Tap email field
+    app.tap("sera-email");
+    assert!(email_focused.get(), "email field is focused");
+    assert!(!password_focused.get(), "password field remains unfocused");
+
+    // Tap password field
+    app.tap("sera-password");
+    assert!(!email_focused.get(), "email field blurred");
+    assert!(password_focused.get(), "password field is focused");
+}
+
+#[test]
+fn sera_icons_render_as_native_vector_paths() {
     let app = Harness::new();
     let icons = deposit_icons(&app.host().images());
-    for (id, px) in [
-        (icons.mail, 80),
-        (icons.lock, 80),
-        (icons.trash, 72),
-        (icons.login, 72),
-        (icons.bell, 80),
-        (icons.info, 80),
-        (icons.cloud, 80),
-        (icons.more, 80),
+    for (spec, expected_size) in [
+        (&icons.mail, 20.0),
+        (&icons.lock, 20.0),
+        (&icons.trash, 18.0),
+        (&icons.login, 18.0),
+        (&icons.bell, 20.0),
+        (&icons.info, 20.0),
+        (&icons.cloud, 20.0),
+        (&icons.more, 20.0),
     ] {
-        let (w, h, rgba) = app
-            .host()
-            .images()
-            .pixels_of(id)
-            .expect("vendored icon deposits pixels");
-        assert_eq!((w, h), (px, px), "4x supersampled raster size");
-        assert!(rgba.iter().any(|&b| b != 0), "icon paints non-empty pixels");
-        assert!(
-            rgba.chunks_exact(4).any(|p| p[3] != 0 && p[3] != 255),
-            "4x raster carries anti-aliased fringe alpha"
-        );
+        assert_eq!(spec.size, expected_size, "native vector icon size matches");
+        assert!(!spec.data.is_empty(), "icon has non-empty SVG path data");
+        let vnode = oppa::Path::new(spec.debug)
+            .data(&spec.data)
+            .fill(spec.color)
+            .size(spec.size, spec.size)
+            .build();
+        let oppa::VNode::Element(el) = vnode else {
+            panic!("icon leaf is an element");
+        };
+        assert_eq!(el.tag, oppa::Tag::Path, "icon builds as Tag::Path");
+        assert!(el.path.is_some(), "icon contains PathSpec");
     }
+}
+
+#[test]
+fn sera_icon_spec_loads_from_file_path() {
+    let spec = sera_login::IconSpec::from_file(
+        "test-mail",
+        "icons/mail.svg",
+        20.0,
+        oppa::Color(0xFF_919191),
+    );
+    assert_eq!(spec.size, 20.0);
+    assert!(!spec.data.is_empty(), "SVG file path parses into path data");
 }
 
 /// Vertical composition under real shaping (rustybuzz + bundled

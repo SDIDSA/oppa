@@ -393,25 +393,19 @@ impl ComponentHost {
         }
         let (x, y, h) = match lined {
             Some(b) => {
-                if composite.is_empty() {
-                    // Focused empty field: caret at the text origin,
-                    // full first-line (else box) height.
-                    let h = b.lines.first().map(|l| l.height).unwrap_or(b.h);
-                    if h <= 0.0 {
+                let (x, line_y, line_h, line_baseline, em_size) = if composite.is_empty() {
+                    let line = b.lines.first();
+                    let (lh, base, em) = line
+                        .map(|l| (l.height, l.baseline, l.em_size))
+                        .unwrap_or((b.h, b.h * 0.8, 0.0));
+                    if lh <= 0.0 {
                         return None;
                     }
-                    (b.x, b.y, h)
+                    (b.x, line.map(|l| l.y).unwrap_or(0.0), lh, base, em)
                 } else {
-                    // Display-space caret (decision 458 — masked
-                    // fields lay bullets, so the content caret maps
-                    // onto display bytes before touching clusters).
                     let caret = session.composite_byte_to_display(session.caret());
                     let (li, _) = b.caret_position(caret);
                     let line = b.lines.get(li)?;
-                    // Shaper rect through the host service (the anchor
-                    // rule: laid leaf's exact `em_size`, config default
-                    // while the leaf lays no lines — installed once,
-                    // persists for pointer-mapped geometry too).
                     let cfg = self.inner.layout.borrow().config().clone();
                     let service = self.inner.text_service.borrow().clone()?;
                     let (size_px, dpr) = (
@@ -427,19 +421,29 @@ impl ComponentHost {
                     }
                     (
                         b.x + rect.x,
-                        b.y + line.y + line.baseline + rect.y,
+                        line.y,
                         rect.height,
+                        line.baseline,
+                        line.em_size,
                     )
-                }
+                };
+                let em = if em_size > 0.0 {
+                    em_size
+                } else {
+                    line_h * 0.75
+                };
+                let caret_h = (em * 1.10).min(line_h);
+                let y_offset = (line_baseline - em * 0.85).max(0.0).min(line_h - caret_h);
+                (x, b.y + line_y + y_offset, caret_h)
             }
             None => {
-                // No laid lines yet: caret at the would-be origin.
                 let b = boxed?;
                 let h = b.lines.first().map(|l| l.height).unwrap_or(b.h);
                 if h <= 0.0 {
                     return None;
                 }
-                (b.x, b.y, h)
+                let caret_h = h * 0.82;
+                (b.x, b.y + (h - caret_h) * 0.5, caret_h)
             }
         };
         drop(rec);

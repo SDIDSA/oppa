@@ -40,6 +40,7 @@ pub struct TextInputProps {
     pub borderless: bool,
     pub icon: Option<oppa::ImageId>,
     pub icon_size: f32,
+    pub focused: Option<Signal<bool>>,
 }
 
 impl Props for TextInputProps {}
@@ -64,6 +65,7 @@ impl TextInputProps {
             borderless: false,
             icon: None,
             icon_size: 16.0,
+            focused: None,
         }
     }
 
@@ -113,6 +115,19 @@ impl TextInputProps {
         self.icon_size = px;
         self
     }
+
+    /// Focus state binding: mirrors the field's focus state into the author's
+    /// signal.
+    pub fn focused(mut self, sig: Signal<bool>) -> Self {
+        self.focused = Some(sig);
+        self
+    }
+
+    /// Alias for [`focused`](Self::focused).
+    pub fn focus_signal(mut self, sig: Signal<bool>) -> Self {
+        self.focused = Some(sig);
+        self
+    }
 }
 
 /// Text input: bordered field box + [`TextField`](oppa::TextField) payload
@@ -155,6 +170,12 @@ impl TextInputProps {
 /// ignores a parse) simply never write the signal — the next
 /// keystroke self-heals (level-triggered values).
 pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
+    if let Some(ref sig) = props.focused {
+        let is_focused = ctx.focused().get();
+        if oppa::untrack(|| sig.get()) != is_focused {
+            sig.set(is_focused);
+        }
+    }
     let t = ctx.theme().tokens();
     let session = ctx.edit_session(props.value.clone());
     // Masked backing rides the session (Round 22.1, decision 331):
@@ -340,6 +361,7 @@ pub struct UncontrolledTextInputProps {
     pub helper_text: Option<SharedString>,
     pub icon: Option<oppa::ImageId>,
     pub icon_size: f32,
+    pub focused: Option<Signal<bool>>,
 }
 
 impl Props for UncontrolledTextInputProps {}
@@ -347,6 +369,16 @@ impl Props for UncontrolledTextInputProps {}
 impl UncontrolledTextInputProps {
     pub fn masked(mut self, masked: bool) -> Self {
         self.masked = masked;
+        self
+    }
+
+    pub fn focused(mut self, sig: Signal<bool>) -> Self {
+        self.focused = Some(sig);
+        self
+    }
+
+    pub fn focus_signal(mut self, sig: Signal<bool>) -> Self {
+        self.focused = Some(sig);
         self
     }
 }
@@ -372,6 +404,7 @@ pub fn UncontrolledTextInput(ctx: &Ctx, props: &UncontrolledTextInputProps) -> V
             borderless: false,
             icon: props.icon,
             icon_size: props.icon_size,
+            focused: props.focused.clone(),
         },
         TextInput,
     )

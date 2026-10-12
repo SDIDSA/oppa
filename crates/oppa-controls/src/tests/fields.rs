@@ -311,3 +311,28 @@ fn text_input_icon_renders_slot_and_still_types() {
         "typing feeds the value with an icon set"
     );
 }
+
+#[test]
+fn text_input_focus_signal_updates_on_focus_and_blur() {
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    let value = host.runtime().signal(SharedString::from("Ada"));
+    let focused = host.runtime().signal(false);
+    host.mount(
+        "TI",
+        TextInputProps::new("Name", value.clone()).focused(focused.clone()),
+        TextInput,
+    );
+    host.run_until_idle();
+    assert!(!focused.get(), "initially unfocused");
+
+    let id = node_by_debug(&host, "text-input");
+    press_node(&host, id);
+    host.run_until_idle();
+    assert!(focused.get(), "focusing updates bound signal to true");
+
+    // Blur
+    host.inject_input(InputEvent::Focus { node: None });
+    host.run_until_idle();
+    assert!(!focused.get(), "blurring updates bound signal to false");
+}

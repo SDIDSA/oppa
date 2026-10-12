@@ -383,6 +383,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, props: &KitchenSinkProps) -> VNode {
                         borderless: false,
                         icon: None,
                         icon_size: 16.0,
+                        focused: None,
                     },
                     TextInput,
                 ),
