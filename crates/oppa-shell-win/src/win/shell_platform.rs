@@ -11,7 +11,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, IsZoomed, NCCALCSIZE_PARAMS, WM_ERASEBKGND, WM_NCMOUSELEAVE,
+    GetClientRect, IsZoomed, ShowWindow, NCCALCSIZE_PARAMS, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
+    WM_ERASEBKGND, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE,
 };
 
 /// Publishes the hovered caption zone (decision 486): maps the
@@ -336,6 +337,65 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
         }
+        WM_NCLBUTTONDOWN => {
+            // Decision 488 (found live: hover works, clicks don't —
+            // `DefWindowProc` button tracking needs real caption
+            // metrics that don't exist on a stripped frame, so it
+            // drops the press): the shell performs caption clicks
+            // itself over the published zones (the Chrome shape — OS
+            // codes for hover/snap, self-performed actions).
+            // Minimize/maximize run the same `ShowWindow` calls the
+            // caption bridge uses (the decision-483 reentrancy guard
+            // covers the synchronous `WM_SIZE`); close queues
+            // `CloseRequested` so the loop veto consults exactly like
+            // `WM_CLOSE`. Anything else keeps default handling
+            // (caption double-click zoom, border behavior).
+            if shared.borrow().style.is_frameless() {
+                let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
+                let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;
+                let mut pt = POINT { x: sx, y: sy };
+                let _ = ScreenToClient(hwnd, &mut pt);
+                let zones = shared.borrow().caption_buttons.clone();
+                match caption_zone_at(pt.x as f32, pt.y as f32, &zones) {
+                    Some(oppa::CaptionButton::Minimize) => unsafe {
+                        let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                        return LRESULT(0);
+                    },
+                    Some(oppa::CaptionButton::Maximize) => unsafe {
+                        let maximized = IsZoomed(hwnd).as_bool();
+                        let _ = ShowWindow(hwnd, if maximized { SW_RESTORE } else { SW_MAXIMIZE });
+                        return LRESULT(0);
+                    },
+                    Some(oppa::CaptionButton::Close) => {
+                        shared
+                            .borrow_mut()
+                            .queue
+                            .push_back(ShellEvent::CloseRequested);
+                        return LRESULT(0);
+                    }
+                    None => {}
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_NCLBUTTONDBLCLK => {
+            // Decision 488: a double-click over a caption zone follows
+            // a single-click that already acted — swallow it so the
+            // action doesn't fire twice (no maximize-flicker).
+            // Elsewhere keeps default handling (caption
+            // double-click zoom).
+            if shared.borrow().style.is_frameless() {
+                let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
+                let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;
+                let mut pt = POINT { x: sx, y: sy };
+                let _ = ScreenToClient(hwnd, &mut pt);
+                let zones = shared.borrow().caption_buttons.clone();
+                if caption_zone_at(pt.x as f32, pt.y as f32, &zones).is_some() {
+                    return LRESULT(0);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_NCMOUSELEAVE => {
             // Decision 486: the cursor left the window — clear a live
             // caption hover so no in-scene glow sticks (the NCHITTEST
@@ -344,7 +404,8 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_SETCURSOR => {
-            // Round 8.3 (decision 299): the runner publishes the            // hovered style's cursor through `set_cursor`; the OS
+            // Round 8.3 (decision 299): the runner publishes the
+            // hovered style's cursor through `set_cursor`; the OS
             // queries here per mouse move, so this applies the stored
             // shape now (eager `SetCursor` calls would die at the next
             // `DefWindowProcW` reset). Returning nonzero claims the

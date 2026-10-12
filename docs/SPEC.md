@@ -131,8 +131,12 @@ contract test suite — not prose — defines sameness.
   Windows (`WindowOptions::native_caption_buttons`, opt out with
   `false`) — the shell answers `HTMINBUTTON` / `HTMAXBUTTON` /
   `HTCLOSE` over the `HeaderBar` caption-button boxes (zones align
-  with the button visuals by construction), so the OS owns real
-  actions and Win11 snap layouts; button glyphs are true Win11
+  with the button visuals by construction), so the OS owns hover
+  tracking and Win11 snap layouts while the shell performs the
+  clicks itself (decision 488 — `DefWindowProc` tracking needs real
+  caption metrics, so minimize/maximize run the bridge's
+  `ShowWindow` calls and close queues the veto path; double-clicks
+  swallow after the single-click acted); button glyphs are true Win11
   caption shapes (decision 487 — 16px Segoe-metric strokes baked
   per palette at 4x, centered exactly in their targets, close-hover
   white on signal red); hover glow paints in-scene from

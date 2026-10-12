@@ -890,3 +890,101 @@ fn nchittest_publishes_caption_hover_and_leave_clears() {
         "leaving the window clears the hover"
     );
 }
+
+/// Decision 488: the shell performs caption clicks itself (live
+/// `DefWindowProc` button tracking needs real caption metrics that
+/// don't exist on a stripped frame, so it drops the press).
+/// `WM_NCLBUTTONDOWN` over a zone minimizes / toggles maximize /
+/// queues `CloseRequested` (the veto path); a double-click over a
+/// zone is swallowed (the single-click already acted — no
+/// maximize-flicker); a double-click on bare caption keeps the
+/// default zoom toggle. Windows shown here are destroyed at the end
+/// (a maximized test window must never outlive its test).
+#[test]
+fn caption_clicks_act_and_double_clicks_swallow() {
+    use ::windows::Win32::Foundation::{LPARAM, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, IsIconic, IsZoomed, SendMessageW, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
+    };
+    use oppa::shell::PlatformShell;
+    use oppa::CaptionButton;
+    use windows::Win32::Foundation::{HWND, RECT};
+    fn zones() -> Vec<(CaptionButton, [f32; 4])> {
+        vec![
+            (CaptionButton::Minimize, [62.0, 0.0, 46.0, 40.0]),
+            (CaptionButton::Maximize, [108.0, 0.0, 46.0, 40.0]),
+            (CaptionButton::Close, [154.0, 0.0, 46.0, 40.0]),
+        ]
+    }
+    fn styled() -> Win32Shell {
+        let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
+        shell.set_caption_buttons(zones());
+        shell
+    }
+    fn at(hwnd: HWND, cx: i32, cy: i32) -> LPARAM {
+        let mut rect = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(hwnd, &mut rect);
+        }
+        LPARAM((((rect.top + cy) << 16) | ((rect.left + cx) & 0xFFFF)) as isize)
+    }
+    // Minimize acts (taskbar button cleaned by destroy below).
+    let shell = styled();
+    unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCLBUTTONDOWN,
+            Some(WPARAM(HTMINBUTTON_PX as usize)),
+            Some(at(shell.hwnd(), 85, 20)),
+        );
+        assert!(IsIconic(shell.hwnd()).as_bool(), "minimize zone minimizes");
+    }
+    shell.destroy_window();
+    // Maximize toggles, and a following double-click swallows (no
+    // flicker back).
+    let shell = styled();
+    unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCLBUTTONDOWN,
+            Some(WPARAM(HTMAXBUTTON_PX as usize)),
+            Some(at(shell.hwnd(), 131, 20)),
+        );
+        assert!(IsZoomed(shell.hwnd()).as_bool(), "maximize zone maximizes");
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCLBUTTONDBLCLK,
+            Some(WPARAM(HTMAXBUTTON_PX as usize)),
+            Some(at(shell.hwnd(), 131, 20)),
+        );
+        assert!(
+            IsZoomed(shell.hwnd()).as_bool(),
+            "double-click swallows (stays maximized)"
+        );
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCLBUTTONDOWN,
+            Some(WPARAM(HTMAXBUTTON_PX as usize)),
+            Some(at(shell.hwnd(), 131, 20)),
+        );
+        assert!(!IsZoomed(shell.hwnd()).as_bool(), "second press restores");
+    }
+    shell.destroy_window();
+    // Close queues the veto path (never destroys synchronously —
+    // the runner approves through the loop close handler).
+    let mut shell = styled();
+    unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCLBUTTONDOWN,
+            Some(WPARAM(HTCLOSE_PX as usize)),
+            Some(at(shell.hwnd(), 177, 20)),
+        );
+    }
+    let kinds: Vec<oppa::EventKind> = shell.pump_events().iter().map(|e| e.kind).collect();
+    assert!(
+        kinds.contains(&oppa::EventKind::CloseRequested),
+        "close zone queues the veto consult, got {kinds:?}"
+    );
+    shell.destroy_window();
+}

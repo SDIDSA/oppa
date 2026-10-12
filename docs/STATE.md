@@ -843,6 +843,13 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   leaf on both axes (center deltas < 1px, geometrically proven).
   Gates: fmt clean, clippy zero warnings, `oppa-controls` 160/160
   (incl. AA-fringe, centering, theme-swap tests), `stylebook` 5/5.
+- Self-performed native caption clicks (decision 488, user-verified
+  live: hover glows, clicks dead — `DefWindowProc` tracking needs
+  real caption metrics): the shell performs caption clicks itself
+  (minimize/maximize via the bridge's `ShowWindow` calls, close via
+  the `CloseRequested` veto path, double-clicks swallowed). Gates:
+  fmt clean, clippy zero warnings, shell-win live click/double/
+  queue proofs green. Awaiting user click + snap-flyout proof.
 
 ## Now (in progress)
 

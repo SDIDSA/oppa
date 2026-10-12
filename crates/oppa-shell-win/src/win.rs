@@ -96,16 +96,24 @@ pub(crate) fn caption_button_at(
     y: f32,
     zones: &[(oppa::CaptionButton, [f32; 4])],
 ) -> Option<isize> {
+    caption_zone_at(x, y, zones).map(|button| match button {
+        oppa::CaptionButton::Minimize => HTMINBUTTON_PX,
+        oppa::CaptionButton::Maximize => HTMAXBUTTON_PX,
+        oppa::CaptionButton::Close => HTCLOSE_PX,
+    })
+}
+
+/// Pure native-caption zone lookup (decision 488): the slot whose
+/// box holds the client point, in zone order. The click arms match
+/// on this (self-performed actions); the hit-test arm maps it
+/// through [`caption_button_at`].
+pub(crate) fn caption_zone_at(
+    x: f32,
+    y: f32,
+    zones: &[(oppa::CaptionButton, [f32; 4])],
+) -> Option<oppa::CaptionButton> {
     zones.iter().find_map(|(button, r)| {
-        if x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3] {
-            Some(match button {
-                oppa::CaptionButton::Minimize => HTMINBUTTON_PX,
-                oppa::CaptionButton::Maximize => HTMAXBUTTON_PX,
-                oppa::CaptionButton::Close => HTCLOSE_PX,
-            })
-        } else {
-            None
-        }
+        (x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]).then_some(*button)
     })
 }
 
