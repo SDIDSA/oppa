@@ -7,14 +7,20 @@ fn hidden_shell() -> Win32Shell {
     // depend on the machine's keyboard.
     super::set_key_override(VK_SHIFT.0, Some(false));
     super::set_key_override(VK_CONTROL.0, Some(false));
+    hidden_shell_with_style(oppa::WindowStyle::Decorated)
+}
+
+fn hidden_shell_with_style(style: oppa::WindowStyle) -> Win32Shell {
+    super::set_key_override(VK_SHIFT.0, Some(false));
+    super::set_key_override(VK_CONTROL.0, Some(false));
     Win32Shell::new(ShellConfig {
-        title: "pointer-test".to_string(),
+        title: "style-test".to_string(),
         width: 200,
         height: 150,
         record_messages: false,
         suppress_os_composition_window: true,
         visible: false,
-        style: oppa::WindowStyle::Decorated,
+        style,
     })
     .expect("hidden test window builds")
 }
@@ -648,4 +654,98 @@ fn frameless_window_answers_nchittest_through_proc() {
     assert_eq!(hit(100, 30), HTCAPTION_PX, "drag region captions");
     assert_eq!(hit(2, 75), HTLEFT_PX, "left border resizes");
     assert_eq!(hit(100, 100), HTCLIENT_PX, "deep interior is client");
+}
+
+/// Decision 484 (the winit borderless architecture — found live:
+/// a bare `WS_POPUP` silently dropped Aero snap/tiling with the
+/// thick frame): frameless windows keep the overlapped frame
+/// styles (`WS_CAPTION | WS_THICKFRAME | WS_SYSMENU` + min/max
+/// boxes) so the OS keeps owning snap, tiling, shadows, and
+/// animations — only the `WM_NCCALCSIZE` visuals go.
+#[test]
+fn frameless_window_keeps_frame_styles_for_snap() {
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, GWL_STYLE, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+        WS_THICKFRAME,
+    };
+    for style in [
+        oppa::WindowStyle::Undecorated,
+        oppa::WindowStyle::Transparent,
+        oppa::WindowStyle::Extended,
+    ] {
+        let shell = hidden_shell_with_style(style);
+        let bits = unsafe { GetWindowLongW(shell.hwnd(), GWL_STYLE) as u32 };
+        for flag in [
+            WS_CAPTION.0,
+            WS_THICKFRAME.0,
+            WS_SYSMENU.0,
+            WS_MINIMIZEBOX.0,
+            WS_MAXIMIZEBOX.0,
+        ] {
+            assert_ne!(
+                bits & flag,
+                0,
+                "{style:?} keeps frame bit {flag:#x} (got {bits:#x})"
+            );
+        }
+    }
+}
+
+/// Decision 484: transparent windows enable DWM per-pixel
+/// composition at creation (winit's empty-blur-region recipe) — the
+/// call succeeds against the live compositor, and the proc skips
+/// GDI erasure (the `COLOR_WINDOW` white brush would paint an opaque
+/// sheet under the alpha-composited flip content — the Stylebook
+/// white-background report).
+#[test]
+fn transparent_window_composites_and_skips_gdi_erase() {
+    use ::windows::Win32::Foundation::{LPARAM, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_ERASEBKGND};
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Transparent);
+    assert!(
+        super::enable_transparent_blur(shell.hwnd()).is_ok(),
+        "DWM blur-behind engages on the live compositor"
+    );
+    let erased = unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_ERASEBKGND,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
+        )
+        .0
+    };
+    assert_eq!(
+        erased, 1,
+        "transparent windows claim erasure (paint nothing)"
+    );
+}
+
+/// Decision 484: the maximized frameless clamp pins the proposed
+/// rect to the work origin + work size (the winit `WM_NCCALCSIZE`
+/// mirror — no decoration offsets survive the strip, so a
+/// maximized borderless window owns exactly the work area, never
+/// the taskbar).
+#[test]
+fn clamp_rect_to_work_pins_maximized_rect() {
+    use windows::Win32::Foundation::RECT;
+    let clamped = super::clamp_rect_to_work(
+        RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        },
+        RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        },
+    );
+    assert_eq!(
+        (clamped.left, clamped.top, clamped.right, clamped.bottom),
+        (0, 0, 1920, 1040),
+        "maximized rect owns the work area only"
+    );
 }

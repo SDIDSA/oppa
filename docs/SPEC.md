@@ -107,13 +107,21 @@ contract test suite — not prose — defines sameness.
 - `Transparent`: frameless with a fully transparent background —
   frames clear to `alpha = 0` with a premultiplied-alpha swapchain
   where the surface accepts the mode (a refusal fails loudly into
-  the CPU fallback, never a silent opaque window); the page
-  background never paints. The CPU/softbuffer fallback stays opaque
+  the CPU fallback, never a silent opaque window); on Windows the
+  shell additionally enables DWM blur-behind with an empty region
+  and never GDI-erases (the class white brush would paint an opaque
+  sheet under the composited content). The page background never
+  paints. The CPU/softbuffer fallback stays opaque
   (XRGB forces it — a documented limit, not a second transparency
   path).
 - `Extended`: frameless with OS window management over the app's
   `HeaderBar` region — interactive dragging, edge resizing,
-  snapping/tiling. The runner publishes the committed `HeaderBar`
+  snapping/tiling. The window keeps its overlapped frame styles
+  (decision 484 — caption, thick frame, system menu, min/max boxes
+  stay set, so snap, tiling, shadows, and minimize/maximize
+  animations survive); only the non-client *visuals* go
+  (`WM_NCCALCSIZE` strip, maximized windows clamped to the work
+  area so the taskbar stays visible). The runner publishes the committed `HeaderBar`
   boxes minus press-owning descendants as the drag region
   (area-exact: bar area minus caption-button boxes; nested buttons
   and fields keep normal hit-testing while bare chrome drags);

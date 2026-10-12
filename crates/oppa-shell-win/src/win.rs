@@ -24,10 +24,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use windows::core::w;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetSysColorBrush, InvalidateRect, ScreenToClient, UpdateWindow,
-    COLOR_WINDOW, PAINTSTRUCT,
+    BeginPaint, EndPaint, GetSysColorBrush, InvalidateRect, UpdateWindow, COLOR_WINDOW, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemServices::MK_LBUTTON;
@@ -53,7 +52,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
     WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT, WM_QUIT,
     WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE,
-    WM_SIZE, WM_SYSKEYDOWN, WNDCLASSEXW, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_POPUP,
+    WM_SIZE, WM_SYSKEYDOWN, WNDCLASSEXW, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW,
 };
 
 mod events;
@@ -152,6 +151,58 @@ fn in_rects(x: f32, y: f32, rects: &[[f32; 4]]) -> bool {
         .any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
 }
 
+/// Enables DWM per-pixel transparency (decision 484 — winit's exact
+/// recipe, see `platform_impl/windows/window.rs::on_create`): blur
+/// behind with an EMPTY region (`CreateRectRgn(0, 0, -1, -1)`) makes
+/// the redirection surface fully transparent, so the runner's
+/// premultiplied-alpha swapchain composites per-pixel alpha instead
+/// of an opaque sheet. Pure OS call (headless-testable against a
+/// hidden window — needs DWM running, the same environment bound as
+/// window creation itself). A refusal is a loud `Err` (the shell
+/// logs it and keeps an opaque window — composition is a
+/// presentational backstop, never a creation failure).
+pub(crate) fn enable_transparent_blur(hwnd: HWND) -> Result<(), String> {
+    use windows::core::BOOL;
+    use windows::Win32::Graphics::Dwm::{
+        DwmEnableBlurBehindWindow, DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND,
+    };
+    use windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject};
+    unsafe {
+        let region = CreateRectRgn(0, 0, -1, -1);
+        if region.is_invalid() {
+            return Err("CreateRectRgn refused the empty blur region".to_string());
+        }
+        let bb = DWM_BLURBEHIND {
+            dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION,
+            fEnable: BOOL::from(true),
+            hRgnBlur: region,
+            fTransitionOnMaximized: BOOL::from(false),
+        };
+        let hr = DwmEnableBlurBehindWindow(hwnd, &bb);
+        let _ = DeleteObject(region.into());
+        if hr.is_err() {
+            return Err(format!("DwmEnableBlurBehindWindow refused: {hr:?}"));
+        }
+        Ok(())
+    }
+}
+
+/// Clamps a maximized borderless rect into the monitor work area
+/// (decision 484 — the winit `WM_NCCALCSIZE` mirror: without
+/// decorations to offset it, a maximized frameless window would
+/// span the full monitor including the taskbar). Pure
+/// (headless-testable — the proc supplies the live work rect).
+pub(crate) fn clamp_rect_to_work(
+    mut rect: windows::Win32::Foundation::RECT,
+    work: windows::Win32::Foundation::RECT,
+) -> windows::Win32::Foundation::RECT {
+    rect.left = work.left;
+    rect.top = work.top;
+    rect.right = work.left + (work.right - work.left);
+    rect.bottom = work.top + (work.bottom - work.top);
+    rect
+}
+
 /// Test-only modifier pin (decision 417): when set, [`key_down`]
 /// answers from this table instead of the live `GetKeyState`, so
 /// hidden-window pointer tests are deterministic no matter what the
@@ -194,11 +245,13 @@ pub struct ShellConfig {
     /// long GPU bring-up (Vello shader compile) then happens with no
     /// window at all instead of a blank unresponsive one.
     pub visible: bool,
-    /// OS window chrome (decision 482): `Decorated` creates a
-    /// standard `WS_OVERLAPPEDWINDOW`; every other style creates a
-    /// frameless `WS_POPUP` (the wndproc strips the non-client area
-    /// and answers border/caption hit-tests so OS drag, resize, and
-    /// snap keep working — see `WM_NCCALCSIZE` / `WM_NCHITTEST`).
+    /// OS window chrome (decisions 482–484): every style creates a
+    /// standard `WS_OVERLAPPEDWINDOW` (caption + thick frame + system
+    /// menu stay set so the OS keeps owning snap, tiling, shadows,
+    /// and animations); frameless styles strip only the non-client
+    /// *visuals* in the wndproc (`WM_NCCALCSIZE`, maximized work-area
+    /// clamp) and answer border/caption hit-tests (`WM_NCHITTEST`,
+    /// published drag regions) — see the creation comment.
     pub style: oppa::WindowStyle,
 }
 
@@ -290,11 +343,12 @@ pub struct ShellShared {
     /// Runtime resizable ceiling in client px (Round 16.3, decision
     /// 316 — same publish/enforce rule as the floor).
     pub max_size: Option<(u32, u32)>,
-    /// OS window chrome (decision 482): copied from
-    /// [`ShellConfig::style`] at creation. Frameless windows strip
-    /// the non-client area (`WM_NCCALCSIZE`) and answer border +
-    /// caption hit-tests (`WM_NCHITTEST`) so OS drag, edge resize,
-    /// and snap keep working without a title bar.
+    /// OS window chrome (decisions 482–484): copied from
+    /// [`ShellConfig::style`] at creation. Frameless windows keep
+    /// the overlapped frame styles (snap/tiling/shadows survive)
+    /// while the wndproc strips the non-client visuals
+    /// (`WM_NCCALCSIZE` + maximized work-area clamp) and answers
+    /// border + caption hit-tests (`WM_NCHITTEST`).
     pub style: oppa::WindowStyle,
     /// `Extended`-mode drag regions in client px (`[x, y, w, h]`,
     /// decision 482): published by the runner from
@@ -359,26 +413,26 @@ impl Win32Shell {
 
             let mut title = cfg.title.encode_utf16().collect::<Vec<_>>();
             title.push(0);
-            // Decision 482: decorated windows keep the standard
-            // overlapped chrome; frameless styles (undecorated /
-            // transparent / extended) create a popup with no title
-            // bar or system buttons. The non-client strip + caption
-            // hit-tests below keep OS drag/resize/snap alive on the
-            // popup, so frameless never means unmanaged. Transparent
-            // additionally needs a premultiplied-alpha swapchain +
-            // alpha-0 clear (runner-owned, see `oppa-app`); the DWM
-            // composites per-pixel alpha for popups while composed
-            // (always on since Windows 8 — stated, not silent).
-            let window_style = if cfg.style.is_frameless() {
-                WINDOW_STYLE(WS_POPUP.0)
-            } else {
-                WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0)
-            };
+            // Decisions 482–484 (the winit borderless architecture):
+            // EVERY style creates the standard overlapped window
+            // (`WS_OVERLAPPEDWINDOW`: caption + thick frame + system
+            // menu + min/max boxes stay set — the OS keeps owning
+            // Aero snap, tiling, Win+arrow keys, the taskbar system
+            // menu, DWM shadows, and minimize/maximize animations).
+            // Framelessness lives in the message handling, not the
+            // creation flags: `WM_NCCALCSIZE` strips the non-client
+            // visuals and `WM_NCHITTEST` answers border/caption hits,
+            // so frameless never means unmanaged (a bare `WS_POPUP`
+            // was tried first — it silently dropped snap/tiling with
+            // the thick frame, found live in Stylebook Extended).
+            // Transparent additionally needs DWM per-pixel composition
+            // (`enable_transparent_blur` below) plus the runner-owned
+            // premultiplied-alpha swapchain + alpha-0 clear.
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 class_name,
                 windows::core::PCWSTR(title.as_ptr()),
-                window_style,
+                WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0),
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 cfg.width,
@@ -393,6 +447,20 @@ impl Win32Shell {
                 return Err("CreateWindowExW failed".to_string());
             }
             shared.borrow_mut().hwnd = hwnd;
+
+            // Decision 484 (winit's exact recipe): transparent
+            // windows enable DWM per-pixel composition with an EMPTY
+            // blur region — the redirection surface goes fully
+            // transparent so the premultiplied-alpha swapchain shows
+            // per-pixel alpha. Loud on refusal but never fatal (the
+            // window stays fully usable, falling back to opaque).
+            if cfg.style.is_transparent() {
+                if let Err(e) = enable_transparent_blur(hwnd) {
+                    eprintln!(
+                        "oppa-shell-win: transparent composition unavailable: {e} (opaque window)"
+                    );
+                }
+            }
 
             if cfg.visible {
                 let _ = ShowWindow(hwnd, SHOW_WINDOW_CMD(5));

@@ -73,15 +73,28 @@ pub(crate) fn sync_cursor(loop_: &DesktopLoop, shell: &mut Win32Shell) {
 
 /// Grows the frame so the client area is exactly the scene size
 /// (`CreateWindowExW` takes outer dims — without this the client is
-/// smaller than the pixmap and every present clips).
-pub(crate) fn fit_client_to_scene(hwnd: windows::Win32::Foundation::HWND, w: u32, h: u32) {
+/// smaller than the pixmap and every present clips). Frameless
+/// windows mask `WS_CAPTION | WS_SIZEBOX` out of the adjust math
+/// (decision 484 — the winit `adjust_rect` mirror: the creation
+/// style keeps the frame for snap, but the `WM_NCCALCSIZE` strip
+/// means no pixels go to it, so adjusting for it would oversize the
+/// client by the phantom frame).
+pub(crate) fn fit_client_to_scene(
+    hwnd: windows::Win32::Foundation::HWND,
+    w: u32,
+    h: u32,
+    frameless: bool,
+) {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
         AdjustWindowRect, GetWindowLongW, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOZORDER, WINDOW_STYLE,
+        SWP_NOZORDER, WINDOW_STYLE, WS_CAPTION, WS_SIZEBOX,
     };
     unsafe {
-        let style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
+        let mut style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
+        if frameless {
+            style &= !(WS_CAPTION | WS_SIZEBOX);
+        }
         let mut rc = RECT {
             left: 0,
             top: 0,

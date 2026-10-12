@@ -791,6 +791,22 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   iteration — deferred, never lost). Gates: fmt clean, `oppa-app`
   90/90 (incl. the new skip-while-borrowed regression test),
   clippy zero warnings.
+- Frameless keeps the OS frame; DWM blur-behind transparency
+  (decision 484, user-verified live in Stylebook): bare `WS_POPUP`
+  silently dropped Aero snap/tiling with the thick frame
+  (Extended), and Transparent painted opaque white. The linked
+  JavaFX `EXTENDED` design (frame kept for resize border, shadows,
+  animations; visuals stripped in message handling) plus winit
+  0.30's own backend name the proven recipe, now mirrored: every
+  style creates `WS_OVERLAPPEDWINDOW` (snap, tiling, Win+arrows,
+  taskbar menu, shadows, min/max animations survive); framelessness
+  lives in `WM_NCCALCSIZE` (strip + maximized work-area clamp) and
+  `WM_NCHITTEST` only. `Transparent` adds blur-behind with an empty
+  region + `WM_ERASEBKGND` skip + style-aware `fit_client_to_scene`
+  (`WS_CAPTION|WS_SIZEBOX` masked). Awaiting user re-proof on both
+  styles. Gates: fmt clean, workspace clippy zero warnings,
+  `oppa-shell-win` 30/30 (incl. live frame-bits, blur HRESULT,
+  erase claim, clamp math).
 
 ## Now (in progress)
 

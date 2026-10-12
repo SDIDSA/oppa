@@ -3,7 +3,32 @@
 // ---------------------------------------------------------------------------
 
 use super::*;
-use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
+use windows::Win32::Foundation::{POINT, RECT};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClientRect, IsZoomed, NCCALCSIZE_PARAMS, WM_ERASEBKGND,
+};
+
+/// Live monitor work area for `hwnd` (decision 484): the maximized
+/// frameless clamp keeps the taskbar visible. `None` when the
+/// monitor query fails (the `WM_NCCALCSIZE` arm then keeps the
+/// proposed rect — a missing clamp never misplaces the window).
+fn monitor_work_rect(hwnd: HWND) -> Option<RECT> {
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info).as_bool() {
+            Some(info.rcWork)
+        } else {
+            None
+        }
+    }
+}
 
 impl PlatformShell for Win32Shell {
     fn pump_events(&mut self) -> Vec<Event> {
@@ -198,13 +223,38 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_NCCALCSIZE => {
-            // Decision 482: frameless windows strip the non-client
-            // area (title bar + borders) — return 0 for both the
-            // `wParam`-TRUE DWM frame negotiation and the FALSE
-            // shape. Decorated windows keep the OS frame (default
-            // handling, byte-identical).
+            // Decisions 482–484: frameless windows strip the
+            // non-client visuals (title bar + borders) — return 0
+            // for both the `wParam`-TRUE DWM frame negotiation and
+            // the FALSE shape. The creation style stays overlapped
+            // (decision 484 — the OS keeps owning snap, tiling,
+            // shadows, and animations); only the visuals go. A
+            // maximized frameless window additionally clamps to the
+            // monitor work area (the winit mirror — without
+            // decorations to offset it, the proposed rect would span
+            // the taskbar). Decorated windows keep the OS frame
+            // (default handling, byte-identical).
             if shared.borrow().style.is_frameless() {
+                if wparam.0 != 0 && unsafe { IsZoomed(hwnd).as_bool() } {
+                    if let Some(work) = monitor_work_rect(hwnd) {
+                        let params = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
+                        params.rgrc[0] = clamp_rect_to_work(params.rgrc[0], work);
+                    }
+                }
                 LRESULT(0)
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+        }
+        WM_ERASEBKGND => {
+            // Decision 484: transparent windows never GDI-erase — the
+            // class brush is `COLOR_WINDOW` white, and erasing would
+            // paint an opaque sheet under the alpha-composited flip
+            // content (the Stylebook white-background report). The
+            // swapchain owns every pixel, so claiming erasure paints
+            // nothing. All other styles keep default handling.
+            if shared.borrow().style.is_transparent() {
+                LRESULT(1)
             } else {
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }

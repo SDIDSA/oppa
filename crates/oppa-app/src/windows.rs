@@ -246,7 +246,12 @@ pub fn run_windows<P: Props>(
     })
     .map_err(|e| format!("oppa-app: create window: {e}"))?;
     let hwnd = shell.hwnd();
-    fit_client_to_scene(hwnd, options.width, options.height);
+    fit_client_to_scene(
+        hwnd,
+        options.width,
+        options.height,
+        options.window_style.is_frameless(),
+    );
 
     // COM apartment for the TSF bridge (spike parity — the bridge
     // CoCreates on this thread). Failure keeps the IMM path, never
@@ -375,7 +380,16 @@ pub fn run_windows<P: Props>(
         let size = loop_.viewport();
         match build_gpu_windows(hwnd, &mut loop_, size) {
             Ok(g) => {
-                eprintln!("oppa-app: GPU path ({} / {:?})", g.name, g.mode);
+                // Decision 484: transparent runs log the alpha
+                // contract (premultiplied swapchain + alpha-0 clear)
+                // so a live white-background report carries its
+                // configuration instead of a guess.
+                let alpha_note = if loop_.window_style().is_transparent() {
+                    " / transparent (premultiplied alpha, alpha-0 clear)"
+                } else {
+                    ""
+                };
+                eprintln!("oppa-app: GPU path ({} / {:?}{alpha_note})", g.name, g.mode);
                 loop_
                     .host()
                     .set_presenter_name(loop_.presenter_badge_name());

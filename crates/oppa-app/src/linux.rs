@@ -510,7 +510,17 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                     let window_ref = self.window.as_ref().expect("window just opened").window();
                     match build_gpu(window_ref, display, &mut self.loop_, size) {
                         Ok(gpu) => {
-                            eprintln!("oppa-app: GPU path ({} / {:?})", gpu.name, gpu.mode);
+                            // Decision 484: same alpha-contract log as
+                            // the Windows bring-up above.
+                            let alpha_note = if self.loop_.window_style().is_transparent() {
+                                " / transparent (premultiplied alpha, alpha-0 clear)"
+                            } else {
+                                ""
+                            };
+                            eprintln!(
+                                "oppa-app: GPU path ({} / {:?}{alpha_note})",
+                                gpu.name, gpu.mode
+                            );
                             self.gpu = Some(gpu);
                             // Sync the GPU twin before the first
                             // present (creation-time scene is stale
