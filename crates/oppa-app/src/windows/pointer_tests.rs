@@ -992,3 +992,39 @@ fn wheel_down_scrolls_unbound_datagrid_end_to_end() {
         .expect("row 1 rode to y=-56");
     let _ = row1;
 }
+
+/// Decision 483 (found live: the Stylebook caption-bridge maximize
+/// panicked at startup): a runner poll-hook HWND effect dispatches
+/// `WM_SIZE` synchronously while the pump holds `state`
+/// (`run_poll_hook` borrows across the hook call). The live resize
+/// callback must skip those contested steps — the loop-bottom
+/// live-size poll applies them on the same iteration — never panic
+/// inside `wndproc`. The null HWND below never presents: the skip
+/// path returns before touching it, and the free path's blit
+/// failure is a swallowed `Err` (`let _`), never a panic.
+#[test]
+fn resize_callback_skips_quietly_while_state_borrowed() {
+    let loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    let viewport_before = loop_.viewport();
+    let state = Rc::new(RefCell::new(AppState { loop_, gpu: None }));
+    let cb = make_resize_callback(state.clone(), windows::Win32::Foundation::HWND::default());
+    // The pump's borrow held across the reentrant step (the
+    // `run_poll_hook` shape): no panic, and the size is NOT applied
+    // here (the loop-bottom poll owns it).
+    let _guard = state.borrow_mut();
+    cb(400, 300);
+    drop(_guard);
+    assert_eq!(
+        state.borrow().loop_.viewport(),
+        viewport_before,
+        "contested step defers to the loop-bottom poll"
+    );
+    // Uncontested: the same step applies normally.
+    cb(400, 300);
+    assert_eq!(
+        state.borrow().loop_.viewport(),
+        (400, 300),
+        "free step resizes like before"
+    );
+}

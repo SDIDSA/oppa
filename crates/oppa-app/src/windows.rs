@@ -125,7 +125,17 @@ pub(crate) fn make_resize_callback(
     hwnd: windows::Win32::Foundation::HWND,
 ) -> Rc<dyn Fn(u32, u32)> {
     Rc::new(move |w, h| {
-        let mut s = state.borrow_mut();
+        // Reentrancy guard (decision 483 — found live: a runner
+        // poll-hook HWND effect such as the caption-bridge maximize
+        // dispatches `WM_SIZE` synchronously while the pump holds
+        // `state`, so `borrow_mut` would panic inside `wndproc`).
+        // A contested step skips the live path; the loop-bottom
+        // live-size poll resizes + repaints + reconfigures +
+        // presents on the same iteration, so no frame is lost, only
+        // deferred past the hook.
+        let Ok(mut s) = state.try_borrow_mut() else {
+            return;
+        };
         if (w, h) != s.loop_.viewport() && w > 0 && h > 0 {
             let _ = s.loop_.resize(w, h);
             let _ = s.loop_.repaint();
@@ -436,9 +446,14 @@ pub fn run_windows<P: Props>(
         // Component-requested close + runner poll (Round 26.2,
         // decision 342 -- see `run_poll_hook` docs): poll first (it
         // may write files and ask for close), then a drained request
-        // re-enters the veto consult exactly like WM_CLOSE. No state
-        // borrow is held across either call (WM_SIZE borrows
-        // synchronously -- same rule as the wait above).
+        // re-enters the veto consult exactly like WM_CLOSE. The
+        // `borrow_mut` below spans the hook call itself — an HWND
+        // effect inside the hook (caption-bridge minimize/maximize,
+        // modal dialogs) may dispatch `WM_SIZE` synchronously, and
+        // the resize hook skips those contested steps via
+        // `try_borrow_mut` (decision 483) instead of panicking; the
+        // loop-bottom live-size poll below applies them on the same
+        // iteration.
         state.borrow_mut().loop_.run_poll_hook();
         let mut damaged = false;
         if state.borrow().loop_.host().take_close_request() {

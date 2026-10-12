@@ -781,6 +781,16 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   header_bar 4/4, `oppa-app` 89/89 incl. 2 style tests,
   `oppa-shell-win` 27/27 incl. live NCHITTEST, `oppa-shell-linux`
   55/55), `sera-login` 8/8, `stylebook` 4/4 over the changed framework.
+- Live-resize reentrancy fix (decision 483, found live running
+  Stylebook): the caption-bridge maximize panicked at startup —
+  `run_poll_hook` borrows `state` across the hook call, and a hook
+  HWND effect (`ShowWindow`) dispatches `WM_SIZE` synchronously, so
+  the live resize hook's `borrow_mut` blew up inside `wndproc`. The
+  hook now takes contested steps via `try_borrow_mut` and skips
+  them (the loop-bottom live-size poll applies them on the same
+  iteration — deferred, never lost). Gates: fmt clean, `oppa-app`
+  90/90 (incl. the new skip-while-borrowed regression test),
+  clippy zero warnings.
 
 ## Now (in progress)
 

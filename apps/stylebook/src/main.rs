@@ -28,9 +28,21 @@ fn parse_style_arg(arg: Option<&str>) -> Result<WindowStyle, String> {
 
 fn main() {
     let mut style_arg: Option<String> = None;
-    for arg in std::env::args().skip(1) {
+    let mut args = std::env::args().skip(1).peekable();
+    while let Some(arg) = args.next() {
         if let Some(value) = arg.strip_prefix("--style=") {
             style_arg = Some(value.to_string());
+        } else if arg == "--style" {
+            // Space-separated form (`--style extended`): the value
+            // must follow as the next argument (missing it is a loud
+            // refusal, never a silent default).
+            match args.next() {
+                Some(value) => style_arg = Some(value),
+                None => {
+                    eprintln!("stylebook: --style needs a value (expected --style=<{STYLES}>)");
+                    std::process::exit(2);
+                }
+            }
         } else if arg == "--help" || arg == "-h" {
             println!("stylebook: cargo run -p stylebook -- --style=<{STYLES}> (default extended)");
             return;
