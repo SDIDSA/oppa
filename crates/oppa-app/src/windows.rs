@@ -100,15 +100,15 @@ impl AppState {
 /// (decision 482): recomputed from the live retained tree at the
 /// bottom of every pump iteration, so header moves, resizes, and
 /// show/hide take effect on the next press. Zero-cost unless the
-/// style wants regions (one flag read — settled decorated loops
-/// never walk the tree). The modal sizing loop needs no twin: the
-/// thread is captured by the OS sizing drag there, so no press can
-/// arrive with stale regions.
+/// style wants regions (the policy point gates on the flag first —
+/// settled decorated loops never walk the tree). The modal sizing
+/// loop needs no twin: the thread is captured by the OS sizing drag
+/// there, so no press can arrive with stale regions.
 pub(crate) fn sync_drag_regions(shell: &Win32Shell, loop_: &DesktopLoop) {
-    if !loop_.window_style().wants_drag_region() {
-        return;
-    }
-    shell.set_drag_regions(oppa::window_drag_rects(loop_.host()));
+    shell.set_drag_regions(oppa::drag_regions_for_style(
+        loop_.host(),
+        loop_.window_style(),
+    ));
 }
 
 /// Builds the `WM_SIZE` hook installed via

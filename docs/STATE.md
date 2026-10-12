@@ -768,13 +768,19 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   caption buttons bridge through `WindowControl::{minimize,
   toggle_maximize}` + `ctx.request_close()`. New `HeaderBar`
   control (handlerless `Row` chrome, opt-in caption actions) plus
-  `apps/sera-login/examples/extended.rs` showcase (poll-hook drain
-  precedent). Gates: fmt clean, workspace clippy zero warnings, wasm
+  `apps/sera-login/examples/extended.rs` showcase and the standalone
+  `apps/stylebook` vehicle (one elegant root — header bar over a
+  centered card with counter — mounted under `--style=` for all four
+  chromes; caption bridge via poll-hook signal drain; portable
+  desktop/web/Android shells; 4/4 headless). Follow-up from the
+  vehicle: drag-region publish now flows through the single
+  `drag_regions_for_style` policy point (geometry gated on the style
+  in one place — runners no longer re-decide per platform). Gates: fmt clean, workspace clippy zero warnings, wasm
   check clean, full workspace suite green (incl. new style/drag/
   caption/alpha tests: `oppa` window 4/4, `oppa-controls`
   header_bar 4/4, `oppa-app` 89/89 incl. 2 style tests,
   `oppa-shell-win` 27/27 incl. live NCHITTEST, `oppa-shell-linux`
-  55/55), `sera-login` 8/8 over the changed framework.
+  55/55), `sera-login` 8/8, `stylebook` 4/4 over the changed framework.
 
 ## Now (in progress)
 

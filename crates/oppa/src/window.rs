@@ -57,6 +57,21 @@ pub fn window_drag_rects(host: &ComponentHost) -> Vec<[f32; 4]> {
     })
 }
 
+/// Published OS drag regions for a launch style (decision 482):
+/// the [`window_drag_rects`] geometry when
+/// [`WindowStyle::wants_drag_region`] holds (`Extended`), empty
+/// otherwise (a `HeaderBar` under any other style is plain chrome —
+/// the runners publish through this one policy point instead of
+/// re-deciding per platform, so geometry and gating never drift).
+/// Untracked (paint/runner bookkeeping, never effects).
+pub fn drag_regions_for_style(host: &ComponentHost, style: WindowStyle) -> Vec<[f32; 4]> {
+    if style.wants_drag_region() {
+        window_drag_rects(host)
+    } else {
+        Vec::new()
+    }
+}
+
 /// Committed boxes of press-owning descendants of `root` (the
 /// interactive children that keep their own hit-testing inside an
 /// `Extended` drag region). `root` itself is excluded (its own

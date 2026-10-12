@@ -417,21 +417,17 @@ impl LinuxRunner {
     }
 
     /// Attempts an OS window drag for an `Extended`-mode press
-    /// (decision 482): when the loop's style wants a drag region and
-    /// the press point lands inside one
-    /// ([`oppa::window_drag_rects`] — bar chrome minus press-owning
-    /// children, so nested buttons and fields keep their own
-    /// hit-testing), the compositor takes the gesture via
+    /// (decision 482): when the press point lands inside a published
+    /// drag region ([`oppa::drag_regions_for_style`] — bar chrome
+    /// minus press-owning children, so nested buttons and fields
+    /// keep their own hit-testing; empty under every non-`Extended`
+    /// style), the compositor takes the gesture via
     /// [`ShellWindow::begin_drag`]. Loud on compositor refusal
     /// (the press still routes — the window simply does not move).
-    /// Quiet no-op unless the style wants regions (one flag read —
-    /// settled decorated loops never walk the tree) and when no
-    /// window is open yet.
+    /// Quiet no-op outside `Extended` and when no window is open yet
+    /// (the policy point gates before any tree walk).
     fn begin_drag_at(&self, x: f32, y: f32) {
-        if !self.loop_.window_style().wants_drag_region() {
-            return;
-        }
-        let regions = oppa::window_drag_rects(self.loop_.host());
+        let regions = oppa::drag_regions_for_style(self.loop_.host(), self.loop_.window_style());
         if !regions
             .iter()
             .any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
