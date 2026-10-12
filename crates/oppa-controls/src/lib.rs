@@ -43,7 +43,7 @@
 //! Toast, Tooltip, Menu, ContextMenu, VirtualList, DataGrid,
 //! Scrollbar, ErrorBoundary, Tree, Splitter, DatePicker, Toolbar,
 //! Menubar, FilePicker, RichTextView, ImageView, CanvasView,
-//! NavHost, plus the `Uncontrolled*` self-managed companions.
+//! NavHost, HeaderBar, plus the `Uncontrolled*` self-managed companions.
 //!
 //! Per-control behavior is documented in this crate; catalog status
 //! lives in `docs/STATE.md` (Done).
@@ -113,6 +113,7 @@ pub mod common;
 pub mod datagrid;
 pub mod date_picker;
 pub mod error_boundary;
+pub mod header_bar;
 pub mod login;
 pub mod modal;
 pub mod progress_bar;
@@ -138,6 +139,7 @@ pub use common::*;
 pub use datagrid::*;
 pub use date_picker::*;
 pub use error_boundary::*;
+pub use header_bar::*;
 pub use login::*;
 pub use modal::*;
 pub use progress_bar::*;

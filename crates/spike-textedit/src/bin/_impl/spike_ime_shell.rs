@@ -1010,6 +1010,7 @@ fn app(automated: bool, wait_secs: u64) -> Result<(), String> {
         record_messages: automated,
         suppress_os_composition_window: true,
         visible: true,
+        style: oppa::WindowStyle::Decorated,
     };
     let shell = Rc::new(RefCell::new(Win32Shell::new(cfg)?));
 

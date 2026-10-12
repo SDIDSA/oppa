@@ -232,6 +232,25 @@ impl DesktopLoop {
         }
     }
 
+    /// Minimizes the window at runtime (decision 482 — the
+    /// `Extended`-mode caption bridge: the app's own header button
+    /// arms a runner-visible signal and the `run_desktop_with`
+    /// poll hook forwards it here; same forwarding/grace rules as
+    /// [`DesktopLoop::set_title`]).
+    pub fn minimize(&self) {
+        if let Some(control) = self.window_control.as_ref() {
+            control.minimize();
+        }
+    }
+
+    /// Toggles maximized/restored at runtime (decision 482 — same
+    /// bridge and rules as [`DesktopLoop::minimize`]).
+    pub fn toggle_maximize(&self) {
+        if let Some(control) = self.window_control.as_ref() {
+            control.toggle_maximize();
+        }
+    }
+
     /// Installs the app-level close veto (Round 16.3, decision 316
     /// — the brief's `host.set_close_handler`, homed on the loop:
     /// close is window lifecycle, and the runners consult it here).
@@ -285,5 +304,21 @@ impl DesktopLoop {
     /// override it before the pump starts).
     pub fn set_continuous_repaint(&mut self, enabled: bool) {
         self.continuous_repaint = enabled;
+    }
+
+    /// OS window chrome (decision 482): recorded from
+    /// [`WindowOptions::window_style`](crate::WindowOptions::window_style)
+    /// at runner startup. Default [`WindowStyle::Decorated`].
+    pub fn window_style(&self) -> WindowStyle {
+        self.window_style
+    }
+
+    /// Records the OS window chrome (decision 482 — the runners call
+    /// this once from `WindowOptions` before the pump starts; the
+    /// swapchain reconfigure paths re-apply the matching alpha mode
+    /// from it, so a transparent window never reverts to opaque on
+    /// resize/outdated retries).
+    pub fn set_window_style(&mut self, style: WindowStyle) {
+        self.window_style = style;
     }
 }

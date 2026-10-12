@@ -88,6 +88,13 @@ pub struct GpuBackend {
     gpu_images: HashMap<ImageId, GpuImage>,
     gpu: Option<GpuCtx>,
     collector: BatchCollector,
+    /// Transparent clear (decision 482): when set, frames clear to
+    /// `alpha = 0` instead of the opaque page background, so a
+    /// premultiplied-alpha swapchain composites the desktop through.
+    /// Default `false` (every pre-482 frame clears opaque —
+    /// byte-identical). Armed by the runners for
+    /// `WindowStyle::Transparent` only.
+    transparent_clear: bool,
 }
 
 impl GpuBackend {
@@ -103,7 +110,34 @@ impl GpuBackend {
             gpu_images: HashMap::new(),
             gpu: None,
             collector: BatchCollector::new(),
+            transparent_clear: false,
         }
+    }
+
+    /// Arms (`true`) or clears the transparent frame clear (decision
+    /// 482 — the `WindowStyle::Transparent` leg; pair with a
+    /// premultiplied-alpha swapchain, see
+    /// [`GpuBackend::configure_surface_alpha`]).
+    pub fn set_transparent_clear(&mut self, transparent: bool) {
+        self.transparent_clear = transparent;
+    }
+
+    /// Whether frames clear transparent (decision 482 — runner/test
+    /// observability; the clear itself lands in `execute_render`).
+    pub fn transparent_clear(&self) -> bool {
+        self.transparent_clear
+    }
+
+    /// Frame clear color for `background`: the opaque page color by
+    /// default, `alpha = 0` while [`GpuBackend::transparent_clear`]
+    /// is armed (the page background never paints translucent —
+    /// stated, not silent).
+    fn clear_color(&self, background: oppa::Color) -> wgpu::Color {
+        let mut clear = wgpu_color(background);
+        if self.transparent_clear {
+            clear.a = 0.0;
+        }
+        clear
     }
 
     pub fn set_font_bytes(&mut self, bytes: std::sync::Arc<[u8]>, index: u32) {
@@ -354,6 +388,32 @@ impl GpuBackend {
         height: u32,
         present_mode: wgpu::PresentMode,
     ) -> Result<wgpu::TextureFormat, BackendError> {
+        self.configure_surface_alpha(
+            surface,
+            width,
+            height,
+            present_mode,
+            wgpu::CompositeAlphaMode::Auto,
+        )
+    }
+
+    /// Configures `surface` for presentation with an explicit
+    /// composite-alpha mode (decision 482): `Auto` for every opaque
+    /// style, `PreMultiplied` for `WindowStyle::Transparent` (pair
+    /// with [`GpuBackend::set_transparent_clear`] — the swapchain
+    /// carries per-pixel alpha only when both agree). Requires a
+    /// context from [`GpuBackend::ensure_gpu_for_surface`]. Returns
+    /// the chosen format for the run record. A mode the surface
+    /// refuses is a loud `Err` (never a silent opaque fallback —
+    /// the runner falls back loudly instead).
+    pub fn configure_surface_alpha(
+        &mut self,
+        surface: &wgpu::Surface<'_>,
+        width: u32,
+        height: u32,
+        present_mode: wgpu::PresentMode,
+        alpha_mode: wgpu::CompositeAlphaMode,
+    ) -> Result<wgpu::TextureFormat, BackendError> {
         let gpu = self.gpu.as_mut().ok_or_else(|| {
             BackendError::UnsupportedOp(
                 "no GPU context: call ensure_gpu_for_surface first".to_string(),
@@ -386,7 +446,7 @@ impl GpuBackend {
                 height,
                 present_mode,
                 desired_maximum_frame_latency: 2,
-                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                alpha_mode,
                 view_formats: vec![],
             },
         );
@@ -415,6 +475,9 @@ impl GpuBackend {
         }
 
         self.ensure_gpu()?;
+        // Computed before the `gpu` borrow below (a `&self` method
+        // call cannot overlap the live `&mut self.gpu` borrow).
+        let clear = self.clear_color(desc.background);
         let gpu = self.gpu.as_mut().expect("ensured above");
         let s = self.surfaces.get(&surface).expect("checked above");
 
@@ -466,7 +529,7 @@ impl GpuBackend {
             &self.collector,
             w,
             h,
-            desc.background,
+            clear,
         );
 
         readback_texture(&gpu.device, &gpu.queue, &texture, w, h)
@@ -494,6 +557,9 @@ impl GpuBackend {
         }
 
         self.ensure_gpu()?;
+        // Computed before the `gpu` borrow below (same rule as
+        // `render_pixels` above).
+        let clear = self.clear_color(desc.background);
         let gpu = self.gpu.as_mut().expect("ensured above");
         let s = self.surfaces.get(&surface).expect("checked above");
 
@@ -545,7 +611,7 @@ impl GpuBackend {
             &self.collector,
             w,
             h,
-            desc.background,
+            clear,
         );
 
         gpu.device
@@ -579,6 +645,16 @@ impl GpuBackend {
                 "no GPU context: call ensure_gpu_for_surface first".to_string(),
             )
         })?;
+        // Computed here — after this point `gpu` borrows `self.gpu`
+        // mutably, so no further `&self` method call is possible.
+        // (`clear_color` reads only the flag, but the borrow checker
+        // sees the whole `self`.)
+        let clear = wgpu_color(desc.background);
+        let clear = if self.transparent_clear {
+            wgpu::Color { a: 0.0, ..clear }
+        } else {
+            clear
+        };
 
         let frame = match target.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -644,7 +720,7 @@ impl GpuBackend {
             &self.collector,
             desc.width_px,
             desc.height_px,
-            desc.background,
+            clear,
         );
 
         frame.present();
@@ -909,7 +985,7 @@ fn execute_render(
     collector: &BatchCollector,
     w: u32,
     h: u32,
-    background: oppa::Color,
+    clear: wgpu::Color,
 ) {
     let viewport_uniform = ViewportUniform {
         viewport_size: [w as f32, h as f32],
@@ -1000,7 +1076,7 @@ fn execute_render(
                 view: render_view,
                 resolve_target: resolve_view,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu_color(background)),
+                    load: wgpu::LoadOp::Clear(clear),
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,

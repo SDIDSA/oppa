@@ -12,6 +12,7 @@ fn hidden_shell() -> Win32Shell {
         record_messages: false,
         suppress_os_composition_window: true,
         visible: false,
+        style: oppa::WindowStyle::Decorated,
     })
     .expect("hidden test window builds")
 }

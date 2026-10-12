@@ -50,6 +50,7 @@ impl DesktopLoop {
             close_handler: None,
             poll_hook: None,
             continuous_repaint: false,
+            window_style: WindowStyle::Decorated,
         })
     }
 
@@ -157,6 +158,61 @@ impl DesktopLoop {
     ) -> Result<wgpu::TextureFormat, String> {
         self.scene
             .configure_gpu_surface(surface, width, height, mode)
+    }
+
+    /// Configures `surface` with an explicit composite-alpha mode
+    /// (decision 482 — `PreMultiplied` for
+    /// `WindowStyle::Transparent`, paired with
+    /// [`DesktopLoop::set_transparent_clear`]).
+    pub fn configure_gpu_surface_alpha(
+        &mut self,
+        surface: &wgpu::Surface<'_>,
+        width: u32,
+        height: u32,
+        mode: wgpu::PresentMode,
+        alpha_mode: wgpu::CompositeAlphaMode,
+    ) -> Result<wgpu::TextureFormat, String> {
+        self.scene
+            .configure_gpu_surface_alpha(surface, width, height, mode, alpha_mode)
+    }
+
+    /// Swapchain alpha for the loop's window style (decision 482):
+    /// `PreMultiplied` for `WindowStyle::Transparent`, `Auto`
+    /// otherwise. Bring-up and every reconfigure path go through
+    /// [`DesktopLoop::configure_gpu_surface_styled`] so a
+    /// transparent window never reverts to opaque on resize or
+    /// outdated retries.
+    pub fn surface_alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        if self.window_style.is_transparent() {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else {
+            wgpu::CompositeAlphaMode::Auto
+        }
+    }
+
+    /// Configures `surface` for the loop's window style (decision
+    /// 482 — [`DesktopLoop::surface_alpha_mode`]; pair Transparent
+    /// with [`DesktopLoop::set_transparent_clear`]).
+    pub fn configure_gpu_surface_styled(
+        &mut self,
+        surface: &wgpu::Surface<'_>,
+        width: u32,
+        height: u32,
+        mode: wgpu::PresentMode,
+    ) -> Result<wgpu::TextureFormat, String> {
+        let alpha = self.surface_alpha_mode();
+        self.configure_gpu_surface_alpha(surface, width, height, mode, alpha)
+    }
+
+    /// Arms (`true`) or clears the transparent frame clear (decision
+    /// 482 — the `WindowStyle::Transparent` leg).
+    pub fn set_transparent_clear(&mut self, transparent: bool) {
+        self.scene.set_transparent_clear(transparent);
+    }
+
+    /// Whether frames clear transparent (decision 482).
+    pub fn transparent_clear(&self) -> bool {
+        self.scene.transparent_clear()
     }
 
     /// Picks the present mode, vsync-first (product default —

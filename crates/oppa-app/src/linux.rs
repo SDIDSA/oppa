@@ -113,6 +113,9 @@ fn build_gpu(
     let (w, h) = (size.0.max(1), size.1.max(1));
     let rows = crate::presenter_rows(&crate::LINUX_GPU_ORDER, true);
     let mut factory = LinuxSurfaceFactory::new(window, display)?;
+    // Styled (decision 482 — same premultiplied leg as the Windows
+    // bring-up; read once, the closure owns only the scene).
+    let alpha = loop_.surface_alpha_mode();
     let mut attempt = move |scene: &mut crate::SceneCore,
                             row: crate::GpuRow,
                             instance: &wgpu::Instance,
@@ -124,7 +127,7 @@ fn build_gpu(
         eprintln!("oppa-app: {} {adapter}", row.name);
         let mode = scene.pick_gpu_mode(surface);
         let format = scene
-            .configure_gpu_surface(surface, w, h, mode)
+            .configure_gpu_surface_alpha(surface, w, h, mode, alpha)
             .map_err(|e| crate::RowFail::Abort(format!("configure surface: {e}")))?;
         scene.enable_gpu(mode);
         // Decision 473: nobody reads the CPU pixmap while the
@@ -200,7 +203,9 @@ fn gpu_present_or_cpu(
         Ok(_) => {}
         Err(e) if e.contains("Outdated") => {
             eprintln!("oppa-app: gpu present outdated ({e}); reconfiguring");
-            match loop_.configure_gpu_surface(&gpu.surface, size.0, size.1, gpu.mode) {
+            // Styled (decision 482): the retry keeps the loop's
+            // alpha mode, never a silent opaque revert.
+            match loop_.configure_gpu_surface_styled(&gpu.surface, size.0, size.1, gpu.mode) {
                 Ok(_) => {
                     if let Err(e2) = loop_.present_gpu(&gpu.surface) {
                         eprintln!("oppa-app: gpu retry failed: {e2}; CPU fallback");
@@ -334,9 +339,11 @@ impl LinuxRunner {
             return;
         };
         let (w, h) = self.loop_.viewport();
+        // Styled (decision 482): resizes re-apply the loop's alpha
+        // mode, so a transparent window never reverts mid-session.
         if let Err(e) = self
             .loop_
-            .configure_gpu_surface(&gpu.surface, w, h, gpu.mode)
+            .configure_gpu_surface_styled(&gpu.surface, w, h, gpu.mode)
         {
             eprintln!("oppa-app: gpu reconfigure failed: {e}; CPU fallback");
             if let Err(e) = self.loop_.disable_gpu() {
@@ -409,6 +416,36 @@ impl LinuxRunner {
         }
     }
 
+    /// Attempts an OS window drag for an `Extended`-mode press
+    /// (decision 482): when the loop's style wants a drag region and
+    /// the press point lands inside one
+    /// ([`oppa::window_drag_rects`] — bar chrome minus press-owning
+    /// children, so nested buttons and fields keep their own
+    /// hit-testing), the compositor takes the gesture via
+    /// [`ShellWindow::begin_drag`]. Loud on compositor refusal
+    /// (the press still routes — the window simply does not move).
+    /// Quiet no-op unless the style wants regions (one flag read —
+    /// settled decorated loops never walk the tree) and when no
+    /// window is open yet.
+    fn begin_drag_at(&self, x: f32, y: f32) {
+        if !self.loop_.window_style().wants_drag_region() {
+            return;
+        }
+        let regions = oppa::window_drag_rects(self.loop_.host());
+        if !regions
+            .iter()
+            .any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
+        {
+            return;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        if let Err(e) = window.begin_drag() {
+            eprintln!("oppa-app: extended drag refused: {e}");
+        }
+    }
+
     /// Escape-at-root exits; everything else flows to the pipeline.
     /// Returns true when the caller should exit the event loop.
     /// (The winit arm needs the `ActiveEventLoop` to exit, so the
@@ -434,10 +471,16 @@ impl LinuxRunner {
 impl winit::application::ApplicationHandler for LinuxRunner {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let (w, h) = self.loop_.viewport();
-        let window = ShellWindow::open(event_loop, &self.title, w, h).unwrap_or_else(|e| {
-            eprintln!("oppa-app: FATAL window open: {e}");
-            std::process::exit(1);
-        });
+        // Decision 482: the window opens with the launch style
+        // (frameless styles drop server decorations; transparent
+        // requests an alpha visual — both best-effort at the
+        // compositor, never silent).
+        let window =
+            ShellWindow::open_with_style(event_loop, &self.title, w, h, self.loop_.window_style())
+                .unwrap_or_else(|e| {
+                    eprintln!("oppa-app: FATAL window open: {e}");
+                    std::process::exit(1);
+                });
         // IME enablement (Round 2.1, decision 256): without this
         // winit never delivers Preedit/Commit (the old "the window
         // never enables IME" bound — now closed).
@@ -712,6 +755,21 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                             continue;
                         }
                     }
+                    // `Extended`-mode OS drag (decision 482): a
+                    // primary press landing in a published drag region
+                    // (bar chrome minus press-owning children) hands
+                    // the gesture to the compositor synchronously —
+                    // the Linux half of `HTCAPTION`. The press still
+                    // routes afterwards (focus follows the click like
+                    // every title-bar press); a compositor refusal
+                    // logs loudly and the press routes alone (the
+                    // window simply does not move, never a stuck
+                    // capture).
+                    if let LinuxCmd::PointerDown { x, y, button, .. } = &cmd {
+                        if *button == oppa::PointerButton::Primary {
+                            self.begin_drag_at(*x, *y);
+                        }
+                    }
                     let event = cmd.to_input_event(modifiers);
                     if self.host_inject_escape_or_input(event) {
                         exit = true;
@@ -981,6 +1039,13 @@ pub fn run_linux<P: Props>(
     runner
         .loop_
         .set_continuous_repaint(options.continuous_repaint || continuous_repaint_override());
+    // Decision 482: same chrome recording as the Windows runner
+    // (swapchain reconfigures re-apply the matching alpha mode;
+    // transparent windows clear to alpha-0).
+    runner.loop_.set_window_style(options.window_style);
+    runner
+        .loop_
+        .set_transparent_clear(options.window_style.is_transparent());
     runner.loop_.mount("App", props, component);
     // App ownership (Round 25.3, decision 338): after mount (host
     // signals exist) and after the platform backend installs above

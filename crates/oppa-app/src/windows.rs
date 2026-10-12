@@ -96,6 +96,21 @@ impl AppState {
     }
 }
 
+/// Publishes the `Extended`-mode drag regions to the shell
+/// (decision 482): recomputed from the live retained tree at the
+/// bottom of every pump iteration, so header moves, resizes, and
+/// show/hide take effect on the next press. Zero-cost unless the
+/// style wants regions (one flag read — settled decorated loops
+/// never walk the tree). The modal sizing loop needs no twin: the
+/// thread is captured by the OS sizing drag there, so no press can
+/// arrive with stale regions.
+pub(crate) fn sync_drag_regions(shell: &Win32Shell, loop_: &DesktopLoop) {
+    if !loop_.window_style().wants_drag_region() {
+        return;
+    }
+    shell.set_drag_regions(oppa::window_drag_rects(loop_.host()));
+}
+
 /// Builds the `WM_SIZE` hook installed via
 /// [`Win32Shell::set_resize_callback`]: a same-size or zero-size
 /// step is a quiet no-op, anything else resizes + repaints,
@@ -133,7 +148,10 @@ fn present_frame(
                 Err(e) if e.contains("Outdated") => {
                     eprintln!("oppa-app: gpu present outdated ({e}); reconfiguring");
                     let (w, h) = loop_.viewport();
-                    match loop_.configure_gpu_surface(&gpu.surface, w, h, gpu.mode) {
+                    // Styled (decision 482): an outdated retry on a
+                    // transparent window re-applies premultiplied
+                    // alpha, never a silent opaque revert.
+                    match loop_.configure_gpu_surface_styled(&gpu.surface, w, h, gpu.mode) {
                         Ok(_) => match loop_.present_gpu(&gpu.surface) {
                             Ok(_) => return Ok(()),
                             Err(e2) => {
@@ -214,6 +232,7 @@ pub fn run_windows<P: Props>(
         record_messages: false,
         suppress_os_composition_window: true,
         visible: true,
+        style: options.window_style,
     })
     .map_err(|e| format!("oppa-app: create window: {e}"))?;
     let hwnd = shell.hwnd();
@@ -303,6 +322,12 @@ pub fn run_windows<P: Props>(
     loop_.host().set_debug_overlay(options.debug_overlay);
     loop_
         .set_continuous_repaint(options.continuous_repaint || crate::continuous_repaint_override());
+    // Decision 482: the loop records the chrome style (swapchain
+    // reconfigures re-apply the matching alpha mode from it) and
+    // transparent windows clear to alpha-0 (paired with the
+    // premultiplied swapchain the bring-up below negotiates).
+    loop_.set_window_style(options.window_style);
+    loop_.set_transparent_clear(options.window_style.is_transparent());
     loop_.mount("App", props, component);
     // App ownership (Round 25.3, decision 338): after mount (host
     // signals exist) and after the platform backend installs above
@@ -366,6 +391,9 @@ pub fn run_windows<P: Props>(
     // GDI blits the CPU pixmap otherwise).
     loop_.repaint()?;
     present_frame(&mut loop_, hwnd, gpu.as_ref())?;
+    // Decision 482: publish the first drag regions before the pump
+    // starts (the bottom-of-pump publish keeps them live after).
+    sync_drag_regions(&shell, &loop_);
 
     // Live resize during the modal sizing loop (Round 7.20,
     // decision 295): border drags trap the thread inside
@@ -541,6 +569,10 @@ pub fn run_windows<P: Props>(
         // again instead of going idle (quiet no-op unless armed —
         // the event-driven path is unchanged).
         state.borrow().loop_.rearm_continuous_frame();
+        // Decision 482: `Extended` drag regions follow the live
+        // tree (one cheap publish per iteration, gated on the
+        // style — decorated loops skip the walk entirely).
+        sync_drag_regions(&shell, &state.borrow().loop_);
         // Overlay meter tick (both modes): present cadence drives the
         // FPS clock, throttled badge refresh included.
         state.borrow().loop_.note_frame_presented();

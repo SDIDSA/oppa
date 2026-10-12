@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 use super::*;
+use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
 
 impl PlatformShell for Win32Shell {
     fn pump_events(&mut self) -> Vec<Event> {
@@ -195,6 +196,47 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             );
             // Default handling drives the OS candidate window machinery.
             DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_NCCALCSIZE => {
+            // Decision 482: frameless windows strip the non-client
+            // area (title bar + borders) — return 0 for both the
+            // `wParam`-TRUE DWM frame negotiation and the FALSE
+            // shape. Decorated windows keep the OS frame (default
+            // handling, byte-identical).
+            if shared.borrow().style.is_frameless() {
+                LRESULT(0)
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+        }
+        WM_NCHITTEST => {
+            // Decision 482: frameless hit-testing — the pure
+            // `frameless_hit_test` classifier over the live client
+            // rect plus the runner-published drag regions, so OS
+            // drag (HTCAPTION), edge/corner resize, and snap keep
+            // working without a title bar. Decorated windows keep
+            // the default (byte-identical).
+            if shared.borrow().style.is_frameless() {
+                // Screen point packs as i16 pairs in lParam.
+                let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
+                let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;
+                let mut pt = POINT { x: sx, y: sy };
+                let _ = ScreenToClient(hwnd, &mut pt);
+                let mut client = RECT::default();
+                let _ = GetClientRect(hwnd, &mut client);
+                let maximized = IsZoomed(hwnd).as_bool();
+                let drag = shared.borrow().drag_rects.clone();
+                LRESULT(frameless_hit_test(
+                    pt.x as f32,
+                    pt.y as f32,
+                    (client.right - client.left) as f32,
+                    (client.bottom - client.top) as f32,
+                    maximized,
+                    &drag,
+                ))
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
         WM_SETCURSOR => {
             // Round 8.3 (decision 299): the runner publishes the

@@ -123,5 +123,8 @@ pub use vnode::{
     SharedString, Stack, StrokeDesc, Tag, Text, TextArea, TextBuilder, TextClass, TextField,
     TextSpan, VNode,
 };
-pub use window::{ScriptedWindowControl, WindowCall, WindowControl, WindowIcon};
+pub use window::{
+    window_drag_rects, ScriptedWindowControl, WindowCall, WindowControl, WindowIcon, WindowStyle,
+    HEADER_BAR_DEBUG,
+};
 pub use worker::{HotGeneration, TaskId, TaskScope, TaskStage, WorkerQueue, WorkerResult};

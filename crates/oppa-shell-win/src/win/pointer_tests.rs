@@ -14,6 +14,7 @@ fn hidden_shell() -> Win32Shell {
         record_messages: false,
         suppress_os_composition_window: true,
         visible: false,
+        style: oppa::WindowStyle::Decorated,
     })
     .expect("hidden test window builds")
 }
@@ -521,4 +522,130 @@ fn hwheel_dispatches_horizontal_scroll_cmd() {
         }
         other => panic!("HWHEEL must dispatch Scroll, got {other:?}"),
     }
+}
+
+/// Decision 482: the pure frameless classifier maps borders to the
+/// sizing codes (corners first), drag regions to `HTCAPTION`, and
+/// everything else to `HTCLIENT` — in a 200x150 client area with an
+/// 8px band and no regions.
+#[test]
+fn frameless_classifier_maps_borders_caption_client() {
+    let plain = frameless_hit_test(100.0, 75.0, 200.0, 150.0, false, &[]);
+    assert_eq!(plain, HTCLIENT_PX, "interior is client");
+    assert_eq!(
+        frameless_hit_test(2.0, 75.0, 200.0, 150.0, false, &[]),
+        HTLEFT_PX,
+        "left band resizes"
+    );
+    assert_eq!(
+        frameless_hit_test(198.0, 75.0, 200.0, 150.0, false, &[]),
+        HTRIGHT_PX,
+        "right band resizes"
+    );
+    assert_eq!(
+        frameless_hit_test(100.0, 2.0, 200.0, 150.0, false, &[]),
+        HTTOP_PX,
+        "top band resizes"
+    );
+    assert_eq!(
+        frameless_hit_test(100.0, 148.0, 200.0, 150.0, false, &[]),
+        HTBOTTOM_PX,
+        "bottom band resizes"
+    );
+    assert_eq!(
+        frameless_hit_test(2.0, 2.0, 200.0, 150.0, false, &[]),
+        HTTOPLEFT_PX,
+        "corners win over edges"
+    );
+    assert_eq!(
+        frameless_hit_test(198.0, 148.0, 200.0, 150.0, false, &[]),
+        HTBOTTOMRIGHT_PX,
+        "corners win over edges"
+    );
+}
+
+/// Decision 482: drag regions answer `HTCAPTION`, borders beat a
+/// full-bleed region (edge resizing stays functional under a header
+/// spanning the width), and maximized windows never resize.
+#[test]
+fn frameless_classifier_caption_beats_client_border_beats_caption() {
+    let bar = [[0.0, 0.0, 200.0, 32.0]];
+    assert_eq!(
+        frameless_hit_test(100.0, 16.0, 200.0, 150.0, false, &bar),
+        HTCAPTION_PX,
+        "bar chrome drags"
+    );
+    assert_eq!(
+        frameless_hit_test(100.0, 100.0, 200.0, 150.0, false, &bar),
+        HTCLIENT_PX,
+        "below the bar stays client"
+    );
+    assert_eq!(
+        frameless_hit_test(100.0, 2.0, 200.0, 150.0, false, &bar),
+        HTTOP_PX,
+        "top border resizes even under a full-bleed bar"
+    );
+    assert_eq!(
+        frameless_hit_test(100.0, 16.0, 200.0, 150.0, true, &bar),
+        HTCAPTION_PX,
+        "maximized bar still drags"
+    );
+    assert_eq!(
+        frameless_hit_test(2.0, 75.0, 200.0, 150.0, true, &[]),
+        HTCLIENT_PX,
+        "maximized borders never resize"
+    );
+}
+
+/// Decision 482, live OS proof: a real frameless window answers
+/// `WM_NCHITTEST` through the proc — a published drag region hits
+/// `HTCAPTION`, the left border hits `HTLEFT`, and the interior
+/// hits `HTCLIENT`. Screen points derive from the live window
+/// rect (a hidden `WS_POPUP` still owns screen geometry).
+#[test]
+fn frameless_window_answers_nchittest_through_proc() {
+    use ::windows::Win32::Foundation::{LPARAM, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowRect, SendMessageW, WM_NCHITTEST,
+    };
+    use windows::Win32::Foundation::RECT;
+    super::set_key_override(VK_SHIFT.0, Some(false));
+    super::set_key_override(VK_CONTROL.0, Some(false));
+    let shell = Win32Shell::new(ShellConfig {
+        title: "frameless-test".to_string(),
+        width: 200,
+        height: 150,
+        record_messages: false,
+        suppress_os_composition_window: true,
+        visible: false,
+        style: oppa::WindowStyle::Undecorated,
+    })
+    .expect("frameless test window builds");
+    assert_eq!(shell.window_style(), oppa::WindowStyle::Undecorated);
+    shell.set_drag_regions(vec![[50.0, 20.0, 100.0, 24.0]]);
+    assert_eq!(shell.drag_regions(), vec![[50.0, 20.0, 100.0, 24.0]]);
+    let mut rect = RECT::default();
+    let mut client = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(shell.hwnd(), &mut rect);
+        let _ = GetClientRect(shell.hwnd(), &mut client);
+    }
+    // `WM_NCCALCSIZE` strips the whole non-client area: the client
+    // covers the window pixel for pixel (no title bar, no borders).
+    assert_eq!(client.right - client.left, rect.right - rect.left);
+    assert_eq!(client.bottom - client.top, rect.bottom - rect.top);
+    let at = |cx: i32, cy: i32| {
+        let (sx, sy) = (rect.left + cx, rect.top + cy);
+        Some(LPARAM(((sy << 16) | (sx & 0xFFFF)) as isize))
+    };
+    let hit = |cx: i32, cy: i32| unsafe {
+        SendMessageW(shell.hwnd(), WM_NCHITTEST, Some(WPARAM(0)), at(cx, cy)).0
+    };
+    // Client geometry may be smaller than the requested 200x150
+    // (frame fitting is runner-owned) — probe relative points that
+    // hold for any client area larger than the bands: border at
+    // x=2, region interior, deep interior.
+    assert_eq!(hit(100, 30), HTCAPTION_PX, "drag region captions");
+    assert_eq!(hit(2, 75), HTLEFT_PX, "left border resizes");
+    assert_eq!(hit(100, 100), HTCLIENT_PX, "deep interior is client");
 }

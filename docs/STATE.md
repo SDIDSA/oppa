@@ -1,6 +1,6 @@
 # Project state (current)
 
-Status: current. Last verified: 2026-10-12 (through Decision 479).
+Status: current. Last verified: 2026-10-12 (through Decision 482).
 This is the only planning file. Rounds overwrite it in place — never append
 snapshots, never create per-round files. History is in git (`git log -- docs/STATE.md`).
 
@@ -750,6 +750,31 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
 - Proxy selection reports back to the session (decision 449, proven on-device 2026-10-07): the system toolbar's native handles drag the proxy buffer while Rust keeps the stale span (wrong-span Copy, handles snapping back on mirror). Bridge.onSelectionChanged reports (skipped while mirroring/empty; IME echoes guarded) into MenuAction::SelectionChanged; the pump absolute-sets via select_range (ordered/clamped/caret-on-end, no undo, composing skips) over utf16_to_byte_units. A drag-settle destroy arriving a pump after its report no longer pins (previous-batch OR — native re-shows on release; genuine swipes still pin). Proven on Medium_Phone_API_36.1: handle-drag shrinks the highlight to the dragged span, toolbar re-shows with Select all + Replace, Copy lands exactly the dragged span (Gboard chip "r"). Gates: oppa lib 231/231 (incl. 3 select_range tests), shell 39/39 (conversion + queue + pin), full workspace clean-env green, fmt + clippy (main + Android-target) clean, javac ×4 green, APK rebuild + install + drag cycle green.
 - Drag-state maintenance for live handle drags (decision 450, proven on-device 2026-10-07): dragging a handle vanished it mid-drag and flickered the toolbar — every pump's mirror rebuilt the proxy buffer under the Editor's live drag, and re-fires landed synthetic long-presses inside it. Mirrors are change-gated (text/selection apply only on difference) and re-fires wait out an 800ms report-quiet window (first shows unaffected). Proven on Medium_Phone_API_36.1: stepped multi-second drag streams reports with zero mode churn, handles alive throughout, full system toolbar at release. Gates: shell 40/40 (incl. settle test), fmt + Android clippy clean, APK rebuild + install + sustained-drag cycle green.
 - Toolbar raises for touch selections only (decision 451, host gates green 2026-10-07): verified in the shipped framework source that no key path starts the selection mode (Ctrl shortcuts run direct buffer ops, Shift+nav extends through movement, Ctrl+A even hides a live toolbar) — and probed on-device as far as possible (production build: no root for sendevent, emu-console injection lands nowhere). The pump carries a per-frame selection cause (pointer/menu/report = touch, keys alone = keyboard, quiet inherits) inside the snapshot; the initial raise fires for touch only, live toolbars still track key moves through Update, and a touch on a suppressed span converts an Update into a fresh fire. Gates: shell 43/43 (cause-flip, permit-gate, last-cause), fmt + Android clippy clean. Device proof (touch regression + hardware chords) needs a device pass — see Blocked.
+- Configurable window styles (decision 482, gate green 2026-10-12):
+  `WindowStyle::{Decorated, Undecorated, Transparent, Extended}`
+  (default `Decorated` — every pre-482 app byte-identical) selected
+  launch-only via `WindowOptions::{with_window_style, decorated,
+  undecorated, transparent, extended}`. Shells map it at creation
+  (Win32 `WS_POPUP` + `WM_NCCALCSIZE` strip + pure `frameless_hit_test`
+  over 8px borders/caption regions in `WM_NCHITTEST`, proven live
+  through the proc incl. client==window rect; winit
+  `decorations(false)` + `transparent(true)` + `drag_window()`).
+  `Transparent` pairs a premultiplied-alpha swapchain (bring-up +
+  every reconfigure/outdated path re-applies the loop's alpha mode)
+  with an alpha-0 GPU clear; CPU fallback stays opaque (XRGB forces
+  it — stated limit). `Extended` publishes `window_drag_rects`
+  (`HeaderBar` committed boxes minus press-owning children,
+  area-exact) per pump iteration (Windows) / per press (Linux);
+  caption buttons bridge through `WindowControl::{minimize,
+  toggle_maximize}` + `ctx.request_close()`. New `HeaderBar`
+  control (handlerless `Row` chrome, opt-in caption actions) plus
+  `apps/sera-login/examples/extended.rs` showcase (poll-hook drain
+  precedent). Gates: fmt clean, workspace clippy zero warnings, wasm
+  check clean, full workspace suite green (incl. new style/drag/
+  caption/alpha tests: `oppa` window 4/4, `oppa-controls`
+  header_bar 4/4, `oppa-app` 89/89 incl. 2 style tests,
+  `oppa-shell-win` 27/27 incl. live NCHITTEST, `oppa-shell-linux`
+  55/55), `sera-login` 8/8 over the changed framework.
 
 ## Now (in progress)
 

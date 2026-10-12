@@ -457,10 +457,49 @@ impl SceneCore {
         height: u32,
         mode: wgpu::PresentMode,
     ) -> Result<wgpu::TextureFormat, String> {
+        self.configure_gpu_surface_alpha(
+            surface,
+            width,
+            height,
+            mode,
+            wgpu::CompositeAlphaMode::Auto,
+        )
+    }
+
+    /// Configures `surface` with an explicit composite-alpha mode
+    /// (decision 482): `Auto` for every opaque window style,
+    /// `PreMultiplied` for `WindowStyle::Transparent` (pair with
+    /// [`SceneCore::set_transparent_clear`] — the swapchain carries
+    /// per-pixel alpha only when both agree). A mode the surface
+    /// refuses is a loud `Err` (the runner falls back loudly, never
+    /// a silent opaque window).
+    pub fn configure_gpu_surface_alpha(
+        &mut self,
+        surface: &wgpu::Surface<'_>,
+        width: u32,
+        height: u32,
+        mode: wgpu::PresentMode,
+        alpha_mode: wgpu::CompositeAlphaMode,
+    ) -> Result<wgpu::TextureFormat, String> {
         self.rgb
             .gpu_backend
-            .configure_surface(surface, width, height, mode)
+            .configure_surface_alpha(surface, width, height, mode, alpha_mode)
             .map_err(|e| format!("desktop loop: configure custom gpu surface: {e:?}"))
+    }
+
+    /// Arms (`true`) or clears the transparent frame clear (decision
+    /// 482 — the `WindowStyle::Transparent` leg: frames clear to
+    /// `alpha = 0` instead of the page background; pair with a
+    /// premultiplied-alpha swapchain, see
+    /// [`SceneCore::configure_gpu_surface_alpha`]).
+    pub fn set_transparent_clear(&mut self, transparent: bool) {
+        self.rgb.gpu_backend.set_transparent_clear(transparent);
+    }
+
+    /// Whether frames clear transparent (decision 482 — armed by
+    /// the runners for `WindowStyle::Transparent` only).
+    pub fn transparent_clear(&self) -> bool {
+        self.rgb.gpu_backend.transparent_clear()
     }
 
     /// Picks the present mode, vsync-first: Fifo, then Mailbox,

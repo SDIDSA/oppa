@@ -412,6 +412,7 @@ mod buttons;
 mod chrome;
 mod feedback;
 mod fields;
+mod header_bar;
 mod icons;
 mod interaction;
 mod lists;

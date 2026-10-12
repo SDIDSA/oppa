@@ -27,7 +27,7 @@
 
 // Platform-free loop seam (compiles on wasm32 too — the web crate
 // builds against these).
-use oppa::{ComponentHost, DebugOverlayConfig};
+use oppa::{ComponentHost, DebugOverlayConfig, WindowStyle};
 
 // Desktop/pixel-present glue: deliberately absent from the wasm build
 // (no surface/wgpu/readout code path may compile into oppa-web).
@@ -104,6 +104,12 @@ pub struct WindowOptions {
     pub title: String,
     pub width: u32,
     pub height: u32,
+    /// OS window chrome (decision 482): how the shell frames the
+    /// top-level window. Default [`WindowStyle::Decorated`] (every
+    /// pre-482 app keeps the standard OS window). Launch-only: the
+    /// runners map it into shell creation flags before the window
+    /// exists and never restyle a live window.
+    pub window_style: WindowStyle,
     /// Debug performance overlay configuration.
     pub debug_overlay: DebugOverlayConfig,
     /// Uncapped continuous repaint (benchmark mode): the runner polls
@@ -122,9 +128,46 @@ impl WindowOptions {
             title: title.to_string(),
             width: width.max(1),
             height: height.max(1),
+            window_style: WindowStyle::Decorated,
             debug_overlay: DebugOverlayConfig::default(),
             continuous_repaint: false,
         }
+    }
+
+    /// Selects the OS window chrome (decision 482 — launch-only,
+    /// see [`WindowOptions::window_style`]).
+    pub fn with_window_style(mut self, style: WindowStyle) -> Self {
+        self.window_style = style;
+        self
+    }
+
+    /// Standard OS window: system title bar, borders, caption
+    /// buttons, solid background (the default).
+    pub fn decorated(mut self) -> Self {
+        self.window_style = WindowStyle::Decorated;
+        self
+    }
+
+    /// Frameless window: no title bar, no caption buttons, solid
+    /// background.
+    pub fn undecorated(mut self) -> Self {
+        self.window_style = WindowStyle::Undecorated;
+        self
+    }
+
+    /// Frameless window with a fully transparent background
+    /// (`alpha = 0` clear + premultiplied-alpha swapchain where
+    /// supported).
+    pub fn transparent(mut self) -> Self {
+        self.window_style = WindowStyle::Transparent;
+        self
+    }
+
+    /// Client-area-extended hybrid: no system title bar, OS keeps
+    /// managing drag/resize/snap over the app's `HeaderBar` region.
+    pub fn extended(mut self) -> Self {
+        self.window_style = WindowStyle::Extended;
+        self
     }
 
     /// Sets the debug performance overlay configuration.
@@ -466,6 +509,12 @@ pub struct DesktopLoop {
     /// `OPPA_CONTINUOUS_REPAINT=1` / `OPPA_BENCHMARK=1` environment
     /// flags (see [`continuous_repaint_override`]).
     continuous_repaint: bool,
+    /// OS window chrome (decision 482): recorded from
+    /// [`WindowOptions::window_style`] at runner startup so
+    /// swapchain reconfiguration (outdated/resize retries) re-applies
+    /// the same alpha mode instead of silently reverting to opaque.
+    /// Default [`WindowStyle::Decorated`].
+    window_style: WindowStyle,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

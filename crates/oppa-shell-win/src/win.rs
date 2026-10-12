@@ -51,9 +51,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_IME_COMPOSITION,
     WM_IME_ENDCOMPOSITION, WM_IME_NOTIFY, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
     WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_QUIT, WM_RBUTTONDBLCLK,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
-    WM_SYSKEYDOWN, WNDCLASSEXW, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW,
+    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT, WM_QUIT,
+    WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE,
+    WM_SIZE, WM_SYSKEYDOWN, WNDCLASSEXW, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_POPUP,
 };
 
 mod events;
@@ -64,6 +64,93 @@ pub(crate) use events::{
 };
 pub use events::{Cmd, ImeMessage, MessageRecord, ShellEvent, HWHEEL_LINE_PX, WHEEL_LINE_PX};
 pub(crate) use shell_platform::shell_wnd_proc;
+
+/// Frameless hit-test answers (decision 482 — the `WM_NCHITTEST`
+/// vocabulary for popup-chrome windows; plain `isize` so the pure
+/// classifier below stays headless-testable, the proc casts).
+pub(crate) const HTCLIENT_PX: isize = 1;
+pub(crate) const HTCAPTION_PX: isize = 2;
+pub(crate) const HTLEFT_PX: isize = 10;
+pub(crate) const HTRIGHT_PX: isize = 11;
+pub(crate) const HTTOP_PX: isize = 12;
+pub(crate) const HTTOPLEFT_PX: isize = 13;
+pub(crate) const HTTOPRIGHT_PX: isize = 14;
+pub(crate) const HTBOTTOM_PX: isize = 15;
+pub(crate) const HTBOTTOMLEFT_PX: isize = 16;
+pub(crate) const HTBOTTOMRIGHT_PX: isize = 17;
+
+/// Frameless resize-border thickness in client px (decision 482):
+/// an 8px band on every edge answers the sizing codes so border
+/// drags, corner drags, and snap-by-drag keep working without a
+/// title bar. Fixed (never DPI-scaled — the band is an affordance
+/// floor, not a metric; the OS scales the window, not the band).
+pub(crate) const FRAMELESS_BORDER_PX: f32 = 8.0;
+
+/// Pure frameless `WM_NCHITTEST` classifier (decision 482): client
+/// point `(x, y)` in a `w`×`h` client area maps to a hit-test code.
+/// Maximized windows never resize (caption-or-client only — a
+/// maximized sizing answer would let the OS un-maximize into a
+/// half-applied rect). Borders win over drag regions (a full-bleed
+/// header keeps its top 8px resizable — edge resizing stays
+/// functional under `Extended`), drag regions win over client.
+/// Pure (headless-testable — the proc supplies the live rect + the
+/// published regions; see `frameless_hit_test_*`).
+pub(crate) fn frameless_hit_test(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    maximized: bool,
+    drag_rects: &[[f32; 4]],
+) -> isize {
+    if maximized {
+        return if in_rects(x, y, drag_rects) {
+            HTCAPTION_PX
+        } else {
+            HTCLIENT_PX
+        };
+    }
+    let b = FRAMELESS_BORDER_PX;
+    let left = x < b;
+    let right = x >= w - b;
+    let top = y < b;
+    let bottom = y >= h - b;
+    if top && left {
+        return HTTOPLEFT_PX;
+    }
+    if top && right {
+        return HTTOPRIGHT_PX;
+    }
+    if bottom && left {
+        return HTBOTTOMLEFT_PX;
+    }
+    if bottom && right {
+        return HTBOTTOMRIGHT_PX;
+    }
+    if left {
+        return HTLEFT_PX;
+    }
+    if right {
+        return HTRIGHT_PX;
+    }
+    if top {
+        return HTTOP_PX;
+    }
+    if bottom {
+        return HTBOTTOM_PX;
+    }
+    if in_rects(x, y, drag_rects) {
+        HTCAPTION_PX
+    } else {
+        HTCLIENT_PX
+    }
+}
+
+fn in_rects(x: f32, y: f32, rects: &[[f32; 4]]) -> bool {
+    rects
+        .iter()
+        .any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
+}
 
 /// Test-only modifier pin (decision 417): when set, [`key_down`]
 /// answers from this table instead of the live `GetKeyState`, so
@@ -107,6 +194,12 @@ pub struct ShellConfig {
     /// long GPU bring-up (Vello shader compile) then happens with no
     /// window at all instead of a blank unresponsive one.
     pub visible: bool,
+    /// OS window chrome (decision 482): `Decorated` creates a
+    /// standard `WS_OVERLAPPEDWINDOW`; every other style creates a
+    /// frameless `WS_POPUP` (the wndproc strips the non-client area
+    /// and answers border/caption hit-tests so OS drag, resize, and
+    /// snap keep working — see `WM_NCCALCSIZE` / `WM_NCHITTEST`).
+    pub style: oppa::WindowStyle,
 }
 
 impl Default for ShellConfig {
@@ -118,6 +211,7 @@ impl Default for ShellConfig {
             record_messages: false,
             suppress_os_composition_window: true,
             visible: true,
+            style: oppa::WindowStyle::Decorated,
         }
     }
 }
@@ -196,6 +290,21 @@ pub struct ShellShared {
     /// Runtime resizable ceiling in client px (Round 16.3, decision
     /// 316 — same publish/enforce rule as the floor).
     pub max_size: Option<(u32, u32)>,
+    /// OS window chrome (decision 482): copied from
+    /// [`ShellConfig::style`] at creation. Frameless windows strip
+    /// the non-client area (`WM_NCCALCSIZE`) and answer border +
+    /// caption hit-tests (`WM_NCHITTEST`) so OS drag, edge resize,
+    /// and snap keep working without a title bar.
+    pub style: oppa::WindowStyle,
+    /// `Extended`-mode drag regions in client px (`[x, y, w, h]`,
+    /// decision 482): published by the runner from
+    /// `oppa::window_drag_rects` after every repaint (the bar's
+    /// committed boxes minus press-owning children). The
+    /// `WM_NCHITTEST` arm answers `HTCAPTION` inside them so the OS
+    /// drags the window; nested controls keep their own hit-tests
+    /// because their boxes were subtracted before publish. Empty =
+    /// no caption region (undecorated windows stay fully client).
+    pub drag_rects: Vec<[f32; 4]>,
 }
 
 pub struct Win32Shell {
@@ -227,6 +336,8 @@ impl Win32Shell {
             current_cursor: None,
             min_size: None,
             max_size: None,
+            style: cfg.style,
+            drag_rects: Vec::new(),
         }));
 
         SHELL_RC.with(|rc| *rc.borrow_mut() = Some(shared.clone()));
@@ -248,11 +359,26 @@ impl Win32Shell {
 
             let mut title = cfg.title.encode_utf16().collect::<Vec<_>>();
             title.push(0);
+            // Decision 482: decorated windows keep the standard
+            // overlapped chrome; frameless styles (undecorated /
+            // transparent / extended) create a popup with no title
+            // bar or system buttons. The non-client strip + caption
+            // hit-tests below keep OS drag/resize/snap alive on the
+            // popup, so frameless never means unmanaged. Transparent
+            // additionally needs a premultiplied-alpha swapchain +
+            // alpha-0 clear (runner-owned, see `oppa-app`); the DWM
+            // composites per-pixel alpha for popups while composed
+            // (always on since Windows 8 — stated, not silent).
+            let window_style = if cfg.style.is_frameless() {
+                WINDOW_STYLE(WS_POPUP.0)
+            } else {
+                WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0)
+            };
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 class_name,
                 windows::core::PCWSTR(title.as_ptr()),
-                WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0),
+                window_style,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 cfg.width,
@@ -296,6 +422,29 @@ impl Win32Shell {
         unsafe {
             let _ = ShowWindow(hwnd, SHOW_WINDOW_CMD(5));
         }
+    }
+
+    /// OS window chrome selected at creation (decision 482).
+    pub fn window_style(&self) -> oppa::WindowStyle {
+        self.shared.borrow().style
+    }
+
+    /// Publishes the `Extended`-mode drag regions in client px
+    /// (`[x, y, w, h]`, decision 482 — the runner recomputes these
+    /// from `oppa::window_drag_rects` after every repaint and calls
+    /// here; the `WM_NCHITTEST` arm answers `HTCAPTION` inside them).
+    /// Empty clears the caption region (undecorated windows stay
+    /// fully client).
+    pub fn set_drag_regions(&self, rects: Vec<[f32; 4]>) {
+        self.shared.borrow_mut().drag_rects = rects;
+    }
+
+    /// Published drag regions, in order (test observability — the
+    /// OS application of them needs a live `WM_NCHITTEST`, reviewed,
+    /// never faked; the pure classifier below proves the mapping).
+    #[cfg(test)]
+    pub(crate) fn drag_regions(&self) -> Vec<[f32; 4]> {
+        self.shared.borrow().drag_rects.clone()
     }
 
     /// TSF-aware association for the shell window (this round's fix).

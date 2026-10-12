@@ -83,6 +83,12 @@ pub(crate) fn build_gpu_windows(
     let hwnd_val = NonZeroIsize::new(hwnd.0 as isize)
         .ok_or_else(|| "null HWND for gpu surface".to_string())?;
     let mut factory = WindowsSurfaceFactory::new(hwnd_val);
+    // Styled (decision 482 — transparent windows negotiate a
+    // premultiplied-alpha swapchain; a surface refusing the mode
+    // aborts loudly into the CPU fallback, never a silent opaque
+    // window). Read once: the loop owns the style, the closure owns
+    // only the scene.
+    let alpha = loop_.surface_alpha_mode();
     let mut attempt = move |scene: &mut crate::SceneCore,
                             row: crate::GpuRow,
                             instance: &wgpu::Instance,
@@ -94,7 +100,7 @@ pub(crate) fn build_gpu_windows(
         eprintln!("oppa-app: {} {adapter}", row.name);
         let mode = scene.pick_gpu_mode(surface);
         let format = scene
-            .configure_gpu_surface(surface, w, h, mode)
+            .configure_gpu_surface_alpha(surface, w, h, mode, alpha)
             .map_err(|e| crate::RowFail::Abort(format!("configure surface: {e}")))?;
         scene.enable_gpu(mode);
         // Decision 473: nobody reads the CPU pixmap while the
@@ -149,12 +155,14 @@ pub(crate) fn reconfigure_gpu(loop_: &mut DesktopLoop, gpu: &WindowsGpu) {
         return;
     }
     let (w, h) = loop_.viewport();
-    if let Err(e) = loop_.configure_gpu_surface(&gpu.surface, w, h, gpu.mode) {
+    // Styled (decision 482): resizes re-apply the loop's alpha mode
+    // so a transparent window never reverts to opaque mid-session.
+    if let Err(e) = loop_.configure_gpu_surface_styled(&gpu.surface, w, h, gpu.mode) {
         eprintln!(
             "oppa-app: gpu reconfigure failed ({w}x{h} {mode:?}: {e}); retrying once",
             mode = gpu.mode
         );
-        if let Err(e2) = loop_.configure_gpu_surface(&gpu.surface, w, h, gpu.mode) {
+        if let Err(e2) = loop_.configure_gpu_surface_styled(&gpu.surface, w, h, gpu.mode) {
             eprintln!("oppa-app: gpu reconfigure retry failed: {e2}; CPU fallback");
             if let Err(e) = loop_.disable_gpu() {
                 eprintln!("oppa-app: cpu catch-up repaint failed: {e}");

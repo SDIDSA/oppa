@@ -134,3 +134,58 @@ fn escape_exits_only_at_root() {
         "focused Escape routes, never exits"
     );
 }
+
+/// Decision 482: `WindowOptions` defaults to the decorated OS window
+/// and each builder selects its style (launch-only chrome — the
+/// runners map it into shell creation flags before the window
+/// exists).
+#[test]
+fn window_options_default_decorated_with_style_builders() {
+    use oppa::WindowStyle;
+    let plain = WindowOptions::new("App", 400, 300);
+    assert_eq!(plain.window_style, WindowStyle::Decorated);
+    assert_eq!(
+        WindowOptions::new("A", 1, 1).decorated().window_style,
+        WindowStyle::Decorated
+    );
+    assert_eq!(
+        WindowOptions::new("A", 1, 1).undecorated().window_style,
+        WindowStyle::Undecorated
+    );
+    assert_eq!(
+        WindowOptions::new("A", 1, 1).transparent().window_style,
+        WindowStyle::Transparent
+    );
+    assert_eq!(
+        WindowOptions::new("A", 1, 1).extended().window_style,
+        WindowStyle::Extended
+    );
+    assert_eq!(
+        WindowOptions::new("A", 1, 1)
+            .with_window_style(WindowStyle::Extended)
+            .window_style,
+        WindowStyle::Extended
+    );
+}
+
+/// Decision 482: headless loops record `Decorated` with opaque
+/// frames until a runner stores the launch style (swapchain
+/// reconfigures re-apply the alpha mode from it, so a transparent
+/// window never reverts on resize/outdated retries).
+#[test]
+fn loop_records_window_style_with_opaque_default() {
+    use oppa::WindowStyle;
+    use wgpu::CompositeAlphaMode;
+    let (mut loop_, _) = harness();
+    assert_eq!(loop_.window_style(), WindowStyle::Decorated);
+    assert!(!loop_.transparent_clear());
+    assert_eq!(loop_.surface_alpha_mode(), CompositeAlphaMode::Auto);
+    loop_.set_window_style(WindowStyle::Transparent);
+    loop_.set_transparent_clear(true);
+    assert_eq!(loop_.window_style(), WindowStyle::Transparent);
+    assert!(loop_.transparent_clear());
+    assert_eq!(
+        loop_.surface_alpha_mode(),
+        CompositeAlphaMode::PreMultiplied
+    );
+}
