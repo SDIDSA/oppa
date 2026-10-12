@@ -138,7 +138,11 @@ contract test suite — not prose — defines sameness.
   clicks itself (decision 488 — `DefWindowProc` tracking needs real
   caption metrics, so minimize/maximize run the bridge's
   `ShowWindow` calls and close queues the veto path; double-clicks
-  swallow after the single-click acted); delivered border points
+  swallow after the single-click acted); the shell reports real
+  custom-frame geometry through `WM_GETTITLEBARINFOEX` (decision
+  491 — bar box plus min/max/close slots in screen coordinates with
+  honest states — instead of phantom standard metrics);
+  delivered border points
   resize by genuine OS frame metrics (decision 490 — the proc
   consults `DefWindowProcW` first and accepts only sizing codes, so
   bands and cursors match the platform; outside points are not

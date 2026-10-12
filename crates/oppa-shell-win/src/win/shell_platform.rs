@@ -11,8 +11,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, IsZoomed, ShowWindow, NCCALCSIZE_PARAMS, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
-    WM_ERASEBKGND, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE,
+    GetClientRect, GetWindowRect, IsZoomed, ShowWindow, NCCALCSIZE_PARAMS, SW_MAXIMIZE,
+    SW_MINIMIZE, SW_RESTORE, TITLEBARINFOEX, WM_ERASEBKGND, WM_GETTITLEBARINFOEX,
+    WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE,
 };
 
 /// Publishes the hovered caption zone (decision 486): maps the
@@ -45,6 +46,53 @@ fn publish_caption_hover(
             let _ = unsafe { TrackMouseEvent(&mut track) };
         }
     }
+}
+
+/// Title-bar info for `WM_GETTITLEBARINFOEX` (decision 491): the
+/// published bar box plus the live caption zones, converted to
+/// screen coordinates through the window origin. `None` without a
+/// published bar box (the arm keeps default handling). Element
+/// states follow the documented table (focusable buttons, invisible
+/// help); the title bar itself carries no state.
+///
+/// `TITLEBARINFOEX` state constants live here (the `windows` crate
+/// exposes them only under unrelated newtypes): values from the MS
+/// `TITLEBARINFOEX` member table.
+const TITLE_STATE_FOCUSABLE: u32 = 0x0010_0000;
+const TITLE_STATE_INVISIBLE: u32 = 0x0000_8000;
+
+fn title_bar_info(shared: &Rc<RefCell<ShellShared>>, hwnd: HWND) -> Option<TITLEBARINFOEX> {
+    let s = shared.borrow();
+    let bar = s.title_bar_rect?;
+    let mut origin = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut origin);
+    }
+    let to_screen = |r: [f32; 4]| RECT {
+        left: origin.left + r[0].round() as i32,
+        top: origin.top + r[1].round() as i32,
+        right: origin.left + (r[0] + r[2]).round() as i32,
+        bottom: origin.top + (r[1] + r[3]).round() as i32,
+    };
+    let mut states = [0u32; 6];
+    let mut rects = [RECT::default(); 6];
+    rects[0] = to_screen(bar);
+    for (button, r) in &s.caption_buttons {
+        let i = match button {
+            oppa::CaptionButton::Minimize => 2,
+            oppa::CaptionButton::Maximize => 3,
+            oppa::CaptionButton::Close => 5,
+        };
+        rects[i] = to_screen(*r);
+        states[i] = TITLE_STATE_FOCUSABLE;
+    }
+    states[4] = TITLE_STATE_INVISIBLE;
+    Some(TITLEBARINFOEX {
+        cbSize: std::mem::size_of::<TITLEBARINFOEX>() as u32,
+        rcTitleBar: rects[0],
+        rgstate: states,
+        rgrect: rects,
+    })
 }
 
 /// Live monitor work area for `hwnd` (decision 484): the maximized
@@ -420,6 +468,29 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
                 let zones = shared.borrow().caption_buttons.clone();
                 if caption_zone_at(pt.x as f32, pt.y as f32, &zones).is_some() {
                     return LRESULT(0);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_GETTITLEBARINFOEX => {
+            // Decision 491: report the real custom-frame geometry
+            // (the OS-documented custom-titlebar channel — DWM
+            // features like the snap-layouts flyout and accessibility
+            // tools read real button bounds here instead of phantom
+            // standard metrics). Slots per the `TITLEBARINFOEX`
+            // contract: 0 = bar, 1 = reserved, 2 = min, 3 = max,
+            // 4 = help (absent — invisible with a zero rect, never a
+            // phantom affordance), 5 = close; present buttons are
+            // focusable. All rects in screen coordinates (client
+            // boxes offset by the live window origin). Only with a
+            // published bar box; otherwise default handling
+            // (decorated + headerless keep the OS metrics,
+            // byte-identical).
+            if shared.borrow().style.is_frameless() {
+                if let Some(filled) = title_bar_info(&shared, hwnd) {
+                    let info = unsafe { &mut *(lparam.0 as *mut TITLEBARINFOEX) };
+                    *info = filled;
+                    return LRESULT(1);
                 }
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)

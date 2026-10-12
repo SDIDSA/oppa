@@ -124,6 +124,11 @@ pub(crate) fn sync_drag_regions(shell: &Win32Shell, loop_: &DesktopLoop) {
     };
     shell.set_drag_regions(drag);
     shell.set_caption_buttons(zones);
+    // Decision 491: the title-bar box rides the same cadence so
+    // `WM_GETTITLEBARINFOEX` answers real custom-frame geometry
+    // (DWM features + accessibility read it instead of phantom
+    // standard metrics).
+    shell.set_title_bar_rect(oppa::title_bar_rect(host));
 }
 
 /// Builds the `WM_SIZE` hook installed via

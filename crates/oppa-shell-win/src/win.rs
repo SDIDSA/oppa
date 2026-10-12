@@ -441,6 +441,13 @@ pub struct ShellShared {
     /// glow DWM never draws on a stripped frame. `None` means no
     /// hover (or no zones — custom/off never hovers).
     pub hover_caption: Option<oppa::CaptionButton>,
+    /// Title-bar box in client px (decision 491): published by the
+    /// runner from `oppa::title_bar_rect` so the
+    /// `WM_GETTITLEBARINFOEX` arm reports real custom-frame geometry
+    /// (screen-converted at answer time) instead of phantom standard
+    /// metrics. `None` means no bar (default handling keeps the OS
+    /// metrics, byte-identical).
+    pub title_bar_rect: Option<[f32; 4]>,
 }
 
 pub struct Win32Shell {
@@ -476,6 +483,7 @@ impl Win32Shell {
             drag_rects: Vec::new(),
             caption_buttons: Vec::new(),
             hover_caption: None,
+            title_bar_rect: None,
         }));
 
         SHELL_RC.with(|rc| *rc.borrow_mut() = Some(shared.clone()));
@@ -632,6 +640,14 @@ impl Win32Shell {
     /// signal the `HeaderBar` paints its glow from).
     pub fn hover_caption(&self) -> Option<oppa::CaptionButton> {
         self.shared.borrow().hover_caption
+    }
+
+    /// Publishes the title-bar box in client px (decision 491 — the
+    /// runner republishes from `oppa::title_bar_rect` alongside the
+    /// drag regions; the `WM_GETTITLEBARINFOEX` arm screen-converts
+    /// it at answer time). `None` clears back to default handling.
+    pub fn set_title_bar_rect(&self, rect: Option<[f32; 4]>) {
+        self.shared.borrow_mut().title_bar_rect = rect;
     }
 
     /// TSF-aware association for the shell window (this round's fix).

@@ -123,6 +123,36 @@ pub fn window_drag_rects(host: &ComponentHost) -> Vec<[f32; 4]> {
     })
 }
 
+/// Title-bar box for `WM_GETTITLEBARINFOEX` (decision 491): the
+/// bounding union of every laid-out `HeaderBar` box (`None` with no
+/// bar — the shell then keeps default handling). Unsubtracted (the
+/// OS wants the whole bar, blockers included) and untracked (like
+/// the drag regions — paint/runner bookkeeping, never effects).
+pub fn title_bar_rect(host: &ComponentHost) -> Option<[f32; 4]> {
+    host.with_retained_mut(|rec, _| {
+        let mut acc: Option<[f32; 4]> = None;
+        for bar in rec.find_by_debug(HEADER_BAR_DEBUG) {
+            let Some(node) = rec.get(bar) else {
+                continue;
+            };
+            let Some(layout) = node.layout.clone() else {
+                continue;
+            };
+            let r = [layout.x, layout.y, layout.w, layout.h];
+            acc = Some(match acc {
+                None => r,
+                Some(a) => [
+                    a[0].min(r[0]),
+                    a[1].min(r[1]),
+                    (a[0] + a[2]).max(r[0] + r[2]) - a[0].min(r[0]),
+                    (a[1] + a[3]).max(r[1] + r[3]) - a[1].min(r[1]),
+                ],
+            });
+        }
+        acc
+    })
+}
+
 /// Published OS drag regions for a launch style (decision 482):
 /// the [`window_drag_rects`] geometry when
 /// [`WindowStyle::wants_drag_region`] holds (`Extended`), empty
@@ -572,5 +602,47 @@ mod tests {
             "header-min",
             "labels name the control's nodes"
         );
+    }
+
+    /// Decision 491: `title_bar_rect` unions every laid-out
+    /// `HeaderBar` box unsubtracted (the OS wants the whole bar for
+    /// `WM_GETTITLEBARINFOEX`, blockers included) and goes `None`
+    /// with no bar.
+    #[test]
+    fn title_bar_rect_unions_bars_unsubtracted() {
+        use crate::component::{ComponentHost, Ctx, Props};
+        use crate::style::Style;
+        use crate::vnode::{Div, Row, VNode};
+        #[derive(Clone)]
+        struct BarOnly;
+        impl Props for BarOnly {}
+        fn bar_root(_ctx: &Ctx, _p: &BarOnly) -> VNode {
+            Row(HEADER_BAR_DEBUG)
+                .style(Style::new().size(300, 40))
+                .children([
+                    Div("header-min").style(Style::new().size(46, 40)).build(),
+                    Div("header-max").style(Style::new().size(46, 40)).build(),
+                ])
+        }
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        host.mount("Bar", BarOnly, bar_root);
+        host.run_until_idle();
+        assert_eq!(
+            title_bar_rect(&host),
+            Some([0.0, 0.0, 300.0, 40.0]),
+            "union covers the whole bar, buttons included"
+        );
+        #[derive(Clone)]
+        struct Bare;
+        impl Props for Bare {}
+        fn bare_root(_ctx: &Ctx, _p: &Bare) -> VNode {
+            Div("plain").style(Style::new().size(10, 10)).build()
+        }
+        let empty = ComponentHost::new();
+        empty.set_viewport(800.0, 600.0);
+        empty.mount("Bare", Bare, bare_root);
+        empty.run_until_idle();
+        assert_eq!(title_bar_rect(&empty), None, "no bar means no rect");
     }
 }

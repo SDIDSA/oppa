@@ -1112,3 +1112,50 @@ fn sync_publishes_caption_zones_from_header_buttons() {
         "published maximize zone answers HTMAXBUTTON end to end"
     );
 }
+
+/// Decision 491 end to end: the runner publishes the title-bar box
+/// on the same sync, so a real `WM_GETTITLEBARINFOEX` over the
+/// mounted header reports the maximize slot at the committed box +
+/// window origin (mount → sync → OS query → struct).
+#[test]
+fn sync_publishes_title_bar_info_for_dwm_and_tools() {
+    use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, SendMessageW, TITLEBARINFOEX, WM_GETTITLEBARINFOEX,
+    };
+    let (loop_, shell) = header_loop_and_shell();
+    let max = loop_
+        .host()
+        .committed_box_by_debug("header-max")
+        .expect("maximize button laid out");
+    let mut origin = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(shell.hwnd(), &mut origin);
+    }
+    let mut info = TITLEBARINFOEX::default();
+    let handled = unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_GETTITLEBARINFOEX,
+            Some(WPARAM(0)),
+            Some(LPARAM(&mut info as *mut TITLEBARINFOEX as isize)),
+        )
+        .0
+    };
+    assert_ne!(handled, 0, "custom geometry claims the message");
+    assert_eq!(
+        (
+            info.rgrect[3].left,
+            info.rgrect[3].top,
+            info.rgrect[3].right,
+            info.rgrect[3].bottom
+        ),
+        (
+            origin.left + max.x as i32,
+            origin.top + max.y as i32,
+            origin.left + (max.x + max.w) as i32,
+            origin.top + (max.y + max.h) as i32,
+        ),
+        "maximize slot matches the committed box at the window origin"
+    );
+}

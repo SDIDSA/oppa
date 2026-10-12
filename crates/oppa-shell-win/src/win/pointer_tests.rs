@@ -892,6 +892,81 @@ fn caption_zones_answer_htbutton_codes_through_proc() {
     assert_eq!(hit(30, 100), HTCLIENT_PX, "away from zones stays client");
 }
 
+/// Decision 491: `WM_GETTITLEBARINFOEX` reports the real custom-frame
+/// geometry in screen coordinates (the OS-documented custom-titlebar
+/// channel — DWM features and accessibility read real button bounds
+/// here instead of phantom standard metrics). Slots per contract:
+/// 0 = bar, 2 = min, 3 = max, 5 = close (focusable); help (4) is
+/// absent — invisible with a zero rect, never a phantom affordance.
+#[test]
+fn title_bar_info_reports_real_geometry_in_screen_coords() {
+    use ::windows::Win32::Foundation::LPARAM;
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, SendMessageW, TITLEBARINFOEX, WM_GETTITLEBARINFOEX,
+    };
+    use oppa::CaptionButton;
+    use windows::Win32::Foundation::RECT;
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Extended);
+    shell.set_title_bar_rect(Some([0.0, 0.0, 200.0, 40.0]));
+    shell.set_caption_buttons(vec![
+        (CaptionButton::Minimize, [62.0, 0.0, 46.0, 40.0]),
+        (CaptionButton::Maximize, [108.0, 0.0, 46.0, 40.0]),
+        (CaptionButton::Close, [154.0, 0.0, 46.0, 40.0]),
+    ]);
+    let mut origin = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(shell.hwnd(), &mut origin);
+    }
+    let mut info = TITLEBARINFOEX::default();
+    let handled = unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_GETTITLEBARINFOEX,
+            Some(::windows::Win32::Foundation::WPARAM(0)),
+            Some(LPARAM(&mut info as *mut TITLEBARINFOEX as isize)),
+        )
+        .0
+    };
+    assert_ne!(handled, 0, "custom geometry claims the message");
+    let at = |r: [f32; 4]| RECT {
+        left: origin.left + r[0] as i32,
+        top: origin.top + r[1] as i32,
+        right: origin.left + (r[0] + r[2]) as i32,
+        bottom: origin.top + (r[1] + r[3]) as i32,
+    };
+    assert_eq!(
+        info.rcTitleBar,
+        at([0.0, 0.0, 200.0, 40.0]),
+        "bar box converts"
+    );
+    assert_eq!(
+        info.rgrect[2],
+        at([62.0, 0.0, 46.0, 40.0]),
+        "min slot converts"
+    );
+    assert_eq!(
+        info.rgrect[3],
+        at([108.0, 0.0, 46.0, 40.0]),
+        "max slot converts"
+    );
+    assert_eq!(
+        info.rgrect[5],
+        at([154.0, 0.0, 46.0, 40.0]),
+        "close slot converts"
+    );
+    assert_eq!(info.rgrect[4], RECT::default(), "help stays zeroed");
+    assert_eq!(
+        info.rgstate[4], 0x0000_8000,
+        "help reports invisible, never focusable"
+    );
+    for i in [2usize, 3, 5] {
+        assert_eq!(
+            info.rgstate[i], 0x0010_0000,
+            "present buttons report focusable"
+        );
+    }
+}
+
 /// Decision 486: every `WM_NCHITTEST` refreshes the published
 /// caption hover (zone hits set it, anything else clears it) and
 /// `WM_NCMOUSELEAVE` clears it on window exit — the runner drains

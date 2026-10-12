@@ -872,6 +872,14 @@ snapshots, never create per-round files. History is in git (`git log -- docs/STA
   margin ring (major surgery, explicitly deferred). A scene-drawn
   snap flyout remains the deterministic follow-up if wanted. Gates:
   fmt clean, clippy zero warnings, workspace suite green.
+- Real custom-frame geometry via `WM_GETTITLEBARINFOEX` (decision
+  491): the runner publishes the title-bar box on the same sync and
+  the shell answers the OS-documented custom-titlebar query with
+  real bar/min/max/close rects in screen coordinates (honest
+  states, invisible help) instead of phantom standard metrics —
+  the channel DWM features and accessibility tools read. Gates: fmt
+  clean, clippy zero warnings, core bar-box union, shell live-proc,
+  runner end-to-end proofs green. Awaiting user snap-flyout proof.
 
 ## Now (in progress)
 

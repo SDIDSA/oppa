@@ -124,7 +124,7 @@ pub use vnode::{
     TextSpan, VNode,
 };
 pub use window::{
-    drag_regions_for_style, native_caption_zones, window_drag_rects, CaptionButton,
+    drag_regions_for_style, native_caption_zones, title_bar_rect, window_drag_rects, CaptionButton,
     ScriptedWindowControl, WindowCall, WindowControl, WindowIcon, WindowStyle, HEADER_BAR_DEBUG,
 };
 pub use worker::{HotGeneration, TaskId, TaskScope, TaskStage, WorkerQueue, WorkerResult};
