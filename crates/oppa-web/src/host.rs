@@ -367,7 +367,7 @@ impl WasmHost {
     ) -> Self {
         let (clock, host) = Self::boot();
         host.mount(name, props, render);
-        host.run_until_idle();
+        pump_host(&host, &clock, oppa_app::PUMP_INPUT_FRAMES);
         let images = host.images();
         Self::shell(host, clock, images)
     }
@@ -388,7 +388,7 @@ impl WasmHost {
     ) -> Self {
         let (clock, host) = Self::boot_with_fonts(family, faces);
         host.mount(name, props, render);
-        host.run_until_idle();
+        pump_host(&host, &clock, oppa_app::PUMP_INPUT_FRAMES);
         let images = host.images();
         Self::shell_with_fonts(host, clock, images, family, display_bytes)
     }
@@ -412,6 +412,24 @@ impl WasmHost {
         html
     }
 
+    /// Pumps the host with flowing mock time (decision 514): bare
+    /// `run_until_idle` spins forever under a frozen clock while any
+    /// transition lives (micro tweens fire on every press/hover now)
+    /// — real runners advance time between pumps (rAF `tick`), so
+    /// the harness steps 1/60s per demanded frame. Gesture pumps
+    /// drain full input cascades
+    /// ([`PUMP_INPUT_FRAMES`](oppa_app::PUMP_INPUT_FRAMES),
+    /// decision 515 — live loops simply continue instead of
+    /// freezing); idle trees pump zero frames with zero clock drift
+    /// (identical to `run_until_idle` when quiet).
+    pub(crate) fn pump(&mut self) {
+        pump_host(
+            self.session.host(),
+            &self.clock,
+            oppa_app::PUMP_INPUT_FRAMES,
+        );
+    }
+
     /// Syncs the DOM and returns the DOM patch JSON (`None` when
     /// untouched) -- the shared tail of the event bindings.
     pub(crate) fn sync_page(&mut self) -> Option<String> {
@@ -432,7 +450,7 @@ impl WasmHost {
         self.session
             .host()
             .inject_input(oppa::InputEvent::pointer_up(x, y));
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -443,7 +461,7 @@ impl WasmHost {
         self.session
             .host()
             .inject_input(oppa::InputEvent::pointer_move(x, y));
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -460,7 +478,7 @@ impl WasmHost {
             },
             repeat: false,
         });
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -474,7 +492,7 @@ impl WasmHost {
         self.session
             .host()
             .inject_input(oppa::InputEvent::text(target, value));
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -510,7 +528,7 @@ impl WasmHost {
         // Loading is synchronous (the native rule -- first paint
         // already shows it): settle before returning so the next
         // `html()` syncs it.
-        self.session.host().run_until_idle();
+        self.pump();
         gen
     }
 
@@ -538,7 +556,7 @@ impl WasmHost {
         {
             return None;
         }
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -591,14 +609,16 @@ impl WasmHost {
 
     /// rAF tick: advances TIME to `now_ms` and runs the frame.
     /// Returns the DOM patch JSON, or `None` when untouched
-    /// (transition tails settle through these calls).
+    /// (transition tails settle through these calls). Bounded
+    /// (decision 515 — the clock is already set, so frames sample
+    /// `now` without advancing; live loops continue next tick).
     pub fn tick(&mut self, now_ms: f64) -> Option<String> {
         self.clock.set(now_ms / 1000.0);
         // Round 21.1 (decision 328): due component timers fire on
         // the frame clock before the settle (callbacks schedule --
         // the settle below runs them -- then the sync renders).
         self.session.host().tick_timers(now_ms);
-        self.session.host().run_until_idle();
+        self.session.host().pump_frames(oppa_app::PUMP_TICK_FRAMES);
         self.sync_page()
     }
 
@@ -619,7 +639,7 @@ impl WasmHost {
             return None;
         }
         self.session.host().set_theme(mode);
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -678,13 +698,25 @@ impl WasmHost {
                 ..config
             });
         }
-        host.run_until_idle();
+        pump_host(host, &self.clock, oppa_app::PUMP_INPUT_FRAMES);
         let bg = host.theme_tokens().background;
         self.pres
             .refit(host, w as u32, h as u32, bg)
             .expect("dom presenter refit failed");
-        self.session.host().run_until_idle();
+        self.pump();
         Some(full_reload(&mut self.pres))
+    }
+}
+
+/// Static flowing pump for boot paths holding host + clock directly
+/// (same contract as [`WasmHost::pump`], with an explicit frame
+/// budget — decision 515).
+pub(crate) fn pump_host(host: &ComponentHost, clock: &MockClock, max_frames: usize) {
+    for _ in 0..max_frames {
+        if !host.run_once() {
+            return;
+        }
+        clock.advance(1.0 / 60.0);
     }
 }
 

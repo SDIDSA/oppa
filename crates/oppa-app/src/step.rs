@@ -43,7 +43,8 @@ impl DesktopLoop {
                 && !modifiers.meta
                 && self.step_session_nav(*code, modifiers.shift, modifiers.ctrl)?
             {
-                self.scene.host().run_until_idle();
+                // Decision 515: bounded (input-path cap).
+                self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
                 return self.repaint();
             }
             // Round 22.2 (decision 332): vertical keys drive the
@@ -55,12 +56,14 @@ impl DesktopLoop {
                 && !modifiers.ctrl
                 && self.step_session_vline(*code, modifiers.shift)?
             {
-                self.scene.host().run_until_idle();
+                // Decision 515: bounded (input-path cap).
+                self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
                 return self.repaint();
             }
         }
         self.scene.host().inject_input(ev);
-        self.scene.host().run_until_idle();
+        // Decision 515: bounded (input-path cap).
+        self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
         self.repaint()
     }
 
@@ -120,7 +123,8 @@ impl DesktopLoop {
         if !changed {
             return Ok(0);
         }
-        self.scene.host().run_until_idle();
+        // Decision 515: bounded (input-path cap).
+        self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
         self.repaint()
     }
 

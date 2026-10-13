@@ -287,8 +287,10 @@ impl WebApp {
             },
             web_scene,
         );
-        host.run_until_idle();
-        let shell = WasmHost::shell(host, clock, images);
+        let mut shell = WasmHost::shell(host, clock, images);
+        // Settle with flowing time (the harness rule — tweens may
+        // live from mount interactions below).
+        shell.pump();
         WebApp {
             shell,
             nav,
@@ -471,7 +473,7 @@ impl WebApp {
             stack
         });
         push_url(&url);
-        self.shell.host().run_until_idle();
+        self.shell.pump();
         self.shell.sync_page()
     }
 
@@ -486,7 +488,7 @@ impl WebApp {
             stack
         });
         replace_url(&url);
-        self.shell.host().run_until_idle();
+        self.shell.pump();
         self.shell.sync_page()
     }
 
@@ -511,7 +513,7 @@ impl WebApp {
             }
             stack
         });
-        self.shell.host().run_until_idle();
+        self.shell.pump();
         self.shell.sync_page()
     }
 

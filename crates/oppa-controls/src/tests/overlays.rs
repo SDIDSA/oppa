@@ -376,6 +376,12 @@ fn toast_auto_dismiss_fires_on_clock() {
         },
         toast_render,
     );
+    // Decision 514: the appear-flip arms beside the auto-dismiss
+    // timer — fire it first (due immediately), then settle with
+    // flowing time (the flip's entrance track retires as time
+    // passes — a frozen idle pump would spin on it), so the counts
+    // below read the dismiss timer alone.
+    assert_eq!(host.tick_timers(host.now_ms()), 1, "flip fires");
     settle_clocked(&host, &clock);
     assert_eq!(host.tick_timers(host.now_ms()), 0, "nothing due yet");
     assert!(open.get(), "still visible before the delay");
@@ -398,9 +404,17 @@ fn toast_sticky_never_arms_timer() {
         },
         toast_render,
     );
+    // Decision 514: sticky arms no auto-dismiss timer — only the
+    // appear-flip, which fires alone here (then settles with
+    // flowing time like above).
+    assert_eq!(host.tick_timers(host.now_ms()), 1, "flip fires");
     settle_clocked(&host, &clock);
     clock.advance(60.0);
-    assert_eq!(host.tick_timers(host.now_ms()), 0, "sticky arms nothing");
+    assert_eq!(
+        host.tick_timers(host.now_ms()),
+        0,
+        "sticky arms nothing more"
+    );
     host.run_until_idle();
     assert!(open.get(), "sticky toast stays until dismissed");
 }

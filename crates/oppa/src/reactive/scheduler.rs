@@ -69,6 +69,14 @@ impl Runtime {
                 keep.push(a);
             }
         }
+        // Re-entrant registrations during the tick survive (decision
+        // 512 finding: completion chains register their settle drain
+        // from inside a TIME callback — overwriting here dropped the
+        // new animation silently and stranded its tracks with no
+        // demand forever). Survivors keep their order; arrivals tick
+        // from the next frame.
+        let mut arrived = std::mem::take(&mut self.state.borrow_mut().animations);
+        keep.append(&mut arrived);
         self.state.borrow_mut().animations = keep;
     }
 

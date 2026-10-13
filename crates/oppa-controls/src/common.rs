@@ -44,12 +44,21 @@ pub fn deposit_svg_icon(
 pub fn field_press(host: &oppa::ComponentHost, session: &oppa::EditSession, style: TextClass) {
     host.ensure_session_shaper(session, style);
     let count = host.last_press_click_count();
-    let Some((px, _)) = host.last_press_position() else {
+    let Some(field) = host.focused_node() else {
         session.caret_to_end();
         dirty_focused_field(host);
         return;
     };
-    let Some(origin_x) = host.focused_node().and_then(|n| host.text_origin_under(n)) else {
+    let Some((px, py)) = host.last_press_position() else {
+        session.caret_to_end();
+        dirty_focused_field(host);
+        return;
+    };
+    // Decision 511: the tap point maps into the field's local space
+    // (hit follows the visual under ancestor transforms; identity for
+    // untransformed fields).
+    let (px, _) = host.local_point(field, px, py);
+    let Some(origin_x) = host.text_origin_under(field) else {
         session.caret_to_end();
         dirty_focused_field(host);
         return;
@@ -81,10 +90,15 @@ pub fn field_press(host: &oppa::ComponentHost, session: &oppa::EditSession, styl
 /// holds stay quiet (the platform owns the field mid-composition).
 pub fn field_long_press(host: &oppa::ComponentHost, session: &oppa::EditSession, style: TextClass) {
     host.ensure_session_shaper(session, style);
-    let Some((px, _)) = host.last_press_position() else {
+    let Some(field) = host.focused_node() else {
         return;
     };
-    let Some(origin_x) = host.focused_node().and_then(|n| host.text_origin_under(n)) else {
+    let Some((px, py)) = host.last_press_position() else {
+        return;
+    };
+    // Decision 511: the hold point maps into the field's local space.
+    let (px, _) = host.local_point(field, px, py);
+    let Some(origin_x) = host.text_origin_under(field) else {
         return;
     };
     session.dbl_click_x(px - origin_x);
@@ -119,11 +133,17 @@ pub fn field_drag(host: &oppa::ComponentHost, session: &oppa::EditSession, style
         return;
     }
     host.ensure_session_shaper(session, style);
-    let (Some((ox, _)), Some((cx, _))) = (host.lowest_press_origin(), host.capture_position())
+    let Some(field) = host.focused_node() else {
+        return;
+    };
+    let (Some((ox, oy)), Some((cx, cy))) = (host.lowest_press_origin(), host.capture_position())
     else {
         return;
     };
-    let Some(origin_x) = host.focused_node().and_then(|n| host.text_origin_under(n)) else {
+    // Decision 511: the drag stream maps into the field's local space.
+    let (ox, _) = host.local_point(field, ox, oy);
+    let (cx, _) = host.local_point(field, cx, cy);
+    let Some(origin_x) = host.text_origin_under(field) else {
         return;
     };
     session.drag_x(ox - origin_x, cx - origin_x);
@@ -143,10 +163,15 @@ pub fn field_handle_drag(
     edge: oppa::HandleEdge,
 ) {
     host.ensure_session_shaper(session, style);
-    let Some((cx, _)) = host.capture_position() else {
+    let Some(field) = host.focused_node() else {
         return;
     };
-    let Some(origin_x) = host.focused_node().and_then(|n| host.text_origin_under(n)) else {
+    let Some((cx, cy)) = host.capture_position() else {
+        return;
+    };
+    // Decision 511: the capture point maps into the field's local space.
+    let (cx, _) = host.local_point(field, cx, cy);
+    let Some(origin_x) = host.text_origin_under(field) else {
         return;
     };
     let Some(byte) = session.byte_at_x(cx - origin_x) else {

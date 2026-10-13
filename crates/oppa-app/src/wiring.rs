@@ -29,7 +29,8 @@ impl DesktopLoop {
         render: fn(&Ctx, &P) -> VNode,
     ) -> MountHandle<P> {
         let handle = self.scene.host().mount(name, props, render);
-        self.scene.host().run_until_idle();
+        // Decision 515: bounded (mounts jump — quiesces immediately).
+        self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
         handle
     }
 
@@ -176,7 +177,9 @@ impl DesktopLoop {
             return Ok(false);
         }
         self.scene.host().set_theme(mode);
-        self.scene.host().run_until_idle();
+        // Decision 515: bounded (theme re-renders the world — a live
+        // loop must not freeze it).
+        self.scene.host().pump_frames(crate::PUMP_TICK_FRAMES);
         self.repaint()?;
         Ok(true)
     }

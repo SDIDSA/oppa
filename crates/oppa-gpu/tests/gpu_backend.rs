@@ -527,3 +527,80 @@ fn msaa_caps_agrees_with_probed_count() {
         "caps honesty: MSAA iff multisampling"
     );
 }
+
+/// Decision 511: CPU-vs-GPU in-flight agreement for baked
+/// transforms — the shared builder folds the same affine into both
+/// backends' plan, so the oracle compares one translated + one
+/// scaled rect (sharp interiors must match exactly; fringes stay in
+/// the tol-16 < 5% band). Skips loudly without hardware.
+#[test]
+fn test_oracle_transform_agreement() {
+    use oppa::{ComponentHost, Div, Style, Transform};
+    use oppa_cpu::FramePlanBuilder;
+    #[derive(Clone)]
+    struct XfProps;
+    impl oppa::Props for XfProps {}
+    fn scene(_ctx: &oppa::Ctx, _: &XfProps) -> oppa::VNode {
+        Div("stage").style(Style::new().size(120, 80)).children([
+            Div("moved")
+                .style(
+                    Style::new()
+                        .size(30, 20)
+                        .bg(Color(0xCC_33_33))
+                        .transform(Transform::translate(50, 20)),
+                )
+                .build(),
+            Div("grown")
+                .style(
+                    Style::new()
+                        .size(20, 10)
+                        .bg(Color(0x33_33_CC))
+                        .transform(Transform::scale(2, 2)),
+                )
+                .build(),
+        ])
+    }
+    let host = ComponentHost::new();
+    host.set_viewport(120.0, 80.0);
+    host.mount("xf", XfProps, scene);
+    host.run_until_idle();
+    let builder = FramePlanBuilder::new(1.0);
+    let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+
+    let mut cpu = CpuBackend::new();
+    let mut gpu = GpuBackend::new();
+    let desc = SurfaceDesc {
+        width_px: 120,
+        height_px: 80,
+        background: Color(0xFF_FF_FF),
+    };
+    let s_cpu = cpu.create_surface(desc).unwrap();
+    let s_gpu = gpu.create_surface(desc).unwrap();
+    cpu.paint(s_cpu, &plan).unwrap();
+    gpu.paint(s_gpu, &plan).unwrap();
+
+    let cpu_pixmap = cpu.pixmap(s_cpu).unwrap();
+    let cpu_img = RgbaImage::from_cpu_pixmap(cpu_pixmap).unwrap();
+    match gpu.render_pixels(s_gpu) {
+        Ok(gpu_img) => {
+            // Translated chip interior (50..80 × 20..40): exact match.
+            let (r_cpu, g_cpu, b_cpu, a_cpu) = cpu_img.pixel(65, 30).unwrap();
+            let (r_gpu, g_gpu, b_gpu, a_gpu) = gpu_img.pixel(65, 30).unwrap();
+            assert_eq!(
+                (r_cpu, g_cpu, b_cpu, a_cpu),
+                (r_gpu, g_gpu, b_gpu, a_gpu),
+                "translated interior agrees exactly"
+            );
+            let total = (desc.width_px * desc.height_px) as usize;
+            let diff = diff_count_tol(&cpu_img, &gpu_img, 15);
+            let ratio = diff as f64 / total as f64;
+            assert!(
+                ratio < 0.05,
+                "transformed scene within tol-16 < 5%: {diff}/{total}"
+            );
+        }
+        Err(e) => {
+            eprintln!("SKIP test_oracle_transform_agreement: {e}");
+        }
+    }
+}

@@ -655,6 +655,7 @@ pub fn KitchenSinkApp(ctx: &Ctx, props: &KitchenSinkProps) -> VNode {
                                     KeyframeStop::new(250, Ease::InOut).bg(t.disabled),
                                 ],
                                 mode: KeyframeMode::Once,
+                                delay_ms: 0,
                             }),
                     )
                     .child(VNode::from(Text {

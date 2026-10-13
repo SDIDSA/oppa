@@ -135,10 +135,79 @@ fn escape_exits_only_at_root() {
     );
 }
 
-/// Decision 482: `WindowOptions` defaults to the decorated OS window
-/// and each builder selects its style (launch-only chrome — the
-/// runners map it into shell creation flags before the window
-/// exists).
+/// Decision 515: input steps return with loops live (the Play-loops
+/// desktop freeze — bare `run_until_idle` in the step path spun
+/// forever on never-retiring loop tracks, hanging the UI thread;
+/// bounded pumps keep the pump responsive). Would hang pre-fix.
+#[test]
+fn step_input_returns_while_loops_run() {
+    use oppa::{Ease, KeyframeStop, Keyframes, Transition};
+    #[derive(Clone)]
+    struct LoopProbe {
+        on: oppa::Signal<bool>,
+        hit: oppa::Signal<bool>,
+    }
+    impl Props for LoopProbe {}
+    fn loop_probe(_ctx: &Ctx, p: &LoopProbe) -> VNode {
+        let mut style = Style::new().size(60, 40).bg(Color(0x22_66_CC));
+        if p.on.get() {
+            style = style
+                .opacity(Some(0.4))
+                .transition(Transition::new(200, Ease::Linear))
+                .keyframes(Keyframes::new(vec![
+                    KeyframeStop::new(200, Ease::Linear).opacity(Some(0.2)),
+                    KeyframeStop::new(200, Ease::Linear).opacity(Some(1.0)),
+                ]));
+        }
+        let hit = p.hit.clone();
+        Div("loop-probe")
+            .style(Style::new().size(200, 150))
+            .children([
+                Div("loop-leaf").style(style).build(),
+                Div("tbtn")
+                    .style(Style::new().size(96, 32))
+                    .on_press(move || hit.set(true))
+                    .build(),
+            ])
+    }
+    let mut loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    let rt = loop_.host().runtime();
+    let (on, hit) = (rt.signal(false), rt.signal(false));
+    loop_.mount(
+        "Probe",
+        LoopProbe {
+            on: on.clone(),
+            hit: hit.clone(),
+        },
+        loop_probe,
+    );
+    loop_.repaint().expect("mount paints");
+    // Start the loop (delta + keyframes arm).
+    on.set(true);
+    loop_.host().pump_frames(4);
+    loop_.host().with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "loop track live");
+    });
+    // Pointer steps dispatch through live loops instead of hanging.
+    let id = oppa::find_retained_by_debug(loop_.host(), "tbtn")
+        .into_iter()
+        .next()
+        .expect("button node");
+    let b = loop_.host().committed_box(id).expect("hit box");
+    let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+    loop_
+        .step(InputEvent::pointer_down(cx, cy))
+        .expect("down steps under loops");
+    loop_
+        .step(InputEvent::pointer_up(cx, cy))
+        .expect("up steps under loops");
+    assert!(hit.get(), "press dispatched while looping");
+    loop_.host().with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "loop still live after input");
+    });
+    assert!(loop_.host().has_demand(), "demand flows on");
+}
 #[test]
 fn window_options_default_decorated_with_style_builders() {
     use oppa::WindowStyle;

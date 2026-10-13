@@ -14,7 +14,7 @@ use oppa::{
     compute_semantics_diff, BackendError, Caps, Color, Column, ComponentHost, Ctx, Div, DrawOp,
     FontId, FontMetrics, FramePlan, NodeId, Portal, PresenterKind, Props, RendererBackend, Row,
     Semantics, SemanticsSnapshot, ShapedGlyph, ShapedRun, Style, Text, TextError, TextRun,
-    TextService, ThemeMode, ThemeTokens, VNode, INK,
+    TextService, ThemeMode, ThemeTokens, Transform, VNode, INK,
 };
 use oppa_cpu::{CpuBackend, FramePlanBuilder, OracleSession};
 
@@ -223,3 +223,5 @@ mod semantics;
 mod static_scene;
 #[path = "m4_cpu/theme.rs"]
 mod theme;
+#[path = "m4_cpu/transform.rs"]
+mod transform;

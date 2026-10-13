@@ -196,7 +196,10 @@ impl Harness {
     }
 
     /// Advances mock time, then pumps (deterministic holds and
-    /// transitions — no sleeps). Loud without
+    /// transitions — no sleeps). Settled trees only: a live track
+    /// keeps frame demand flowing under a frozen clock, so
+    /// `run_until_idle` spins forever — stepping tests use
+    /// [`Harness::advance_frames`]. Loud without
     /// [`Harness::with_clock`].
     pub fn advance(&self, secs: f64) {
         let Some(clock) = &self.clock else {
@@ -204,6 +207,23 @@ impl Harness {
         };
         clock.set(clock.get() + secs);
         self.host.run_until_idle();
+    }
+
+    /// Advances mock time vsync-by-vsync, pumping one bounded frame
+    /// per step (the M8 pattern — the controls `settle_clocked`
+    /// rule): live tracks retire exactly when time carries them past
+    /// their duration instead of hanging the pump. `secs` steps at
+    /// 60 Hz (at least one frame). Loud without
+    /// [`Harness::with_clock`].
+    pub fn advance_frames(&self, secs: f64) {
+        let Some(clock) = &self.clock else {
+            panic!("testkit: advance_frames needs with_clock (system time cannot jump)");
+        };
+        let steps = (secs * 60.0).ceil().max(1.0) as usize;
+        for _ in 0..steps {
+            clock.advance(1.0 / 60.0);
+            self.host.run_once();
+        }
     }
 
     /// The full host (exotic events, router reads, reloads).
@@ -753,14 +773,30 @@ mod tests {
             Some(PRESSED),
             "held fill deepens"
         );
-        // Release on the button: activates and restores Primary.
+        // Release on the button: activates; the pointer still
+        // hovers, so the decision-514 wash persists (not Primary).
         let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
         app.host()
             .inject_input(oppa::InputEvent::pointer_up(cx, cy));
         app.run_idle();
         assert!(fired.get(), "release activates");
         paint_now(&app, &mut cpu, surf, &mut cursor);
-        assert_eq!(fill_at(&cpu, 80.0, 16.0), Some(PRIMARY), "released");
+        assert_eq!(
+            fill_at(&cpu, 80.0, 16.0),
+            Some((0x3D, 0x78, 0xD2, 255)),
+            "released-while-hovered shows the wash"
+        );
+        // Hover away: the wash clears back to Primary.
+        app.host().inject_input(oppa::InputEvent::Pointer {
+            id: Some(0),
+            action: oppa::PointerAction::Move,
+            x: 790.0,
+            y: 590.0,
+            modifiers: oppa::Modifiers::NONE,
+        });
+        app.run_idle();
+        paint_now(&app, &mut cpu, surf, &mut cursor);
+        assert_eq!(fill_at(&cpu, 80.0, 16.0), Some(PRIMARY), "unhovered");
     }
 
     /// Decision 291: the vector check paints where the geometry says —

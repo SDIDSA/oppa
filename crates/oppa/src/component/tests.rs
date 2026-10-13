@@ -1247,3 +1247,200 @@ fn overlay_badge_refresh_reruns_root_throttled() {
         "presenter rides the refresh, got {badge:?}"
     );
 }
+
+// -- Decision 512: transition-completion observers ---------------
+
+use crate::style::{Ease, Keyframes, Transform, Transition};
+
+#[derive(Clone)]
+struct SettleProps {
+    dx: crate::reactive::Signal<f32>,
+}
+impl Props for SettleProps {}
+
+fn settle_comp(_ctx: &Ctx, props: &SettleProps) -> VNode {
+    let dx = props.dx.get();
+    crate::vnode::Div("box")
+        .style(
+            Style::new()
+                .size(100, 40)
+                .transform(Transform::translate(dx, 0))
+                .transition(Transition::new(120, Ease::Linear)),
+        )
+        .build()
+}
+
+fn settle_host() -> (ComponentHost, Rc<MockClock>, crate::reactive::Signal<f32>) {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let dx = host.runtime().signal(0.0f32);
+    host.mount("Settle", SettleProps { dx: dx.clone() }, settle_comp);
+    host.run_until_idle();
+    (host, clock, dx)
+}
+
+fn box_id(host: &ComponentHost) -> crate::arena::NodeId {
+    crate::find_retained_by_debug(host, "box")
+        .into_iter()
+        .next()
+        .expect("box node retained")
+}
+
+/// Decision 512: observing a live Once track fires exactly once —
+/// after the settle instant, never before, never twice.
+#[test]
+fn observe_settled_fires_once_after_settle() {
+    let (host, clock, dx) = settle_host();
+    let id = box_id(&host);
+    dx.set(100.0);
+    clock.advance(1.0 / 60.0);
+    host.run_once();
+    let fired = Rc::new(Cell::new(0));
+    let f = fired.clone();
+    host.observe_settled(id, move || f.set(f.get() + 1));
+    // Mid-flight ticks never fire early.
+    for _ in 0..5 {
+        clock.advance(1.0 / 60.0);
+        host.run_once();
+    }
+    assert_eq!(fired.get(), 0, "never fires mid-flight");
+    // Past 120ms the settle tick fires exactly once.
+    for _ in 0..10 {
+        clock.advance(1.0 / 60.0);
+        host.run_once();
+    }
+    assert_eq!(fired.get(), 1, "fires once after settle");
+    for _ in 0..10 {
+        clock.advance(1.0 / 60.0);
+        host.run_once();
+    }
+    assert_eq!(fired.get(), 1, "one-shot never refires");
+}
+
+/// Decision 512: observing an already-settled node fires on the
+/// next pump (uniform async contract — never synchronous).
+#[test]
+fn observe_settled_on_quiet_node_fires_next_pump() {
+    let (host, clock, _dx) = settle_host();
+    let id = box_id(&host);
+    let fired = Rc::new(Cell::new(0));
+    let f = fired.clone();
+    host.observe_settled(id, move || f.set(f.get() + 1));
+    assert_eq!(fired.get(), 0, "never synchronous");
+    clock.advance(1.0 / 60.0);
+    host.run_once();
+    assert_eq!(fired.get(), 1, "fires on the next pump");
+}
+
+/// Decision 512: chains compose — a completion callback that starts
+/// the next track (signal write in TIME context) drives a sequence.
+#[test]
+fn observe_settled_chains_drive_sequences() {
+    let (host, clock, dx) = settle_host();
+    let id = box_id(&host);
+    let steps = Rc::new(Cell::new(0));
+    dx.set(100.0);
+    clock.advance(1.0 / 60.0);
+    host.run_once();
+    let (host2, s2) = (host.clone(), steps.clone());
+    let dx2 = dx.clone();
+    host.observe_settled(id, move || {
+        s2.set(s2.get() + 1);
+        // Chain link two starts from inside the completion (the
+        // sequence pattern — TIME-context signal writes pump).
+        host2.observe_settled(id, move || {});
+        dx2.set(200.0);
+    });
+    // Settle link one (120ms), then link two starts and settles.
+    for _ in 0..10 {
+        clock.advance(1.0 / 60.0);
+        host.run_once();
+    }
+    assert_eq!(steps.get(), 1, "link one completed");
+    assert_eq!(dx.get(), 200.0, "link two started from the completion");
+    for _ in 0..20 {
+        clock.advance(1.0 / 60.0);
+        host.run_once();
+    }
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "chain settles to zero work");
+    });
+    assert!(!host.has_demand(), "quiescent after the chain");
+}
+
+// -- Decision 515: bounded runner pumps --------------------------
+
+/// Decision 515: `pump_frames` caps under a live loop (returns the
+/// cap — never a spin) and costs zero clock drift on idle trees.
+#[test]
+fn pump_frames_caps_under_live_loops_and_drifts_nothing_idle() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    // Idle tree: zero frames, zero drift (identical to idle).
+    assert_eq!(host.pump_frames(64), 0, "idle pumps nothing");
+    assert_eq!(clock.get(), 0.0, "no drift without demand");
+    // Live loop: exactly the cap, then stop (the loop continues —
+    // the pump returns instead of freezing). Mounts jump, so the
+    // loop starts from a signal flip (the ambient-orb shape).
+    #[derive(Clone)]
+    struct LoopProps {
+        on: crate::reactive::Signal<bool>,
+    }
+    impl Props for LoopProps {}
+    fn loop_comp(_ctx: &Ctx, p: &LoopProps) -> VNode {
+        let on = p.on.get();
+        // The ambient-orb shape: a base delta plus the keyframes arm
+        // (keyframes alone start no track — the delta kicks it off).
+        let mut style = Style::new()
+            .size(40, 40)
+            .opacity(Some(if on { 1.0 } else { 0.35 }))
+            .transition(Transition::new(400, Ease::InOut));
+        if on {
+            style = style.keyframes(Keyframes::new(vec![
+                crate::style::KeyframeStop::new(200, Ease::Linear).opacity(Some(0.2)),
+                crate::style::KeyframeStop::new(200, Ease::Linear).opacity(Some(1.0)),
+            ]));
+        }
+        crate::vnode::Div("loop-box").style(style).build()
+    }
+    let on = host.runtime().signal(false);
+    host.mount("Loop", LoopProps { on: on.clone() }, loop_comp);
+    host.run_until_idle();
+    on.set(true);
+    clock.advance(1.0 / 60.0);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "loop track live");
+    });
+    assert_eq!(host.pump_frames(10), 10, "capped, loop still live");
+    host.with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "loop survives the cap");
+    });
+    assert!(host.has_demand(), "demand flows on");
+}
+
+/// Decision 515: `pump_frames` drains Once-only worlds early once
+/// time flows past the track (fewer frames than the cap — the
+/// run_until_idle shape, bounded).
+#[test]
+fn pump_frames_drains_once_worlds_early() {
+    let (host, clock, dx) = settle_host();
+    dx.set(100.0);
+    // Frozen clock, live Once track: the cap bounds it (time never
+    // flows here — retirement needs advancing clocks, which the
+    // M8 stepping pattern owns, not the pump).
+    assert_eq!(host.pump_frames(64), 64, "capped while live");
+    host.with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "track still live");
+    });
+    // Past the 120ms tween the next pump retires and goes quiet
+    // early (one retiring frame, then idle).
+    clock.advance(1.0);
+    let n = host.pump_frames(64);
+    assert!(n < 64, "drains early once retired, ran {n}");
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "track retired");
+    });
+}

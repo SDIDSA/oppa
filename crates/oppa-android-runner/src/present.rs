@@ -465,7 +465,9 @@ fn apply_input_batch(
     if !work {
         return Ok(false);
     }
-    scene.host().run_until_idle();
+    // Decision 515: bounded (input-path cap — a live loop must
+    // never freeze the input pump).
+    scene.host().pump_frames(oppa_app::PUMP_INPUT_FRAMES);
     Ok(true)
 }
 
@@ -988,7 +990,8 @@ pub fn drive_interactive(
                         continue;
                     };
                     if android_input.apply_menu_action(&session, *action, clipboard, pin.clone()) {
-                        scene.host().run_until_idle();
+                        // Decision 515: bounded (input-path cap).
+                        scene.host().pump_frames(oppa_app::PUMP_INPUT_FRAMES);
                         changed = true;
                         if profile {
                             why.push_str("menu ");
@@ -1012,7 +1015,8 @@ pub fn drive_interactive(
                     continue;
                 };
                 if android_input.apply_toolbar_action(&session, action, clipboard) {
-                    scene.host().run_until_idle();
+                    // Decision 515: bounded (input-path cap).
+                    scene.host().pump_frames(oppa_app::PUMP_INPUT_FRAMES);
                     changed = true;
                     if profile {
                         why.push_str("toolbar ");
@@ -1108,8 +1112,9 @@ pub fn drive_interactive(
             // row) and again at the outer repaint below (~260 ms).
             // Settle + read the flip here; the outer `if changed`
             // owns the single raster (a quiet poll still schedules
-            // nothing — never a spin).
-            scene.host().run_until_idle();
+            // nothing — never a spin). Bounded (decision 515 — the
+            // blink tick must return even with loops live).
+            scene.host().pump_frames(oppa_app::PUMP_TICK_FRAMES);
             let blinked = scene.caret_overlay_dirty();
             if blinked {
                 changed = true;

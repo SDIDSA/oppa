@@ -791,7 +791,9 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                     return;
                 }
                 if changed {
-                    self.loop_.host().run_until_idle();
+                    // Decision 515: bounded (input-path cap — a live
+                    // loop must never freeze the event handler).
+                    self.loop_.host().pump_frames(crate::PUMP_INPUT_FRAMES);
                     if self.loop_.repaint().is_err() {
                         // `repaint` already formats the reason; a dead
                         // paint loop must not spin silently.

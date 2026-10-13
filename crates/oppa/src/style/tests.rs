@@ -231,3 +231,78 @@ fn shorthand_builders_equal_longhand_chains() {
     assert_eq!(refined.pad_left, Some(Px::of(8.0)));
     assert_eq!(refined.pad_x, Some(Px::of(25.0)));
 }
+
+/// Decision 511: `Transform` is paint-only data — identity by
+/// default, structural when set, with loud application gates.
+#[test]
+fn transform_identity_default_and_structural() {
+    assert!(Transform::identity().is_identity());
+    let plain: Style = Style::new().size(10, 10).build();
+    assert_eq!(plain.transform, None, "unset stays unset");
+    assert!(plain
+        .transform
+        .unwrap_or(Transform::identity())
+        .is_identity());
+    let moved: Style = Style::new()
+        .size(10, 10)
+        .transform(Transform::translate(8, -4))
+        .build();
+    assert_ne!(moved, plain, "transform participates in identity");
+    assert_eq!(moved.transform.unwrap().dx.get(), 8.0);
+    let scaled: Style = Style::new()
+        .size(10, 10)
+        .transform(Transform::scale(1.5, 2.0))
+        .build();
+    assert_eq!(scaled.transform.unwrap().sy.get(), 2.0);
+    let stop = KeyframeStop::new(120, Ease::Out).transform(Transform::translate(4, 0));
+    assert_eq!(stop.transform.unwrap().dx.get(), 4.0);
+}
+
+/// Decision 511: supported today = finite translate + positive
+/// finite scale with zero rotate; everything else refuses loudly.
+#[test]
+fn transform_supported_gate_accepts_translate_scale() {
+    Transform::translate(10, -3).require_supported();
+    Transform::scale(0.5, 2.0).require_supported();
+    Transform::identity().require_supported();
+}
+
+#[test]
+#[should_panic(expected = "rotate")]
+fn transform_rotate_refuses_loudly_until_t1b() {
+    Transform::rotate(45).require_supported();
+}
+
+#[test]
+#[should_panic(expected = "scale must be positive")]
+fn transform_zero_scale_refuses_loudly() {
+    Transform::scale(0, 1).require_supported();
+}
+
+#[test]
+#[should_panic(expected = "scale must be positive")]
+fn transform_negative_scale_refuses_loudly() {
+    Transform::scale(-1, 1).require_supported();
+}
+
+#[test]
+#[should_panic(expected = "non-finite translate")]
+fn transform_nan_translate_refuses_loudly() {
+    Transform::translate(f32::NAN, 0).require_supported();
+}
+
+/// Decision 514: the shared tween constructors (micro 120ms Out,
+/// enter 180ms Out — one feel, no app code).
+#[test]
+fn shared_tween_constructors_carry_the_policy() {
+    let micro = Transition::micro();
+    assert_eq!(
+        (micro.dur_ms, micro.ease, micro.delay_ms),
+        (120, Ease::Out, 0)
+    );
+    let enter = Transition::enter();
+    assert_eq!(
+        (enter.dur_ms, enter.ease, enter.delay_ms),
+        (180, Ease::Out, 0)
+    );
+}

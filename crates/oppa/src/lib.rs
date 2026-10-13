@@ -106,9 +106,9 @@ pub use store::{
     RowSort, StoreError,
 };
 pub use style::{
-    AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack, IntoPx,
-    JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, Px,
-    RadialGradient, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens, Transition,
+    AffineST, AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack,
+    IntoPx, JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, Px,
+    RadialGradient, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens, Transform, Transition,
 };
 pub use system_theme::{ScriptedThemeSource, SystemThemeSource};
 pub use text::{

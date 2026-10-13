@@ -90,7 +90,11 @@ impl Color {
 }
 
 /// Easing subset, CSS-expressible by lock (§9.1: v1 animatables are the
-/// CSS-expressible ones so the DOM mapping holds).
+/// CSS-expressible ones so the DOM mapping holds) — plus one spring
+/// (decision 513): underdamped by design (never monotonic), stepped
+/// inline on DOM like keyframes (no CSS spelling exists — a spring
+/// `transition` declares no CSS `transition:`, the stepped values
+/// own the motion).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Ease {
     #[default]
@@ -98,6 +102,7 @@ pub enum Ease {
     In,
     InOut,
     Linear,
+    Spring,
 }
 
 /// Box shadow, data only (Round 1.3, decision 254: `blur` is a
@@ -199,18 +204,239 @@ pub enum GridTrack {
     Auto,
 }
 
+/// Paint-only node transform (decision 511 — the first extension of
+/// the decision-120 CSS-expressible lock beyond `bg`+`opacity`): visual
+/// placement that never touches layout. `dx`/`dy` translate in px,
+/// `sx`/`sy` scale about the committed-box center (`1` = identity),
+/// `rotate_deg` rotates about the center (degrees, raw-lerped).
+/// Canonical evaluation order (shared by every backend, incl. the DOM
+/// `translate() rotate() scale()` spelling with the default center
+/// origin): scale about the center, then rotate about the center,
+/// then translate — `p' = c + R·S·(p − c) + t`.
+/// Bit-exact [`Px`] payloads so styles stay `Eq + Hash` (the opacity
+/// precedent). T1a applies translate + scale; `rotate_deg ≠ 0`
+/// refuses loudly at every application point through
+/// [`Transform::require_supported`] (the T1b rotate round owns
+/// shaders + raster plumbing — stated, never a silent snap).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Transform {
+    pub dx: Px,
+    pub dy: Px,
+    pub sx: Px,
+    pub sy: Px,
+    pub rotate_deg: Px,
+}
+
+impl Transform {
+    /// Identity (paints exactly the untransformed plan — the
+    /// byte-identical default).
+    pub fn identity() -> Self {
+        Self {
+            dx: Px::of(0.0),
+            dy: Px::of(0.0),
+            sx: Px::of(1.0),
+            sy: Px::of(1.0),
+            rotate_deg: Px::of(0.0),
+        }
+    }
+
+    /// Pure translation.
+    pub fn translate(dx: impl IntoPx, dy: impl IntoPx) -> Self {
+        Self {
+            dx: dx.into_px(),
+            dy: dy.into_px(),
+            ..Self::identity()
+        }
+    }
+
+    /// Pure scale about the box center.
+    pub fn scale(sx: impl IntoPx, sy: impl IntoPx) -> Self {
+        Self {
+            sx: sx.into_px(),
+            sy: sy.into_px(),
+            ..Self::identity()
+        }
+    }
+
+    /// Pure rotation about the box center (T1b-authorable: values
+    /// store fine, every application point refuses loudly until T1b
+    /// lands — never a silent snap).
+    pub fn rotate(deg: impl IntoPx) -> Self {
+        Self {
+            rotate_deg: deg.into_px(),
+            ..Self::identity()
+        }
+    }
+
+    /// True for the exact identity (the builder's byte-identical fast
+    /// path — identity touches no op numbers, so float noise can never
+    /// drift an untransformed plan).
+    pub fn is_identity(self) -> bool {
+        self.dx.get() == 0.0
+            && self.dy.get() == 0.0
+            && self.sx.get() == 1.0
+            && self.sy.get() == 1.0
+            && self.rotate_deg.get() == 0.0
+    }
+
+    /// Loud gate for every application point (builder bake, DOM CSS,
+    /// hit-test resolver — one helper, one message): finite
+    /// translate, positive finite scale, and the T1b rotate rule.
+    /// Non-positive scale (mirror/degenerate paint) and non-finite
+    /// components are authoring bugs, never silent clamps.
+    pub fn require_supported(self) {
+        let (dx, dy, sx, sy, r) = (
+            self.dx.get(),
+            self.dy.get(),
+            self.sx.get(),
+            self.sy.get(),
+            self.rotate_deg.get(),
+        );
+        if !dx.is_finite() || !dy.is_finite() {
+            panic!(
+                "transform: non-finite translate ({dx}, {dy}) — finite offsets only, never silent NaN paint"
+            );
+        }
+        if !sx.is_finite() || !sy.is_finite() || sx <= 0.0 || sy <= 0.0 {
+            panic!(
+                "transform: scale must be positive and finite, got ({sx}, {sy}) — mirrors and degenerate flats never paint silently"
+            );
+        }
+        if !r.is_finite() {
+            panic!(
+                "transform: non-finite rotate ({r}) — finite degrees only, never silent NaN paint"
+            );
+        }
+        if r != 0.0 {
+            panic!(
+                "transform: rotate ({r}°) is T1b scope — translate/scale paint today, rotation refuses loudly until the rotate round lands"
+            );
+        }
+    }
+
+    /// This transform as a device-space affine about `(cx, cy)` (the
+    /// committed-box center): `p' = S·p + (c − S·c + t)`. Callers
+    /// compose these with [`AffineST::compose`]; application points
+    /// call [`Transform::require_supported`] first.
+    pub fn to_local_affine(self, cx: f32, cy: f32) -> AffineST {
+        let (dx, dy, sx, sy) = (self.dx.get(), self.dy.get(), self.sx.get(), self.sy.get());
+        AffineST {
+            sx,
+            sy,
+            tx: cx * (1.0 - sx) + dx,
+            ty: cy * (1.0 - sy) + dy,
+        }
+    }
+}
+
+/// Accumulated scale+translate affine in device px (decision 511):
+/// `x' = sx·x + tx` (same on y). The T1a transform closure — every
+/// node-local affine folds into this form, so ancestor accumulation,
+/// point mapping, and op baking share one exact math. Closed under
+/// compose (rotation would break the closure — hence T1b).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct AffineST {
+    pub sx: f32,
+    pub sy: f32,
+    pub tx: f32,
+    pub ty: f32,
+}
+
+impl AffineST {
+    /// Identity (the byte-identical fast path — identity application
+    /// touches no numbers anywhere).
+    pub fn identity() -> Self {
+        Self {
+            sx: 1.0,
+            sy: 1.0,
+            tx: 0.0,
+            ty: 0.0,
+        }
+    }
+
+    pub fn is_identity(self) -> bool {
+        self.sx == 1.0 && self.sy == 1.0 && self.tx == 0.0 && self.ty == 0.0
+    }
+
+    /// `outer ∘ inner` (apply `inner` first — child inside parent).
+    pub fn compose(outer: AffineST, inner: AffineST) -> AffineST {
+        AffineST {
+            sx: outer.sx * inner.sx,
+            sy: outer.sy * inner.sy,
+            tx: outer.sx * inner.tx + outer.tx,
+            ty: outer.sy * inner.ty + outer.ty,
+        }
+    }
+
+    /// Map a point (paint direction: layout → visual).
+    pub fn map_point(self, x: f32, y: f32) -> (f32, f32) {
+        (self.sx * x + self.tx, self.sy * y + self.ty)
+    }
+
+    /// Map a point backwards (hit direction: visual → layout).
+    /// Scale stays positive by the [`Transform::require_supported`]
+    /// gate, so the division is exact and safe.
+    pub fn unmap_point(self, x: f32, y: f32) -> (f32, f32) {
+        ((x - self.tx) / self.sx, (y - self.ty) / self.sy)
+    }
+
+    /// Map an axis-aligned box to its AABB (exact for scale+translate
+    /// — no rotation to bloat it).
+    pub fn map_rect(self, x: f32, y: f32, w: f32, h: f32) -> (f32, f32, f32, f32) {
+        let (x0, y0) = self.map_point(x, y);
+        (x0, y0, self.sx * w, self.sy * h)
+    }
+}
+
 /// Declarative transition: "interpolate style delta A→B over this duration"
 /// (§9.4). Data only in M2; honored by the M8 evaluator, suppressed for one
-/// commit by the binding-edge stamp.
+/// commit by the binding-edge stamp. Decision 512 adds a start delay
+/// (`delay_ms`, default 0 — entrance stagger): during the delay the
+/// node paints the entry value, then the tween runs its full
+/// duration (total `delay + dur`); stamps during the delay cancel
+/// like any live track.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Transition {
     pub dur_ms: u32,
     pub ease: Ease,
+    pub delay_ms: u32,
 }
 
 impl Transition {
     pub fn new(dur_ms: u32, ease: Ease) -> Self {
-        Self { dur_ms, ease }
+        Self {
+            dur_ms,
+            ease,
+            delay_ms: 0,
+        }
+    }
+
+    /// Start-delayed tween (decision 512 — staggered entrances).
+    pub fn delayed(mut self, delay_ms: u32) -> Self {
+        self.delay_ms = delay_ms;
+        self
+    }
+
+    /// Standard micro-tween (decision 514): 120ms Out — press/hover
+    /// swaps, check flips, tooltip fades. Every micro-interaction in
+    /// every control rides this (one feel, no app code).
+    pub fn micro() -> Self {
+        Self {
+            dur_ms: 120,
+            ease: Ease::Out,
+            delay_ms: 0,
+        }
+    }
+
+    /// Standard entrance (decision 514): 180ms Out — overlay cards
+    /// fade + rise through it (rise distance rides the controls
+    /// `motion` module so all apps inherit the same entrance).
+    pub fn enter() -> Self {
+        Self {
+            dur_ms: 180,
+            ease: Ease::Out,
+            delay_ms: 0,
+        }
     }
 }
 
@@ -227,6 +453,9 @@ impl Transition {
 pub struct KeyframeStop {
     pub bg: Option<Color>,
     pub opacity: Option<Px>,
+    /// Absolute `transform` value (decision 511 — each `None`
+    /// carries the leg's entry value forward, the `bg` rule).
+    pub transform: Option<Transform>,
     pub dur_ms: u32,
     pub ease: Ease,
 }
@@ -236,6 +465,7 @@ impl KeyframeStop {
         Self {
             bg: None,
             opacity: None,
+            transform: None,
             dur_ms,
             ease,
         }
@@ -248,6 +478,13 @@ impl KeyframeStop {
 
     pub fn opacity(mut self, o: Option<f32>) -> Self {
         self.opacity = o.map(Px::of);
+        self
+    }
+
+    /// Absolute `transform` value (each `None` carries the leg's
+    /// entry value forward — the `bg`/`opacity` rule).
+    pub fn transform(mut self, t: impl Into<Option<Transform>>) -> Self {
+        self.transform = t.into();
         self
     }
 }
@@ -265,16 +502,19 @@ pub enum KeyframeMode {
 }
 
 /// Multi-stop keyframe track (Phase 36 PR4, decision 357): ≥1 stops
-/// (≥2 segments with the closing target leg) over the `bg`+`opacity`
-/// animatable set (the decision-120 lock stays — no new animatables).
-/// Triggered exactly like `.transition(...)` (a bg/opacity style
+/// (≥2 segments with the closing target leg) over the animatable set
+/// (`bg`+`opacity`, plus `transform` since decision 511).
+/// Triggered exactly like `.transition(...)` (a style
 /// delta, unstamped); when both are declared, keyframes win (stated
 /// precedence — a track and a tween never fight silently). Empty
-/// stop lists refuse loudly at track creation.
+/// stop lists refuse loudly at track creation. Decision 512 adds a
+/// whole-track start delay (`delay_ms`, default 0 — same entry-value
+/// rule as [`Transition::delayed`]).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Keyframes {
     pub stops: Vec<KeyframeStop>,
     pub mode: KeyframeMode,
+    pub delay_ms: u32,
 }
 
 impl Keyframes {
@@ -282,11 +522,18 @@ impl Keyframes {
         Self {
             stops,
             mode: KeyframeMode::Once,
+            delay_ms: 0,
         }
     }
 
     pub fn mode(mut self, mode: KeyframeMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    /// Start-delayed track (decision 512 — staggered entrances).
+    pub fn delayed(mut self, delay_ms: u32) -> Self {
+        self.delay_ms = delay_ms;
         self
     }
 }
@@ -509,6 +756,11 @@ pub struct Style {
     pub circle: bool,
     pub bg: Option<Color>,
     pub opacity: Option<Px>,
+    /// Paint-only node transform (decision 511): visual placement that
+    /// never touches layout (excluded from `style_layout_bits` like
+    /// every presentational field — a transform change is
+    /// STYLE|PAINT, never LAYOUT).
+    pub transform: Option<Transform>,
     /// Absolute x offset within the parent (the showcase's `.x(...)`).
     pub x: Option<Px>,
     /// Absolute y offset of a virtualized slot (`.absolute_y(...)`, §4.2).
@@ -1080,6 +1332,13 @@ impl StyleBuilder {
 
     pub fn transition(mut self, t: Transition) -> Self {
         self.inner.transition = Some(t);
+        self
+    }
+
+    /// Paint-only node transform (decision 511 — translate/scale
+    /// paint today, rotate refuses loudly until T1b).
+    pub fn transform(mut self, t: impl Into<Option<Transform>>) -> Self {
+        self.inner.transform = t.into();
         self
     }
 

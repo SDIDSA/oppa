@@ -98,6 +98,21 @@ pub use scene::SceneCore;
 /// backend-adapter state, not engine logic.
 pub use session::{ScenePresenter, SceneSession};
 
+/// Bounded-settle frame caps (decision 515): bare
+/// `run_until_idle` spins forever under loop tracks (loops never
+/// retire), freezing event pumps — runners settle with
+/// [`ComponentHost::pump_frames`](oppa::ComponentHost::pump_frames)
+/// instead. `TICK` paces timer-tick background work (transition
+/// retirement needs one frame; cascades drain across ticks);
+/// `INPUT` drains full input cascades (dialog + focus + validation
+/// run under ten frames — 64 is headroom, and live loops simply
+/// continue next tick instead of freezing). Once-only worlds
+/// quiesce early, identically to `run_until_idle`.
+pub const PUMP_TICK_FRAMES: usize = 4;
+/// See [`PUMP_TICK_FRAMES`](Self::PUMP_TICK_FRAMES) (decision 515):
+/// the input-path settle cap.
+pub const PUMP_INPUT_FRAMES: usize = 64;
+
 /// App-bundled font override: the requested shaping family plus its
 /// faces as `(label, sfnt-bytes)` pairs in priority order (the
 /// `RustybuzzService::from_bytes_with_chain` input shape, e.g.

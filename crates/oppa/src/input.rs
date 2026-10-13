@@ -48,8 +48,10 @@
 //!   machinery rides them in v1.
 
 use crate::arena::NodeId;
+use crate::interner::Interner;
 use crate::reconciler::Reconciler;
 use crate::shell::EventKind;
+use crate::style::{AffineST, Style, Transform};
 use crate::vnode::Tag;
 
 pub mod actions;
@@ -568,22 +570,66 @@ fn contains(b: &crate::layout::LayoutBox, x: f32, y: f32) -> bool {
 /// Returns the deepest node containing `(x, y)`; same-depth ties go to
 /// the later sibling; nodes without a committed box are skipped. Misses
 /// return [`None`] — never a silent root fallback.
-pub fn hit_test(rec: &Reconciler, x: f32, y: f32) -> Option<NodeId> {
+///
+/// Decision 511: the walk is transform-aware — each node's paint
+/// transform (evaluator-live through `live`, else the retained style)
+/// maps the root-space point into node-local space before the box
+/// test, composing down the ancestry (hit follows the visual on every
+/// backend — web included, since DOM pointer events re-hit-test from
+/// coordinates). Each outermost portal entry starts from identity
+/// (portals reset accumulation, the builder rule — ancestors above a
+/// portal never move its content). `live` returning `None` reads the
+/// retained style (settled trees).
+pub fn hit_test(
+    rec: &Reconciler,
+    styles: &Interner<Style>,
+    x: f32,
+    y: f32,
+    live: &dyn Fn(NodeId) -> Option<Transform>,
+) -> Option<NodeId> {
     let root = rec.root()?;
     for portal in rec.outermost_portals().iter().rev() {
-        if let Some(deep) = hit_subtree(rec, *portal, x, y) {
+        if let Some(deep) = hit_subtree(rec, styles, *portal, x, y, AffineST::identity(), live) {
             return Some(deep);
         }
     }
-    hit_subtree(rec, root, x, y)
+    hit_subtree(rec, styles, root, x, y, AffineST::identity(), live)
 }
 
-fn hit_subtree(rec: &Reconciler, id: NodeId, x: f32, y: f32) -> Option<NodeId> {
+fn hit_subtree(
+    rec: &Reconciler,
+    styles: &Interner<Style>,
+    id: NodeId,
+    x: f32,
+    y: f32,
+    acc: AffineST,
+    live: &dyn Fn(NodeId) -> Option<Transform>,
+) -> Option<NodeId> {
     let node = rec.get(id)?;
+    // This node's paint transform (live track wins, else retained):
+    // compose with the ancestry and test the box in local space.
+    let retained = styles.get(node.style).and_then(|s| s.transform);
+    let owned = live(id).or(retained);
+    let acc = match (owned, &node.layout) {
+        (Some(t), Some(b)) => {
+            t.require_supported();
+            let local = t.to_local_affine(b.x + b.w * 0.5, b.y + b.h * 0.5);
+            AffineST::compose(acc, local)
+        }
+        // Boxless nodes never claim (the `match` below) but their
+        // children still hit — a transform without a box has no
+        // center to compose around, so the ancestry passes through.
+        _ => acc,
+    };
+    let (lx, ly) = if acc.is_identity() {
+        (x, y)
+    } else {
+        acc.unmap_point(x, y)
+    };
     // Later siblings win ties: keep the LAST child hit, not the first.
     let mut hit: Option<NodeId> = None;
     for child in &node.children {
-        if let Some(deep) = hit_subtree(rec, *child, x, y) {
+        if let Some(deep) = hit_subtree(rec, styles, *child, x, y, acc, live) {
             hit = Some(deep);
         }
     }
@@ -601,7 +647,7 @@ fn hit_subtree(rec: &Reconciler, id: NodeId, x: f32, y: f32) -> Option<NodeId> {
         return None;
     }
     match &node.layout {
-        Some(b) if contains(b, x, y) => Some(id),
+        Some(b) if contains(b, lx, ly) => Some(id),
         _ => None,
     }
 }

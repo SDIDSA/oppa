@@ -112,6 +112,10 @@ pub fn Tooltip<C: Props>(ctx: &Ctx, props: &TooltipProps<C>) -> VNode {
     let anchor_label = format!("tooltip-anchor-{inst}");
     let open = ctx.signal(false);
     let hover_start = ctx.signal(Option::<f64>::None);
+    // Decision 514: appear-fade visibility first (the guarded reset
+    // must run on the closed path too, or the next dwell would mount
+    // already shown).
+    let shown = crate::motion::enter_shown(ctx, &open);
 
     let anchor_id = oppa::find_retained_by_debug(&host, &anchor_label)
         .into_iter()
@@ -186,6 +190,8 @@ pub fn Tooltip<C: Props>(ctx: &Ctx, props: &TooltipProps<C>) -> VNode {
     };
 
     let popup = if open.get() {
+        // Decision 514: the card fades in (micro tween) — `shown`
+        // mounts it hidden and flips next pump (see above).
         let card = Div("tooltip-card")
             .style(
                 Style::new()
@@ -193,7 +199,9 @@ pub fn Tooltip<C: Props>(ctx: &Ctx, props: &TooltipProps<C>) -> VNode {
                     .border(1, t.border)
                     .radius(4)
                     .pad_x(8)
-                    .pad_y(4),
+                    .pad_y(4)
+                    .opacity(Some(if shown.get() { 1.0 } else { 0.0 }))
+                    .transition(oppa::Transition::micro()),
             )
             .semantics(Semantics::default().label(&props.tip))
             .child(with_ink(

@@ -94,8 +94,10 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
         None
     };
     // Pressed flag rides this instance (each checkbox tints alone;
-    // disabled never flags by router construction).
+    // disabled never flags by router construction). Hover washes
+    // the face (decision 514 — the Button rule).
     let pressed = props.enabled && ctx.pressed().get();
+    let hovered = props.enabled && ctx.hovered().get();
     // Check ink stays literal white (theme-invariant contrast ink —
     // see the control docs).
     let (fill, edge, ink) = if !props.enabled {
@@ -119,8 +121,14 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
         Style::new()
             .size(props.box_px, props.box_px)
             .radius(props.box_radius)
-            .bg(fill)
-            .border(2, edge),
+            .bg(if hovered && !pressed {
+                crate::motion::hover_fill(fill)
+            } else {
+                fill
+            })
+            .border(2, edge)
+            // Decision 514: check/press/hover swaps tween.
+            .transition(oppa::Transition::micro()),
     );
     // (One `.child()`/`.children()` per builder — terminal — so the
     // check variant builds whole, like the Radio dot.)

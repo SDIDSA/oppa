@@ -29,7 +29,8 @@ impl DesktopLoop {
             return Ok(0);
         };
         session.insert(&printable);
-        self.scene.host().run_until_idle();
+        // Decision 515: bounded (input-path cap).
+        self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
         self.repaint()
     }
 
@@ -43,7 +44,8 @@ impl DesktopLoop {
             return Ok(0);
         };
         session.backspace();
-        self.scene.host().run_until_idle();
+        // Decision 515: bounded (input-path cap).
+        self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
         self.repaint()
     }
 
@@ -55,7 +57,8 @@ impl DesktopLoop {
             return Ok(0);
         };
         session.delete_forward();
-        self.scene.host().run_until_idle();
+        // Decision 515: bounded (input-path cap).
+        self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
         self.repaint()
     }
 
@@ -77,7 +80,8 @@ impl DesktopLoop {
         for ev in events {
             dispatch_ime_event(&mut session, ev);
         }
-        self.scene.host().run_until_idle();
+        // Decision 515: bounded (input-path cap).
+        self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
         self.repaint()
     }
 
@@ -167,7 +171,8 @@ impl DesktopLoop {
         self.scene
             .host()
             .inject_input(InputEvent::Scroll { target, dx, dy });
-        self.scene.host().run_until_idle();
+        // Decision 515: bounded (input-path cap).
+        self.scene.host().pump_frames(crate::PUMP_INPUT_FRAMES);
         self.repaint()
     }
 

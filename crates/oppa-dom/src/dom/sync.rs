@@ -360,14 +360,20 @@ impl DomBackend {
         let (handle_bars, handle_knobs, handle_ink) = self.handle_decorations(id, origin);
         // Stepped keyframe values (Phase 36 PR4): the live track's
         // evaluated paint, re-declared inline while it runs (empty
-        // otherwise — unkeyframed markup byte-identical).
+        // otherwise — unkeyframed markup byte-identical). Decision
+        // 511 extends the re-declaration to the transform leg (same
+        // rule — tweens keep the CSS `transition:` mapping).
         let inline_kf = match self.kf_eval.resolve_keyframe(id, self.kf_now) {
-            Some((bg, op)) => {
+            Some((bg, op, xf)) => {
                 let mut s = String::new();
                 if let Some(c) = bg {
                     s.push_str(&format!("background-color:{};", dom_hex(c)));
                 }
                 s.push_str(&format!("opacity:{};", css_num(op)));
+                let v = crate::css::transform_value(xf);
+                if !v.is_empty() {
+                    s.push_str(&format!("transform:{v};"));
+                }
                 s
             }
             None => String::new(),

@@ -1,0 +1,10 @@
+{
+  "name": "Motion — motion",
+  "short_name": "motion",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2266cc",
+  "description": "Oppa web app."
+}

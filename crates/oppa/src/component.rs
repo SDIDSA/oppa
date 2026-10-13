@@ -355,6 +355,13 @@ impl InstanceRecord {
     }
 }
 
+/// One-shot transition-completion observer (decision 512): the node
+/// whose settle fires the callback — from the TIME settle drive once
+/// the node carries no live track (settle, cancel, stamp, or unmount;
+/// loops pend until cancelled). (The alias keeps the table type below
+/// the complexity lint.)
+type SettleObserver = (NodeId, Box<dyn FnOnce() + 'static>);
+
 struct HostInner {
     rt: Runtime,
     rec: RefCell<Reconciler>,
@@ -449,6 +456,10 @@ struct HostInner {
     /// that creates them (TIME runs before EFFECTS, so upfront
     /// registration would drop before the first interpolation exists).
     trans_anim: Cell<bool>,
+    /// Pending completion observers (decision 512 — see
+    /// [`SettleObserver`]; drained take-then-extend by the TIME
+    /// settle drive; core-side residence like every pump table).
+    settle_observers: RefCell<Vec<SettleObserver>>,
     /// Component-requested close (Round 26.2, decision 342):
     /// `Ctx::request_close` sets it; desktop runners drain it per
     /// pump iteration through the veto consult (`take_close_request`).

@@ -19,14 +19,16 @@ mod leaf;
 mod node;
 mod resolve;
 mod shape;
+mod xform;
 
 pub use resolve::{node_styles, style_rule_count};
+pub use xform::{bake_ops, scale_path_data};
 
 use std::collections::HashSet;
 
 use oppa::{
-    CaretPaint, DamageRect, DrawOp, FramePlan, Interner, NodeId, PassMask, Reconciler, Style, Tag,
-    ThemeMode,
+    AffineST, CaretPaint, DamageRect, DrawOp, FramePlan, Interner, NodeId, PassMask, Reconciler,
+    Style, Tag, ThemeMode,
 };
 
 /// Mask bits the builder consumes (LAYOUT stays with M3, SEMANTICS with A11Y).
@@ -171,11 +173,12 @@ impl FramePlanBuilder {
 
     /// Incremental build painting TIME-evaluated values (M8, §9.4): same
     /// damage discipline as [`build_incremental`](Self::build_incremental),
-    /// but `bg`/`opacity` resolve through the transition evaluator at
-    /// `now` (live interpolations paint mid-flight; stamped recycles
-    /// paint their jumped targets). The oracle's full arm must use the
-    /// matching [`build_full_evaluated`](Self::build_full_evaluated) at
-    /// the same `now`.
+    /// but `bg`/`opacity`/`transform` resolve through the transition
+    /// evaluator at `now` (live interpolations paint mid-flight;
+    /// stamped recycles paint their jumped targets). The oracle's full
+    /// arm must use the matching
+    /// [`build_full_evaluated`](Self::build_full_evaluated) at the same
+    /// `now`.
     pub fn build_incremental_evaluated(
         &self,
         rec: &mut Reconciler,
@@ -255,7 +258,7 @@ impl FramePlanBuilder {
             portal_phase: false,
             plan: &mut plan,
         };
-        walker.walk(root);
+        walker.walk(root, AffineST::identity());
         // Overlay layers paint last (Round 1.4, decision 255 — the top
         // z-layer): phase 1 skips portal subtrees without accounting
         // them; phase 2 walks outermost portals in tree order (later
@@ -266,7 +269,11 @@ impl FramePlanBuilder {
         walker.portal_phase = true;
         for portal in rec.outermost_portals() {
             if walker.full || walker.open.contains(&portal) {
-                walker.walk(portal);
+                // Decision 511: portal entries reset transform
+                // accumulation (ancestors above a portal never move
+                // its content — the DOM rule, where portal content
+                // lives outside transformed ancestors' elements).
+                walker.walk(portal, AffineST::identity());
             }
         }
         plan.stats.ops_emitted = plan.ops.len();
@@ -310,7 +317,7 @@ impl<'a> Walker<'a> {
         self.full || self.open.contains(&id)
     }
 
-    fn walk(&mut self, id: NodeId) {
+    fn walk(&mut self, id: NodeId, acc: AffineST) {
         let Some(node) = self.rec.get(id) else { return };
         // Overlay gate (Round 1.4): phase 1 skips portal subtrees whole
         // with no accounting (phase 2 accounts them exactly once, and
@@ -340,23 +347,40 @@ impl<'a> Walker<'a> {
         if self.is_dirty(id) {
             match box_opt {
                 Some(b) => {
+                    // Decision 511: this node's paint transform
+                    // (evaluator-live else retained) composes with the
+                    // ancestry — damage covers the transformed AABB,
+                    // ops bake the full accumulated affine.
+                    let own = match self.eval {
+                        Some((e, now)) => e.resolve_transform(id, style.transform, now),
+                        None => style.transform.unwrap_or(oppa::Transform::identity()),
+                    };
+                    let node_acc = if own.is_identity() {
+                        acc
+                    } else {
+                        own.require_supported();
+                        let local = own.to_local_affine(b.x + b.w * 0.5, b.y + b.h * 0.5);
+                        AffineST::compose(acc, local)
+                    };
+                    let (dx, dy, dw, dh) = node_acc.map_rect(b.x, b.y, b.w, b.h);
                     self.plan.damage.push(DamageRect {
-                        x: b.x,
-                        y: b.y,
-                        w: b.w,
-                        h: b.h,
+                        x: dx,
+                        y: dy,
+                        w: dw,
+                        h: dh,
                     });
                     // ScrollArea viewports clip their content (M4: emitted
                     // whenever the viewport node rebuilds).
                     let clips = tag == Tag::ScrollArea;
                     if clips {
                         self.plan.ops.push(DrawOp::PushClip {
-                            x: b.x,
-                            y: b.y,
-                            w: b.w,
-                            h: b.h,
+                            x: dx,
+                            y: dy,
+                            w: dw,
+                            h: dh,
                         });
                     }
+                    let start = self.plan.ops.len();
                     node::emit_node_ops(
                         self.plan,
                         self.rec,
@@ -373,8 +397,9 @@ impl<'a> Walker<'a> {
                         self.handles,
                         self.tokens,
                     );
+                    xform::bake_ops(&mut self.plan.ops[start..], node_acc);
                     for child in &children {
-                        self.walk(*child);
+                        self.walk(*child, node_acc);
                     }
                     if clips {
                         self.plan.ops.push(DrawOp::Pop);
@@ -383,7 +408,7 @@ impl<'a> Walker<'a> {
                 None => {
                     self.plan.stats.nodes_unboxed += 1;
                     for child in &children {
-                        self.walk(*child);
+                        self.walk(*child, acc);
                     }
                 }
             }
@@ -391,7 +416,7 @@ impl<'a> Walker<'a> {
             // Open but clean: emits nothing itself, still walks children
             // (a dirty descendant may hide below).
             for child in &children {
-                self.walk(*child);
+                self.walk(*child, acc);
             }
         }
     }

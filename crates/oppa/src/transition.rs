@@ -5,6 +5,7 @@
 //! [`track_commit`](TransitionEvaluator::track_commit) /
 //! [`resolve_bg`](TransitionEvaluator::resolve_bg) /
 //! [`resolve_opacity`](TransitionEvaluator::resolve_opacity) /
+//! [`resolve_transform`](TransitionEvaluator::resolve_transform) /
 //! [`settle`](TransitionEvaluator::settle) pipeline with the same stamp
 //! semantics (stamped commits cancel live tracks and snap — the Q5
 //! default, never a restart).
@@ -21,33 +22,41 @@
 //! consume it (cpu/gpu/dom `hook.rs`).
 //!
 //! v1 animatables ([`AnimProp`]): `bg` and `opacity` — the CSS-expressible
-//! set (§9.1), so the DOM mapping holds. Both are paint-only (never in the
+//! set (§9.1), so the DOM mapping holds — plus `transform` (decision
+//! 511: translate/scale, still CSS-expressible via `transform:`, so the
+//! lock extends rather than breaks). All three are paint-only (never in the
 //! reconciler's layout bits), so interpolation never disturbs layout.
 //! Everything else (geometry, shadow offsets, text) jumps, by lock, not by
 //! omission (the decision-120 lock stays — keyframes add stops, never
-//! properties).
+//! properties; 511 adds one CSS-expressible property, never layout).
 
 use std::collections::HashMap;
 
 use crate::arena::NodeId;
 use crate::interner::Interner;
 use crate::reconciler::{DiffOp, Reconciler, TreeDiff};
-use crate::style::{Color, Ease, KeyframeMode, Style, Transition};
+use crate::style::{Color, Ease, KeyframeMode, Style, Transform, Transition};
 
 /// v1 animatable property: the CSS-expressible set (§9.1 — the DOM mapping
 /// holds exactly because the evaluator never interpolates anything CSS
-/// cannot express).
+/// cannot express; decision 511 extends the set to `transform`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum AnimProp {
     Bg,
     Opacity,
+    Transform,
 }
 
 /// Eased position of `t` in `[0, 1]` (clamped). Closed-form cubics
 /// approximating the CSS easings of the same names — deterministic and
 /// monotonic, exact at both ends (M8 interpretation decision: the curve
 /// shape is platform tuning, not contract; monotonicity + exact settle
-/// are).
+/// are) — plus one underdamped spring (decision 513): `1 − e^(−12t)·cos(4πt)`
+/// (two oscillations, ≈5% first overshoot, sub-visual residual at
+/// `t = 1`, exact at both ends like the cubics). Springs oscillate by
+/// design (never monotonic — the cubic sweep excludes this variant);
+/// overshoot past 1 clamps per-property at the samplers (paint stays
+/// in gamut, transforms ride it — see `sample_bg`).
 pub fn ease_at(ease: Ease, t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     match ease {
@@ -61,6 +70,7 @@ pub fn ease_at(ease: Ease, t: f64) -> f64 {
                 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
             }
         }
+        Ease::Spring => 1.0 - (-12.0 * t).exp() * (4.0 * std::f64::consts::PI * t).cos(),
     }
 }
 
@@ -82,6 +92,7 @@ fn lerp_color(from: Color, to: Color, t: f64) -> Color {
 struct Target {
     bg: Option<Color>,
     opacity: f32,
+    transform: Transform,
     transition: Option<Transition>,
     keyframes: Option<crate::style::Keyframes>,
 }
@@ -91,6 +102,7 @@ impl Target {
         Self {
             bg: style.bg,
             opacity: style.opacity.map(|p| p.get()).unwrap_or(1.0),
+            transform: style.transform.unwrap_or(Transform::identity()),
             transition: style.transition,
             keyframes: style.keyframes.clone(),
         }
@@ -106,11 +118,20 @@ struct Interp {
     /// still ease through the color ramp, the M8 rule).
     bg_legs: Vec<(Option<Color>, Option<Color>, f64, Ease)>,
     op_legs: Vec<(f32, f32, f64, Ease)>,
+    /// Transform legs (decision 511): component-wise lerp of each
+    /// waypoint pair (translate, scale, and — once T1b applies it —
+    /// raw rotate; no shortest-arc, stated).
+    xf_legs: Vec<(Transform, Transform, f64, Ease)>,
     /// Cumulative leg end times (seconds from `start`); `total` is
     /// the last one (always > 0: zero-duration stops refuse loudly
     /// at track creation, never a silent snap).
     ends: Vec<f64>,
     total: f64,
+    /// Start delay in seconds (decision 512): the track paints its
+    /// entry value until `start + delay`, then runs its legs
+    /// (`total` covers legs only — settle lands at `delay + total`).
+    /// Zero keeps the exact pre-512 sampling math.
+    delay: f64,
     start: f64,
     mode: KeyframeMode,
     /// True for keyframe tracks (multi-stop declarations) — the DOM
@@ -120,11 +141,12 @@ struct Interp {
 }
 
 impl Interp {
-    /// Elapsed track time mapped through the playback mode (loop
-    /// wraps, ping-pong mirrors, once clamps) — always in
-    /// `[0, total]`.
+    /// Elapsed leg time mapped through the playback mode: the start
+    /// delay paints the entry value (every easing maps 0 → entry),
+    /// then legs run; the result stays in `[0, total]` for Once and
+    /// wraps/mirrors for Loop/PingPong.
     fn local_elapsed(&self, now: f64) -> f64 {
-        let t = (now - self.start).max(0.0);
+        let t = ((now - self.start) - self.delay).max(0.0);
         if self.total <= 0.0 {
             return 0.0;
         }
@@ -159,8 +181,11 @@ impl Interp {
             return Some(to);
         }
         let leg_start = if leg == 0 { 0.0 } else { self.ends[leg - 1] };
-        let t = ease_at(ease, (elapsed - leg_start) / dur);
-        if t >= 1.0 {
+        let r = (elapsed - leg_start) / dur;
+        // Past the leg end the value is exactly the target (the
+        // settle-exact rule — gate on the progress ratio, never on
+        // the eased value, so spring overshoots don't snap mid-leg).
+        if r >= 1.0 {
             return Some(to);
         }
         // Transparency never interpolates (M6 decision 103: alpha stays
@@ -168,7 +193,9 @@ impl Interp {
         if from == Color::TRANSPARENT || to == Color::TRANSPARENT {
             return Some(to);
         }
-        Some(lerp_color(from, to, t))
+        // Paint overshoot clamps into gamut (decision 513 — springs
+        // overshoot past 1 mid-leg; colors never extrapolate).
+        Some(lerp_color(from, to, ease_at(ease, r).clamp(0.0, 1.0)))
     }
 
     fn sample_op(&self, now: f64) -> f32 {
@@ -178,14 +205,59 @@ impl Interp {
             return self.op_legs.last().map(|l| l.1).unwrap_or(1.0);
         };
         let leg_start = if leg == 0 { 0.0 } else { self.ends[leg - 1] };
-        let t = ease_at(ease, (elapsed - leg_start) / dur).clamp(0.0, 1.0);
+        let r = (elapsed - leg_start) / dur;
+        if r >= 1.0 {
+            return to;
+        }
+        // Opacity clamps like bg (decision 513 — no flashing past 1).
+        let t = ease_at(ease, r).clamp(0.0, 1.0);
         from + (to - from) * t as f32
+    }
+
+    fn sample_xf(&self, now: f64) -> Transform {
+        use crate::style::Px;
+        let elapsed = self.local_elapsed(now);
+        let leg = self.leg_at(elapsed);
+        let Some((from, to, dur, ease)) = self.xf_legs.get(leg).copied() else {
+            return self
+                .xf_legs
+                .last()
+                .map(|l| l.1)
+                .unwrap_or(Transform::identity());
+        };
+        if from == to {
+            return to;
+        }
+        let leg_start = if leg == 0 { 0.0 } else { self.ends[leg - 1] };
+        let r = (elapsed - leg_start) / dur;
+        if r >= 1.0 {
+            return to;
+        }
+        // Transforms ride overshoot raw (decision 513 — spring past 1
+        // IS the motion; clamping would erase it).
+        let t = ease_at(ease, r);
+        let lerp = |f: f32, o: f32| f + (o - f) * t as f32;
+        Transform {
+            dx: Px::of(lerp(from.dx.get(), to.dx.get())),
+            dy: Px::of(lerp(from.dy.get(), to.dy.get())),
+            sx: Px::of(lerp(from.sx.get(), to.sx.get())),
+            sy: Px::of(lerp(from.sy.get(), to.sy.get())),
+            rotate_deg: Px::of(lerp(from.rotate_deg.get(), to.rotate_deg.get())),
+        }
+    }
+
+    /// True while the DOM must step values inline (decision 513):
+    /// keyframe tracks (the 357 rule) plus spring tweens (no CSS
+    /// spelling exists — the stepped values own the motion).
+    fn needs_stepping(&self) -> bool {
+        self.keyframed || self.op_legs.iter().any(|l| l.3 == Ease::Spring)
     }
 
     fn settled(&self, now: f64) -> bool {
         // Only `Once` settles (loop/ping-pong run until cancelled —
-        // a new delta restarts, a stamp snaps).
-        self.mode == KeyframeMode::Once && now - self.start >= self.total
+        // a new delta restarts, a stamp snaps). Settle lands past the
+        // start delay plus the legs (decision 512).
+        self.mode == KeyframeMode::Once && now - self.start >= self.delay + self.total
     }
 }
 
@@ -257,7 +329,8 @@ impl TransitionEvaluator {
                     };
                     let bg_moved = prev.bg != next.bg;
                     let op_moved = (prev.opacity - next.opacity).abs() > f32::EPSILON;
-                    if !bg_moved && !op_moved {
+                    let xf_moved = prev.transform != next.transform;
+                    if !bg_moved && !op_moved && !xf_moved {
                         continue; // Declaration churn alone interpolates nothing.
                     }
                     if diff.suppress_transitions {
@@ -302,8 +375,10 @@ impl TransitionEvaluator {
                         Interp {
                             bg_legs: vec![(prev.bg, next.bg, dur, tr.ease)],
                             op_legs: vec![(prev.opacity, next.opacity, dur, tr.ease)],
+                            xf_legs: vec![(prev.transform, next.transform, dur, tr.ease)],
                             ends: vec![dur],
                             total: dur,
+                            delay: f64::from(tr.delay_ms) / 1000.0,
                             start: now,
                             mode: KeyframeMode::Once,
                             keyframed: false,
@@ -342,15 +417,39 @@ impl TransitionEvaluator {
         style_opacity
     }
 
-    /// Live keyframe values for `node` at `now` (the DOM stepped
-    /// path): `Some` exactly while a keyframe track — never a plain
-    /// tween, those keep the CSS mapping — runs unsettled on the node.
-    pub fn resolve_keyframe(&self, node: NodeId, now: f64) -> Option<(Option<Color>, f32)> {
+    /// Evaluated transform for `node` at `now` (same precedence as
+    /// [`resolve_bg`](Self::resolve_bg); untracked nodes fall back to the
+    /// retained value, defaulting to identity).
+    pub fn resolve_transform(
+        &self,
+        node: NodeId,
+        style_xf: Option<Transform>,
+        now: f64,
+    ) -> Transform {
+        if let Some(i) = self.active.get(&node) {
+            return i.sample_xf(now);
+        }
+        if let Some(t) = self.targets.get(&node) {
+            return t.transform;
+        }
+        style_xf.unwrap_or(Transform::identity())
+    }
+
+    /// Live stepped values for `node` at `now` (the DOM stepped
+    /// path): `Some` exactly while a track runs unsettled that the
+    /// CSS path cannot serve — keyframe tracks (never plain tweens,
+    /// those keep the CSS mapping) plus spring tweens (decision 513:
+    /// no CSS spelling exists, so the stepped values own the motion).
+    pub fn resolve_keyframe(
+        &self,
+        node: NodeId,
+        now: f64,
+    ) -> Option<(Option<Color>, f32, Transform)> {
         let i = self.active.get(&node)?;
-        if !i.keyframed || i.settled(now) {
+        if !i.needs_stepping() || i.settled(now) {
             return None;
         }
-        Some((i.sample_bg(now), i.sample_op(now)))
+        Some((i.sample_bg(now), i.sample_op(now), i.sample_xf(now)))
     }
 
     /// Retires settled tracks at `now` (the TIME-phase drive:
@@ -413,19 +512,24 @@ impl TransitionEvaluator {
 fn build_track(prev: &Target, next: &Target, kf: &crate::style::Keyframes, now: f64) -> Interp {
     let mut bg_legs = Vec::with_capacity(kf.stops.len() + 1);
     let mut op_legs = Vec::with_capacity(kf.stops.len() + 1);
+    let mut xf_legs = Vec::with_capacity(kf.stops.len() + 1);
     let mut ends = Vec::with_capacity(kf.stops.len() + 1);
     let (mut leg_bg, mut leg_op) = (prev.bg, prev.opacity);
+    let mut leg_xf = prev.transform;
     let mut elapsed = 0.0f64;
     for stop in &kf.stops {
         let dur = f64::from(stop.dur_ms) / 1000.0;
         let to_bg = stop.bg.or(leg_bg);
         let to_op = stop.opacity.map(|p| p.get()).unwrap_or(leg_op);
+        let to_xf = stop.transform.unwrap_or(leg_xf);
         elapsed += dur;
         ends.push(elapsed);
         bg_legs.push((leg_bg, to_bg, dur, stop.ease));
         op_legs.push((leg_op, to_op, dur, stop.ease));
+        xf_legs.push((leg_xf, to_xf, dur, stop.ease));
         leg_bg = to_bg;
         leg_op = to_op;
+        leg_xf = to_xf;
     }
     // Closing leg to the committed target (the M8 settle-exact rule —
     // unstamped tracks land exactly on the target).
@@ -435,11 +539,14 @@ fn build_track(prev: &Target, next: &Target, kf: &crate::style::Keyframes, now: 
     ends.push(elapsed);
     bg_legs.push((leg_bg, next.bg, dur, last.ease));
     op_legs.push((leg_op, next.opacity, dur, last.ease));
+    xf_legs.push((leg_xf, next.transform, dur, last.ease));
     Interp {
         bg_legs,
         op_legs,
+        xf_legs,
         ends,
         total: elapsed,
+        delay: f64::from(kf.delay_ms) / 1000.0,
         start: now,
         mode: kf.mode,
         keyframed: true,
@@ -462,6 +569,8 @@ mod tests {
 
     #[test]
     fn ease_curves_are_monotonic_and_exact() {
+        // Springs oscillate by design (decision 513) — the cubic
+        // sweep covers the monotonic set only.
         for ease in [Ease::Linear, Ease::In, Ease::Out, Ease::InOut] {
             assert_eq!(ease_at(ease, 0.0), 0.0);
             assert_eq!(ease_at(ease, 1.0), 1.0);
@@ -659,7 +768,7 @@ mod tests {
         assert_eq!(ev.settle(1.0), 0);
     }
 
-    use crate::style::{KeyframeMode, KeyframeStop, Keyframes};
+    use crate::style::{KeyframeMode, KeyframeStop, Keyframes, Px};
 
     fn keyframed_style(stops: Vec<KeyframeStop>) -> Style {
         Style::new()
@@ -903,5 +1012,481 @@ mod tests {
                 .build(),
         );
         ev.track_commit(&d, &rec, &styles, 0.0);
+    }
+
+    /// Decision 511: a translate + scale tween interpolates
+    /// component-wise and settles exact at the duration.
+    #[test]
+    fn transform_tween_interpolates_and_settles_exact() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let style = |t: Transform| {
+            Style::new()
+                .size(10, 10)
+                .transform(t)
+                .transition(Transition::new(120.ms(), Ease::Linear))
+                .build()
+        };
+        let d = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            Div("a").style(style(Transform::identity())).build(),
+        );
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let target = Transform {
+            dx: Px::of(100.0),
+            dy: Px::of(-40.0),
+            sx: Px::of(2.0),
+            sy: Px::of(0.5),
+            rotate_deg: Px::of(0.0),
+        };
+        let d = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            Div("a").style(style(target)).build(),
+        );
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        assert_eq!(ev.created(), 1, "one transform interpolator");
+        let id = rec.find_by_debug("a")[0];
+        let mid = ev.resolve_transform(id, None, 0.06);
+        assert_eq!(mid.dx.get(), 50.0, "linear half-way in translate");
+        assert_eq!(mid.dy.get(), -20.0);
+        assert_eq!(mid.sx.get(), 1.5, "linear half-way in scale");
+        assert_eq!(mid.sy.get(), 0.75);
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.12),
+            target,
+            "settles exact at the duration"
+        );
+        assert_eq!(ev.settle(0.12), 0);
+        assert!(ev.is_settled(id));
+    }
+
+    /// Decision 511: a stamped transform delta snaps (no track) and
+    /// an undeclared one jumps without counting suppression.
+    #[test]
+    fn stamped_and_undeclared_transform_deltas_snap() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let style = |dx: f32| {
+            Style::new()
+                .size(10, 10)
+                .transform(Transform::translate(dx, 0))
+                .transition(Transition::new(120.ms(), Ease::Linear))
+                .build()
+        };
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(style(0.0)).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let d = rec.reconcile(&rt, &mut styles, true, Div("a").style(style(60.0)).build());
+        ev.track_commit(&d, &rec, &styles, 0.016);
+        assert_eq!(ev.created(), 0, "stamped deltas create no interpolators");
+        assert_eq!(ev.suppressed(), 1);
+        let id = rec.find_by_debug("a")[0];
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.016).dx.get(),
+            60.0,
+            "values jump"
+        );
+
+        let mut ev2 = TransitionEvaluator::new();
+        let mut rec2 = Reconciler::new();
+        let plain = |dx: f32| {
+            Style::new()
+                .size(10, 10)
+                .transform(Transform::translate(dx, 0))
+                .build()
+        };
+        let d = rec2.reconcile(&rt, &mut styles, false, Div("b").style(plain(0.0)).build());
+        ev2.track_commit(&d, &rec2, &styles, 0.0);
+        let d = rec2.reconcile(&rt, &mut styles, false, Div("b").style(plain(30.0)).build());
+        ev2.track_commit(&d, &rec2, &styles, 0.0);
+        assert_eq!(ev2.created(), 0);
+        assert_eq!(ev2.suppressed(), 0, "undeclared snaps are not suppression");
+        let id2 = rec2.find_by_debug("b")[0];
+        assert_eq!(ev2.resolve_transform(id2, None, 0.0).dx.get(), 30.0);
+    }
+
+    /// Decision 511: keyframe stops carry transform legs (each `None`
+    /// carries the entry value forward) and the target closes the
+    /// final leg.
+    #[test]
+    fn keyframe_transform_legs_carry_forward_and_close() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let stops = || {
+            vec![
+                KeyframeStop::new(60, Ease::Linear).transform(Transform::translate(60, 0)),
+                KeyframeStop::new(60, Ease::Linear),
+            ]
+        };
+        let mount = Style::new()
+            .size(10, 10)
+            .transform(Transform::identity())
+            .keyframes(Keyframes::new(stops()))
+            .build();
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(mount).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let end = Style::new()
+            .size(10, 10)
+            .transform(Transform::translate(120, 0))
+            .keyframes(Keyframes::new(stops()))
+            .build();
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(end).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        assert_eq!(ev.created(), 1, "one track per delta");
+        let id = rec.find_by_debug("a")[0];
+        // Stop 1 ends at 60 (0–60ms); stop 2 carries 60 forward
+        // (60–120ms); the closing leg reaches 120 (120–180ms).
+        assert_eq!(ev.resolve_transform(id, None, 0.06).dx.get(), 60.0);
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.09).dx.get(),
+            60.0,
+            "empty stop carries the entry value forward"
+        );
+        assert_eq!(ev.resolve_transform(id, None, 0.15).dx.get(), 90.0);
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.18).dx.get(),
+            120.0,
+            "lands exact on the committed target"
+        );
+        assert_eq!(ev.settle(0.18), 0);
+    }
+
+    /// Open unknown (b), answered empirically: a mid-flight target
+    /// change RESTARTS from the previous target — it does not retarget
+    /// from the sampled position and does not snap.
+    #[test]
+    fn mid_flight_delta_restarts_from_previous_target() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let style = |dx: f32| {
+            Style::new()
+                .size(10, 10)
+                .transform(Transform::translate(dx, 0))
+                .transition(Transition::new(120.ms(), Ease::Linear))
+                .build()
+        };
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(style(0.0)).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        // First leg: 0 → 100 starting at t=0.
+        let d = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            Div("a").style(style(100.0)).build(),
+        );
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let id = rec.find_by_debug("a")[0];
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.06).dx.get(),
+            50.0,
+            "mid-flight"
+        );
+        // Second leg at t=0.06: 100 → 200 (restart from the previous
+        // target, not from the sampled 50).
+        let d = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            Div("a").style(style(200.0)).build(),
+        );
+        ev.track_commit(&d, &rec, &styles, 0.06);
+        assert_eq!(ev.created(), 2, "a new delta restarts the track");
+        let just_after = ev.resolve_transform(id, None, 0.061).dx.get();
+        assert!(
+            (just_after - 100.0).abs() < 2.0,
+            "restarts at the previous target (≈100), got {just_after}"
+        );
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.18).dx.get(),
+            200.0,
+            "settles exact on the newest target"
+        );
+    }
+
+    /// Decision 511: looping transform tracks never settle (the
+    /// ambient-motion drive) until a delta restarts or a stamp snaps.
+    #[test]
+    fn loop_transform_track_runs_until_cancelled() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let stops =
+            || vec![KeyframeStop::new(100, Ease::Linear).transform(Transform::translate(40, 0))];
+        let mount = Style::new()
+            .size(10, 10)
+            .transform(Transform::identity())
+            .keyframes(Keyframes::new(stops()).mode(KeyframeMode::Loop))
+            .build();
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(mount).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let end = Style::new()
+            .size(10, 10)
+            .transform(Transform::translate(80, 0))
+            .keyframes(Keyframes::new(stops()).mode(KeyframeMode::Loop))
+            .build();
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(end).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let id = rec.find_by_debug("a")[0];
+        assert_eq!(ev.settle(10.0), 1, "loop never settles");
+        let a = ev.resolve_transform(id, None, 0.05).dx.get();
+        let b = ev.resolve_transform(id, None, 0.25).dx.get();
+        assert_eq!(a, b, "loop repeats the track");
+    }
+
+    /// Decision 513: the spring curve starts exact, overshoots past 1
+    /// (the motion), and lands within a sub-visual residual at t = 1
+    /// (the track end snaps exact through the sampler's r >= 1 gate —
+    /// the stated rest contract).
+    #[test]
+    fn spring_curve_starts_exact_overshoots_and_rests() {
+        assert_eq!(ease_at(Ease::Spring, 0.0), 0.0, "starts exact");
+        let mut max = 0.0f64;
+        for i in 0..=200 {
+            let v = ease_at(Ease::Spring, f64::from(i) / 200.0);
+            max = max.max(v);
+        }
+        assert!(
+            max > 1.02,
+            "springs overshoot past 1 (the motion), got max {max}"
+        );
+        let rest = ease_at(Ease::Spring, 1.0);
+        assert!(
+            (rest - 1.0).abs() < 1e-3,
+            "sub-visual residual at t = 1, got {rest}"
+        );
+    }
+
+    /// Decision 513: a spring tween overshoots its transform target
+    /// mid-flight, still settles exact, and retires (quiescence —
+    /// springs add no new demand source).
+    #[test]
+    fn spring_tween_overshoots_and_settles_exact() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let style = |dx: f32| {
+            Style::new()
+                .size(10, 10)
+                .transform(Transform::translate(dx, 0))
+                .transition(Transition::new(200, Ease::Spring))
+                .build()
+        };
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(style(0.0)).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let d = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            Div("a").style(style(100.0)).build(),
+        );
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        assert_eq!(ev.created(), 1);
+        let id = rec.find_by_debug("a")[0];
+        let mut over = false;
+        for ms in (10..200).step_by(10) {
+            if ev
+                .resolve_transform(id, None, f64::from(ms) / 1000.0)
+                .dx
+                .get()
+                > 100.0
+            {
+                over = true;
+            }
+        }
+        assert!(over, "spring overshoots the target mid-flight");
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.2).dx.get(),
+            100.0,
+            "settles exact at the duration"
+        );
+        assert_eq!(ev.settle(0.2), 0, "retires like every Once track");
+        assert!(ev.is_settled(id));
+    }
+
+    /// Decision 513: paint overshoot clamps into gamut (bg channels
+    /// and opacity never extrapolate past the target).
+    #[test]
+    fn spring_paint_overshoot_clamps_into_gamut() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let style = |c: Color, o: f32| {
+            Style::new()
+                .size(10, 10)
+                .bg(c)
+                .opacity(Some(o))
+                .transition(Transition::new(200, Ease::Spring))
+                .build()
+        };
+        let d = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            Div("a").style(style(Color(0x10_10_10), 0.2)).build(),
+        );
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let d = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            Div("a").style(style(Color(0x90_90_90), 0.8)).build(),
+        );
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let id = rec.find_by_debug("a")[0];
+        for ms in (10..200).step_by(5) {
+            let now = f64::from(ms) / 1000.0;
+            let c = ev.resolve_bg(id, None, now).expect("live");
+            let (r, g, b) = ((c.0 >> 16) & 0xFF, (c.0 >> 8) & 0xFF, c.0 & 0xFF);
+            assert!(
+                r <= 0x90 && g <= 0x90 && b <= 0x90,
+                "bg never extrapolates past the target, got {r:02x} at {ms}ms"
+            );
+            assert!(r >= 0x10 && g >= 0x10 && b >= 0x10, "nor below the entry");
+            let o = ev.resolve_opacity(id, 0.0, now);
+            assert!((0.2..=0.8).contains(&o), "opacity stays in range, got {o}");
+        }
+        assert_eq!(ev.resolve_bg(id, None, 0.2), Some(Color(0x90_90_90)));
+        assert_eq!(ev.settle(0.2), 0);
+    }
+
+    /// Decision 512: a delayed tween paints its entry value through
+    /// the delay, runs the full leg after, and settles at
+    /// delay + duration.
+    #[test]
+    fn delayed_tween_holds_entry_then_runs_full_leg() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let style = |dx: f32| {
+            Style::new()
+                .size(10, 10)
+                .transform(Transform::translate(dx, 0))
+                .transition(Transition::new(120.ms(), Ease::Linear).delayed(100))
+                .build()
+        };
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(style(0.0)).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let d = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            Div("a").style(style(120.0)).build(),
+        );
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        assert_eq!(ev.created(), 1);
+        let id = rec.find_by_debug("a")[0];
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.05).dx.get(),
+            0.0,
+            "delay window paints the entry value"
+        );
+        let mid = ev.resolve_transform(id, None, 0.16).dx.get();
+        assert!(
+            (mid - 60.0).abs() < 1e-6,
+            "leg runs full-length after the delay, got {mid}"
+        );
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.23).dx.get(),
+            120.0,
+            "settles exact past delay + duration"
+        );
+        assert_eq!(ev.settle(0.21), 1, "still live just before the end");
+        assert_eq!(ev.settle(0.23), 0, "retires past delay + duration");
+    }
+
+    /// Decision 512: whole-track keyframe delays shift every leg the
+    /// same way (stagger primitive).
+    #[test]
+    fn delayed_keyframes_shift_the_whole_track() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let stops =
+            || vec![KeyframeStop::new(100, Ease::Linear).transform(Transform::translate(50, 0))];
+        let mount = Style::new()
+            .size(10, 10)
+            .transform(Transform::identity())
+            .keyframes(Keyframes::new(stops()))
+            .build();
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(mount).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let end = Style::new()
+            .size(10, 10)
+            .transform(Transform::translate(100, 0))
+            .keyframes(Keyframes::new(stops()).delayed(100))
+            .build();
+        let d = rec.reconcile(&rt, &mut styles, false, Div("a").style(end).build());
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let id = rec.find_by_debug("a")[0];
+        // Total 200ms of legs + 100ms delay: entry through 0.1,
+        // first stop at 0.2, target at 0.3 (boundary samples sit
+        // 10ms past the edges — f64 leg sums never land exactly).
+        assert_eq!(ev.resolve_transform(id, None, 0.05).dx.get(), 0.0);
+        let mid = ev.resolve_transform(id, None, 0.15).dx.get();
+        assert!(
+            (mid - 25.0).abs() < 1e-6,
+            "half leg after the delay, got {mid}"
+        );
+        assert_eq!(ev.resolve_transform(id, None, 0.31).dx.get(), 100.0);
+        assert_eq!(ev.settle(0.29), 1, "still live just before the end");
+        assert_eq!(ev.settle(0.31), 0);
+    }
+
+    /// Decision 512/513: spring tweens serve the DOM stepped path
+    /// (no CSS spelling exists) while plain tweens keep the CSS
+    /// mapping — even mid-flight on the same evaluator.
+    #[test]
+    fn spring_tweens_step_while_plain_tweens_keep_css() {
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let style = |dx: f32, ease: Ease| {
+            Style::new()
+                .size(10, 10)
+                .transform(Transform::translate(dx, 0))
+                .transition(Transition::new(200, ease))
+                .build()
+        };
+        let tree = |ax: f32, bx: f32| {
+            Div("root").children([
+                Div("a").style(style(ax, Ease::Spring)).build(),
+                Div("b").style(style(bx, Ease::Linear)).build(),
+            ])
+        };
+        let d = rec.reconcile(&rt, &mut styles, false, tree(0.0, 0.0));
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let d = rec.reconcile(&rt, &mut styles, false, tree(100.0, 100.0));
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        assert_eq!(ev.created(), 2, "one track per delta");
+        let (a, b) = (rec.find_by_debug("a")[0], rec.find_by_debug("b")[0]);
+        assert!(
+            ev.resolve_keyframe(a, 0.1).is_some(),
+            "spring tween steps inline"
+        );
+        assert!(
+            ev.resolve_keyframe(b, 0.1).is_none(),
+            "plain tween keeps the CSS mapping"
+        );
+        assert!(
+            ev.resolve_keyframe(a, 0.3).is_none(),
+            "settled springs step nothing"
+        );
     }
 }

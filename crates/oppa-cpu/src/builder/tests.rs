@@ -343,3 +343,300 @@ fn canvas_children_refuse_loudly() {
     host.mount("BadCanvas", CanvasProps, bad_canvas_scene);
     host.run_until_idle();
 }
+
+// ---------------------------------------------------------------------------
+// Decision 511: transform bake (translate/scale fold into op geometry)
+// ---------------------------------------------------------------------------
+
+use oppa::{Ease, FramePlan, MockClock, Signal, Style, Text, Transform, Transition};
+use std::rc::Rc;
+
+#[derive(Clone)]
+struct XfProps {
+    xf: Option<Transform>,
+}
+impl Props for XfProps {}
+
+fn xf_scene(_ctx: &Ctx, p: &XfProps) -> VNode {
+    Div("root").style(Style::new().size(800, 600)).child(
+        Div("box")
+            .style(
+                Style::new()
+                    .size(100, 50)
+                    .bg(oppa::Color(0x11_22_33))
+                    .transform(p.xf),
+            )
+            .build(),
+    )
+}
+
+fn box_plan(xf: Option<Transform>) -> (ComponentHost, FramePlan, oppa::NodeId) {
+    let host = ComponentHost::new();
+    host.set_viewport(800.0, 600.0);
+    host.mount("Xf", XfProps { xf }, xf_scene);
+    host.run_until_idle();
+    let id = oppa::find_retained_by_debug(&host, "box")[0];
+    let builder = FramePlanBuilder::new(1.0);
+    let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+    (host, plan, id)
+}
+
+fn rect_of(plan: &FramePlan, id: oppa::NodeId) -> (f32, f32, f32, f32) {
+    plan.ops
+        .iter()
+        .find_map(|op| match op {
+            DrawOp::Rect {
+                node, x, y, w, h, ..
+            } if *node == id => Some((*x, *y, *w, *h)),
+            _ => None,
+        })
+        .expect("box rect op")
+}
+
+/// Decision 511: identity is byte-identical to unset (the fast path
+/// touches no numbers).
+#[test]
+fn identity_transform_plan_matches_untransformed() {
+    let (_, plain, _) = box_plan(None);
+    let (_, ident, _) = box_plan(Some(Transform::identity()));
+    assert_eq!(plain.ops, ident.ops, "identity emits identical ops");
+    assert_eq!(
+        plain.damage, ident.damage,
+        "identity emits identical damage"
+    );
+}
+
+/// Decision 511: translate offsets geometry and damage exactly.
+#[test]
+fn translate_bakes_into_rect_geometry_and_damage() {
+    let (_, plan, id) = box_plan(Some(Transform::translate(30, -10)));
+    assert_eq!(rect_of(&plan, id), (30.0, -10.0, 100.0, 50.0));
+    assert!(
+        plan.damage
+            .iter()
+            .any(|d| (d.x, d.y, d.w, d.h) == (30.0, -10.0, 100.0, 50.0)),
+        "damage covers the transformed AABB, got {:?}",
+        plan.damage
+    );
+}
+
+/// Decision 511: scale applies about the box center (100×50 at
+/// origin × (2, 1) → x −50, w 200, y/h unchanged).
+#[test]
+fn scale_bakes_about_box_center() {
+    let (_, plan, id) = box_plan(Some(Transform::scale(2, 1)));
+    assert_eq!(rect_of(&plan, id), (-50.0, 0.0, 200.0, 50.0));
+    let (_, plan, id) = box_plan(Some(Transform::scale(0.5, 0.5)));
+    assert_eq!(rect_of(&plan, id), (25.0, 12.5, 50.0, 25.0));
+}
+
+#[derive(Clone)]
+struct NestProps;
+impl Props for NestProps {}
+
+fn nest_scene(ctx: &Ctx, _: &NestProps) -> VNode {
+    let _ = ctx.signal(0u32);
+    Div("root").style(Style::new().size(800, 600)).child(
+        Div("par")
+            .style(
+                Style::new()
+                    .size(400, 400)
+                    .bg(oppa::Color(0x11_11_11))
+                    .transform(Transform::translate(10, 0)),
+            )
+            .child(
+                Div("kid")
+                    .style(
+                        Style::new()
+                            .size(50, 20)
+                            .bg(oppa::Color(0x22_22_22))
+                            .transform(Transform::translate(0, 20)),
+                    )
+                    .build(),
+            ),
+    )
+}
+
+/// Decision 511: nested transforms accumulate child-inside-parent
+/// (kid at parent (10, 0) + own (0, 20) → (10, 20)).
+#[test]
+fn nested_transforms_accumulate_child_inside_parent() {
+    let host = ComponentHost::new();
+    host.set_viewport(800.0, 600.0);
+    host.mount("Nest", NestProps, nest_scene);
+    host.run_until_idle();
+    let builder = FramePlanBuilder::new(1.0);
+    let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+    let par = oppa::find_retained_by_debug(&host, "par")[0];
+    let kid = oppa::find_retained_by_debug(&host, "kid")[0];
+    assert_eq!(rect_of(&plan, par), (10.0, 0.0, 400.0, 400.0));
+    assert_eq!(rect_of(&plan, kid), (10.0, 20.0, 50.0, 20.0));
+}
+
+/// Decision 511: the bake samples evaluator-live values (mid-flight
+/// paints mid-flight geometry through the same channel as bg).
+#[test]
+fn evaluated_mid_flight_transform_bakes_live_geometry() {
+    use oppa::MsExt;
+    #[derive(Clone)]
+    struct MvProps {
+        dx: Signal<f32>,
+    }
+    impl Props for MvProps {}
+    fn mv_scene(_ctx: &Ctx, p: &MvProps) -> VNode {
+        let dx = p.dx.get();
+        Div("root").style(Style::new().size(800, 600)).child(
+            Div("box")
+                .style(
+                    Style::new()
+                        .size(100, 50)
+                        .bg(oppa::Color(0x11_22_33))
+                        .transform(Transform::translate(dx, 0))
+                        .transition(Transition::new(120.ms(), Ease::Linear)),
+                )
+                .build(),
+        )
+    }
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let dx = host.runtime().signal(0.0f32);
+    host.mount("Mv", MvProps { dx: dx.clone() }, mv_scene);
+    host.run_until_idle();
+    dx.set(100.0);
+    // The M8 pattern: `run_until_idle` spins forever under a frozen
+    // clock while the tween lives, so clocked tests step `run_once`
+    // vsync-by-vsync (the controls `settle_clocked` rule).
+    for _ in 0..4 {
+        clock.advance(1.0 / 60.0);
+        host.run_once();
+    }
+    let now = clock.get();
+    let builder = FramePlanBuilder::new(1.0);
+    let id = oppa::find_retained_by_debug(&host, "box")[0];
+    let plan = host.with_retained_mut(|rec, styles| {
+        host.with_evaluator(|ev| builder.build_full_evaluated(rec, styles, ev, now))
+    });
+    let x = rect_of(&plan, id).0;
+    // The bake paints exactly what the evaluator resolves (start-time
+    // mechanics belong to the pump, not the bake — coherence is the
+    // contract here).
+    let want = host.with_evaluator(|ev| ev.resolve_transform(id, None, now).dx.get());
+    assert!(
+        (x - want).abs() < 1e-3,
+        "bake paints the live sample ({x} vs {want} at t={now})"
+    );
+    assert!(
+        (0.0 < want) && (want < 100.0),
+        "mid-flight sample is strictly interior, got {want}"
+    );
+}
+
+/// Decision 511: rotate and degenerate scales refuse at build (the
+/// T1b line — never a silent snap).
+#[test]
+#[should_panic(expected = "T1b scope")]
+fn rotate_refuses_loudly_at_build() {
+    let (_, plan, _) = box_plan(Some(Transform::rotate(30)));
+    let _ = plan;
+}
+
+#[test]
+#[should_panic(expected = "scale must be positive")]
+fn zero_scale_refuses_loudly_at_build() {
+    let (_, plan, _) = box_plan(Some(Transform::scale(0, 1)));
+    let _ = plan;
+}
+
+/// Decision 511: `scale_path_data` scales per-axis (H takes sx, V
+/// takes sy), keeps arc flags/rotation, and refuses malformed data.
+#[test]
+fn scale_path_data_scales_per_axis_and_keeps_flags() {
+    assert_eq!(
+        scale_path_data("M 0 0 L 18 9 Z", 2.0, 2.0),
+        "M 0 0 L 36 18 Z"
+    );
+    assert_eq!(
+        scale_path_data("M 0 0 H 10 V 20", 2.0, 3.0),
+        "M 0 0 H 20 V 60"
+    );
+    assert_eq!(scale_path_data("m 1 2 l 3 4", 2.0, 2.0), "m 2 4 l 6 8");
+    assert_eq!(
+        scale_path_data("M 0 0 C 1 2 3 4 5 6", 2.0, 1.0),
+        "M 0 0 C 2 2 6 4 10 6"
+    );
+    assert_eq!(
+        scale_path_data("M 0 0 A 5 10 0 0 1 20 20", 2.0, 3.0),
+        "M 0 0 A 10 30 0 0 1 40 60"
+    );
+}
+
+#[test]
+#[should_panic(expected = "unknown path command")]
+fn scale_path_data_unknown_command_refuses() {
+    let _ = scale_path_data("M 0 0 X 1 2", 2.0, 2.0);
+}
+
+#[test]
+#[should_panic(expected = "leading number")]
+fn scale_path_data_leading_number_refuses() {
+    let _ = scale_path_data("0 0 M 1 1", 2.0, 2.0);
+}
+
+/// Decision 511: text bakes translate exactly and scales advances
+/// with `sx` / metrics with `sy` (the anamorphic rule).
+#[test]
+fn text_bake_translates_and_scales_glyph_geometry() {
+    #[derive(Clone)]
+    struct TextProps;
+    impl Props for TextProps {}
+    fn text_inner(ctx: &Ctx, xf: Option<Transform>) -> VNode {
+        let _ = ctx.signal(0u32);
+        Div("root").style(Style::new().size(800, 600)).child(
+            Div("twrap")
+                .style(Style::new().size(200, 30).transform(xf))
+                .child(VNode::from(Text::new("hi").size(20).build())),
+        )
+    }
+    fn text_scene_plain(ctx: &Ctx, _: &TextProps) -> VNode {
+        text_inner(ctx, None)
+    }
+    fn text_scene_moved(ctx: &Ctx, _: &TextProps) -> VNode {
+        text_inner(ctx, Some(Transform::translate(10, 0)))
+    }
+    fn text_scene_scaled(ctx: &Ctx, _: &TextProps) -> VNode {
+        text_inner(ctx, Some(Transform::scale(2, 2)))
+    }
+    fn text_plan(scene: fn(&Ctx, &TextProps) -> VNode) -> FramePlan {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        host.set_text_service(Box::new(FakeText));
+        host.mount("T", TextProps, scene);
+        host.run_until_idle();
+        let builder = FramePlanBuilder::new(1.0);
+        host.with_retained_mut(|rec, styles| builder.build_full(rec, styles))
+    }
+    fn text_op(plan: &FramePlan) -> (f32, f32, f32, f32) {
+        plan.ops
+            .iter()
+            .find_map(|op| match op {
+                DrawOp::Text {
+                    x, glyphs, em_size, ..
+                } => Some((*x, glyphs[0].advance, *em_size, glyphs[1].x)),
+                _ => None,
+            })
+            .expect("text op")
+    }
+    let (px, pa, pe, pg1) = text_op(&text_plan(text_scene_plain));
+    let (mx, ma, me, mg1) = text_op(&text_plan(text_scene_moved));
+    assert!((mx - px - 10.0).abs() < 1e-3, "text shifts by exactly dx");
+    assert_eq!(
+        (ma, me, mg1),
+        (pa, pe, pg1),
+        "pure translate touches no glyph metrics"
+    );
+    let (_sx, sa, se, sg1) = text_op(&text_plan(text_scene_scaled));
+    assert!((sa - pa * 2.0).abs() < 1e-6, "advances scale by sx");
+    assert!((se - pe * 2.0).abs() < 1e-6, "em scales by sy");
+    assert!((sg1 - pg1 * 2.0).abs() < 1e-6, "cell offsets scale by sx");
+}

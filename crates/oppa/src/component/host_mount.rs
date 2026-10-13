@@ -35,6 +35,7 @@ impl ComponentHost {
             evaluator: RefCell::new(TransitionEvaluator::new()),
             diag: RefCell::new(crate::diag::RingLog::default_log()),
             trans_anim: Cell::new(false),
+            settle_observers: RefCell::new(Vec::new()),
             close_requested_flag: Cell::new(false),
             system_bars_request: Cell::new(None),
             selection_handles_visible: Cell::new(true),
@@ -395,31 +396,12 @@ impl ComponentHost {
         // through the retired node, whose paths refuse loudly).
         self.clear_retired_input(&diff);
         // TIME drive (M8, §9.1): the commit that creates interpolations
-        // registers the settle animation (once — the flag holds while it
-        // lives); frames continue at cadence until it retires, then the
-        // loop idles. Stamped-only commits never register (zero actives).
-        if self.inner.evaluator.borrow().active_count() > 0 && !self.inner.trans_anim.get() {
-            self.inner.trans_anim.set(true);
-            let weak: Weak<HostInner> = Rc::downgrade(&self.inner);
-            self.inner.rt.add_animation(move |now| {
-                let Some(inner) = weak.upgrade() else {
-                    return false;
-                };
-                let live = inner.evaluator.borrow_mut().settle(now);
-                if live == 0 {
-                    inner.trans_anim.set(false);
-                } else {
-                    // Repaint drive (M8): interpolation progress writes no
-                    // signals, so the damage discipline would never see it
-                    // — re-dirty exactly the live nodes every frame. The
-                    // builder rebuilds them, backends re-splice them, the
-                    // surface advances; settled frames go quiet again.
-                    let nodes = inner.evaluator.borrow().live_nodes();
-                    inner.rec.borrow_mut().mark_paint_dirty(&nodes);
-                }
-                live > 0
-            });
-            self.inner.rt.request_frame();
+        // arms the shared settle drain (one animation while anything
+        // lives — tracks or observers); frames continue at cadence
+        // until it retires, then the loop idles. Stamped-only commits
+        // never arm (zero actives and no observers).
+        if self.inner.evaluator.borrow().active_count() > 0 {
+            self.ensure_settle_drain();
         }
         // Commit dirt implies frame demand (decision 75): component effects
         // run synchronously at mount (outside any frame), so without this
@@ -440,6 +422,57 @@ impl ComponentHost {
                 meter.note_commit_dirty(diff.ops.len());
             }
         }
+    }
+
+    /// Arms the shared TIME settle drain unless already armed
+    /// (decision 512): one animation retires tracks, re-dirties live
+    /// nodes for repaint, and fires completion observers — tracks and
+    /// observers share it, never two animations.
+    pub(super) fn ensure_settle_drain(&self) {
+        if self.inner.trans_anim.get() {
+            return;
+        }
+        self.inner.trans_anim.set(true);
+        let weak: Weak<HostInner> = Rc::downgrade(&self.inner);
+        self.inner.rt.add_animation(move |now| {
+            let Some(inner) = weak.upgrade() else {
+                return false;
+            };
+            let live = inner.evaluator.borrow_mut().settle(now);
+            if live == 0 {
+                inner.trans_anim.set(false);
+            } else {
+                // Repaint drive (M8): interpolation progress writes no
+                // signals, so the damage discipline would never see it
+                // — re-dirty exactly the live nodes every frame. The
+                // builder rebuilds them, backends re-splice them, the
+                // surface advances; settled frames go quiet again.
+                let nodes = inner.evaluator.borrow().live_nodes();
+                inner.rec.borrow_mut().mark_paint_dirty(&nodes);
+            }
+            // Decision 512: completion observers — fire one-shot
+            // callbacks for nodes with no live track (retired this
+            // tick or already settled). Take-then-extend: chained
+            // re-observations during firing re-queue into the freed
+            // table instead of clobbering the kept set. Callbacks run
+            // without the evaluator borrowed (they may observe or
+            // signal freely).
+            if !inner.settle_observers.borrow().is_empty() {
+                let pending = std::mem::take(&mut *inner.settle_observers.borrow_mut());
+                let (fire, keep): (Vec<_>, Vec<_>) = {
+                    let ev = inner.evaluator.borrow();
+                    pending
+                        .into_iter()
+                        .partition(|(node, _)| ev.is_settled(*node))
+                };
+                for (_, cb) in fire {
+                    cb();
+                }
+                inner.settle_observers.borrow_mut().extend(keep);
+            }
+            live > 0
+        });
+        self.inner.rt.request_frame();
     }
 }
 impl Default for ComponentHost {

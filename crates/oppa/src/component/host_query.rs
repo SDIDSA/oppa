@@ -1,4 +1,6 @@
 use super::*;
+use crate::style::AffineST;
+use crate::vnode::Tag;
 
 impl ComponentHost {
     /// Committed box (untracked — paint/a11y/tests, never effects).
@@ -163,10 +165,74 @@ impl ComponentHost {
     /// Core-side hit-test over committed boxes (renderer-independent).
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {
         let rec = self.inner.rec.borrow();
-        input::hit_test(&rec, x, y)
+        let styles = self.inner.styles.borrow();
+        let now = self.inner.rt.now_secs();
+        input::hit_test(&rec, &styles, x, y, &|id| {
+            let retained = styles.get(rec.get(id)?.style).and_then(|s| s.transform);
+            // Evaluator-live transforms win over retained ones (hit
+            // follows the mid-flight visual at event time); settled
+            // nodes resolve to their committed target here.
+            Some(
+                self.inner
+                    .evaluator
+                    .borrow()
+                    .resolve_transform(id, retained, now),
+            )
+        })
     }
 
-    /// Scroll target at a point (decision 250): hit-tests the leaf,
+    /// Accumulated paint transform from `id` up through its
+    /// ancestors (decision 511): evaluator-live values win (same
+    /// sampling as [`ComponentHost::hit_test`]), composing child
+    /// inside parent down to the nearest enclosing `Portal` — or the
+    /// root when none encloses. Portals reset accumulation (ancestors
+    /// above a portal never move its content — the builder rule, and
+    /// the DOM rule where portal content lives outside transformed
+    /// ancestors' elements). Identity for untransformed chains (the
+    /// byte-identical fast path — every consumer below is a no-op
+    /// then). Untracked.
+    pub fn accumulated_transform(&self, id: NodeId) -> AffineST {
+        let rec = self.inner.rec.borrow();
+        let styles = self.inner.styles.borrow();
+        let now = self.inner.rt.now_secs();
+        let ev = self.inner.evaluator.borrow();
+        let mut acc = AffineST::identity();
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            let Some(node) = rec.get(c) else {
+                break;
+            };
+            let retained = styles.get(node.style).and_then(|s| s.transform);
+            let t = ev.resolve_transform(c, retained, now);
+            if !t.is_identity() {
+                t.require_supported();
+                if let Some(b) = &node.layout {
+                    let local = t.to_local_affine(b.x + b.w * 0.5, b.y + b.h * 0.5);
+                    acc = AffineST::compose(local, acc);
+                }
+            }
+            if node.tag == Tag::Portal {
+                break;
+            }
+            cur = node.parent;
+        }
+        acc
+    }
+
+    /// Device-space point mapped into `id`'s local (layout) space
+    /// (decision 511 — the inverse of the node's accumulated paint
+    /// transform). Geometric consumers (field caret/drag, handle
+    /// grabs, bar cells) read layout-space geometry through this, so
+    /// taps land where the pixels are on every backend. Identity for
+    /// untransformed chains (bit-exact — existing consumers behave
+    /// exactly as before). Untracked.
+    pub fn local_point(&self, id: NodeId, x: f32, y: f32) -> (f32, f32) {
+        let acc = self.accumulated_transform(id);
+        if acc.is_identity() {
+            return (x, y);
+        }
+        acc.unmap_point(x, y)
+    }
     /// then walks up through retained parents returning the first
     /// node carrying a `Scroll` handler — the inject-compatible
     /// contract (`kind_handler` refuses handlerless targets loudly,
@@ -180,7 +246,7 @@ impl ComponentHost {
     /// other hit-test caller).
     pub fn scroll_target_at(&self, x: f32, y: f32) -> Option<NodeId> {
         let rec = self.inner.rec.borrow();
-        let mut curr = input::hit_test(&rec, x, y)?;
+        let mut curr = self.hit_test(x, y)?;
         loop {
             let node = rec.get(curr)?;
             if node.handlers.iter().any(|(k, _)| *k == EventKind::Scroll) {
