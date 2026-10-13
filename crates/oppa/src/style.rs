@@ -65,6 +65,28 @@ pub struct Color(pub u32);
 
 impl Color {
     pub const TRANSPARENT: Color = Color(0x0000_0000);
+
+    /// Effective alpha byte for painters (Round 27.2): the top byte
+    /// of 32-bit values (`0xAARRGGBB`), full opacity for 24-bit
+    /// values (`0xRRGGBB` — the codebase-wide literal shape, whose
+    /// would-be alpha byte is the color itself). Before this rule
+    /// every backend read alpha from the style `opacity` alone, so
+    /// translucent literals painted fully opaque — a silent no-op
+    /// the painter tests now pin.
+    ///
+    /// Sharp edge, stated plainly: the zero value reads opaque
+    /// black here (`0x000000` is a working black ink in existing
+    /// scenes), so [`TRANSPARENT`](Self::TRANSPARENT) keeps working
+    /// only through the plan builder's explicit skips (bg, ring,
+    /// bands — never painted), never by flowing into a converter.
+    /// Keep it out of ink/shadow colors.
+    pub fn alpha_u8(self) -> u8 {
+        if self.0 > 0x00FF_FFFF {
+            (self.0 >> 24) as u8
+        } else {
+            0xFF
+        }
+    }
 }
 
 /// Easing subset, CSS-expressible by lock (§9.1: v1 animatables are the
@@ -81,7 +103,7 @@ pub enum Ease {
 /// Box shadow, data only (Round 1.3, decision 254: `blur` is a
 /// quantized stepped soft shadow — the FramePlan builder expands a
 /// blurred shadow into offset solid rects with a linear alpha falloff,
-/// so CPU/Vello/DOM agree by construction; a true Gaussian stays a
+/// so CPU/GPU/DOM agree by construction; a true Gaussian stays a
 /// follow-up). Painted under the node's box, never affects layout
 /// (excluded from `style_layout_bits` like every paint-only field).
 /// `Color::TRANSPARENT` paints nothing.
@@ -137,6 +159,31 @@ pub struct LinearGradient {
     pub to: Color,
     /// False = top-to-bottom; true = left-to-right.
     pub horizontal: bool,
+}
+
+/// Two-stop radial background gradient, data only (Round 27.2,
+/// decision 507): center + radius in node-local px with a center
+/// (`from`) and rim (`to`) color. The FramePlan builder expands it
+/// into 1px concentric solid-circle steps (largest first, so each
+/// smaller disc overpaints — the linear-strip doctrine applied
+/// radially), so CPU/GPU agree by construction; the DOM backend
+/// serves native `radial-gradient` (stops + geometry agree, raster
+/// interpolation is browser-owned, stated tolerance). Replaces `bg`
+/// — setting any two of `bg`/`bg_gradient`/`bg_radial` refuses loudly
+/// at plan build — and refuses loudly with `radius`/`circle` (round
+/// clipping is a follow-up). Paint-only, never layout.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RadialGradient {
+    /// Center x in node-local px (origin at the committed box top-left).
+    pub cx: Px,
+    /// Center y in node-local px.
+    pub cy: Px,
+    /// Radius in px (1px ring steps — like the linear strips).
+    pub r: Px,
+    /// Center color.
+    pub from: Color,
+    /// Rim color.
+    pub to: Color,
 }
 
 /// One grid track (Phase 36 PR2a, decision 353 — G15 minimal Grid):
@@ -511,6 +558,10 @@ pub struct Style {
     /// Two-stop linear background fill (Round 1.3; paint-only, never
     /// layout-affecting; replaces `bg` — see [`LinearGradient`]).
     pub bg_gradient: Option<LinearGradient>,
+    /// Two-stop radial background fill (Round 27.2; paint-only,
+    /// never layout-affecting; replaces `bg` — see
+    /// [`RadialGradient`]).
+    pub bg_radial: Option<RadialGradient>,
     /// Text ink override (M5; `DrawOp::Text` falls back to the build
     /// theme's `text_primary` when absent — see `oppa::render`).
     pub ink: Option<Color>,
@@ -557,6 +608,59 @@ impl StyleBuilder {
     pub fn size(mut self, w: impl IntoPx, h: impl IntoPx) -> Self {
         self.inner.w = Some(w.into_px());
         self.inner.h = Some(h.into_px());
+        self
+    }
+
+    /// Square box (`size` with both sides equal — icon slots, avatar
+    /// boxes, centered glyph cells; decision 510).
+    pub fn square(mut self, s: impl IntoPx) -> Self {
+        let px = s.into_px();
+        self.inner.w = Some(px);
+        self.inner.h = Some(px);
+        self
+    }
+
+    /// Centers content on both axes (`align_items` + `justify_content`
+    /// — icon slots, avatar monograms, tip cards; decision 510).
+    pub fn center(mut self) -> Self {
+        self.inner.align_items = Some(AlignItems::Center);
+        self.inner.justify_content = Some(JustifyContent::Center);
+        self
+    }
+
+    /// Uniform padding on all four sides (the `pad_x`/`pad_y` shape
+    /// for all-over insets like card panels; per-side methods refine
+    /// it under the CSS-shorthand rule).
+    pub fn pad_all(mut self, p: impl IntoPx) -> Self {
+        let px = p.into_px();
+        self.inner.pad_x = Some(px);
+        self.inner.pad_y = Some(px);
+        self
+    }
+
+    /// Symmetric padding as `(horizontal, vertical)` (the `margin`
+    /// shape for pads — panels with one horizontal and one vertical
+    /// inset; per-side methods refine it).
+    pub fn pad_xy(mut self, x: impl IntoPx, y: impl IntoPx) -> Self {
+        self.inner.pad_x = Some(x.into_px());
+        self.inner.pad_y = Some(y.into_px());
+        self
+    }
+
+    /// Per-side padding in CSS `top right bottom left` order (the
+    /// four-call chain as one call — title-bar insets, brand groups;
+    /// each set side wins over `pad_x`/`pad_y`, the shorthand rule).
+    pub fn pad_trbl(
+        mut self,
+        top: impl IntoPx,
+        right: impl IntoPx,
+        bottom: impl IntoPx,
+        left: impl IntoPx,
+    ) -> Self {
+        self.inner.pad_top = Some(top.into_px());
+        self.inner.pad_right = Some(right.into_px());
+        self.inner.pad_bottom = Some(bottom.into_px());
+        self.inner.pad_left = Some(left.into_px());
         self
     }
 
@@ -945,6 +1049,28 @@ impl StyleBuilder {
         self
     }
 
+    /// Two-stop radial background fill (`from` at (`cx`, `cy`) →
+    /// `to` at radius `r`, all node-local px — Round 27.2; same
+    /// replace-`bg` rules as [`Self::bg_gradient`], see
+    /// [`RadialGradient`]).
+    pub fn bg_radial(
+        mut self,
+        cx: impl IntoPx,
+        cy: impl IntoPx,
+        r: impl IntoPx,
+        from: Color,
+        to: Color,
+    ) -> Self {
+        self.inner.bg_radial = Some(RadialGradient {
+            cx: cx.into_px(),
+            cy: cy.into_px(),
+            r: r.into_px(),
+            from,
+            to,
+        });
+        self
+    }
+
     /// Text ink override for `Text` leaves under this style (falls back
     /// to the build theme's `text_primary` when absent).
     pub fn ink(mut self, color: Color) -> Self {
@@ -1023,173 +1149,4 @@ impl From<StyleBuilder> for Style {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builder_roundtrip_and_intern_dedup() {
-        let a: Style = Style::new().size(44, 24).radius(12).build();
-        let b: Style = Style::new().size(44, 24).radius(12).build();
-        assert_eq!(a, b);
-        let mut t = crate::interner::Interner::new();
-        let ia = a.clone().intern(&mut t);
-        let ib = b.intern(&mut t);
-        assert_eq!(ia, ib, "equal payloads share one StyleId");
-        let knob: Style = Style::new().size(18, 18).circle().x(23.0).build();
-        assert_ne!(ia, knob.intern(&mut t));
-    }
-
-    #[test]
-    fn px_bit_roundtrip() {
-        for v in [0.0f32, 3.0, 23.0, 56.0, 600.0, 0.5] {
-            assert_eq!(Px::of(v).get(), v);
-        }
-    }
-
-    #[test]
-    fn border_and_ink_are_structural_intern_keys() {
-        let a: Style = Style::new()
-            .size(44, 24)
-            .border(2, Color(0xAA_BB_CC))
-            .build();
-        let b: Style = Style::new()
-            .size(44, 24)
-            .border(2, Color(0xAA_BB_CC))
-            .build();
-        let c: Style = Style::new()
-            .size(44, 24)
-            .border(3, Color(0xAA_BB_CC))
-            .build();
-        let d: Style = Style::new().size(44, 24).build();
-        assert_eq!(a, b);
-        assert_ne!(a, c, "border width participates in identity");
-        assert_ne!(a, d, "border presence participates in identity");
-        let mut t = crate::interner::Interner::new();
-        assert_eq!(a.clone().intern(&mut t), b.intern(&mut t));
-        assert_ne!(a.intern(&mut t), c.intern(&mut t));
-
-        let inked: Style = Style::new().ink(Color(0x12_34_56)).build();
-        let plain: Style = Style::default();
-        assert_ne!(inked, plain, "ink presence participates in identity");
-        assert_eq!(inked.ink, Some(Color(0x12_34_56)));
-    }
-
-    #[test]
-    fn per_side_fields_refine_shorthands_and_corners_resolve() {
-        let plain: Style = Style::new().pad_x(8).build();
-        assert_eq!((plain.pad_left, plain.pad_top), (None, None));
-        let s: Style = Style::new()
-            .pad_x(8)
-            .pad_left(2)
-            .margin_y(4)
-            .margin_top(1)
-            .radius(6)
-            .radius_tl(10)
-            .build();
-        assert_eq!(s.pad_left.map(|p| p.get()), Some(2.0));
-        assert_eq!(s.pad_x.map(|p| p.get()), Some(8.0), "shorthand kept");
-        assert_eq!(s.margin_top.map(|p| p.get()), Some(1.0));
-        // Corners resolve per-side with uniform fallback, CSS order.
-        let corners = s.corner_radii().expect("a set corner resolves");
-        assert_eq!(
-            corners.map(|p| p.get()),
-            [10.0, 6.0, 6.0, 6.0],
-            "set tl wins, rest inherit the uniform"
-        );
-        let uniform: Style = Style::new().radius(6).build();
-        assert_eq!(uniform.corner_radii(), None, "uniform keeps the fast path");
-        assert!(uniform.has_any_radius() && s.has_any_radius());
-        assert!(!plain.has_any_radius());
-    }
-
-    #[test]
-    fn shadow_blur_defaults_zero_and_edges_merge() {
-        // `.shadow` alone keeps the shipped offset-solid shape (blur 0).
-        let plain: Style = Style::new().size(44, 24).shadow(1, 2, Color(1)).build();
-        assert_eq!(plain.shadow.map(|s| s.blur.get()), Some(0.0));
-        let blurred: Style = Style::new()
-            .size(44, 24)
-            .shadow(1, 2, Color(1))
-            .shadow_blur(3)
-            .build();
-        assert_eq!(blurred.shadow.map(|s| s.blur.get()), Some(3.0));
-        assert_ne!(plain, blurred, "blur participates in identity");
-        // Per-edge singles merge; color last-wins (documented).
-        let edges: Style = Style::new()
-            .border_top(2, Color(1))
-            .border_bottom(4, Color(2))
-            .build();
-        let e = edges.border_edges.expect("edges");
-        assert_eq!(e.top.get(), 2.0);
-        assert_eq!(e.bottom.get(), 4.0);
-        assert_eq!(e.left.get(), 0.0);
-        assert_eq!(e.right.get(), 0.0);
-        assert_eq!(e.color, Color(2), "color last-wins");
-        // Gradient direction rides the constructor used.
-        let v: Style = Style::new().bg_gradient(Color(1), Color(2)).build();
-        let h: Style = Style::new()
-            .bg_gradient_horizontal(Color(1), Color(2))
-            .build();
-        assert_eq!(v.bg_gradient.map(|g| g.horizontal), Some(false));
-        assert_eq!(h.bg_gradient.map(|g| g.horizontal), Some(true));
-        assert_ne!(v, h, "direction participates in identity");
-    }
-
-    #[test]
-    #[should_panic(expected = "without a shadow")]
-    fn shadow_blur_without_shadow_panics_loudly() {
-        let _ = Style::new().shadow_blur(3).build();
-    }
-
-    #[test]
-    fn cursor_defaults_none_and_participates_in_identity() {
-        assert_eq!(Style::default().cursor, None, "arrow by default");
-        assert_eq!(CursorIcon::default(), CursorIcon::Default);
-        let pointed: Style = Style::new().cursor(CursorIcon::Pointer).build();
-        let texted: Style = Style::new().cursor(CursorIcon::Text).build();
-        let plain: Style = Style::new().build();
-        assert_eq!(pointed.cursor, Some(CursorIcon::Pointer));
-        assert_ne!(pointed, texted, "cursor kind participates in identity");
-        assert_ne!(pointed, plain, "cursor presence participates in identity");
-    }
-
-    #[test]
-    fn phase36_grid_flex_and_clamp_participate_in_identity() {
-        let plain: Style = Style::new().build();
-        assert!(plain.grid_cols.is_empty() && plain.grid_rows.is_empty());
-        assert_eq!((plain.col_span, plain.row_span), (None, None));
-        assert_eq!((plain.flex_grow, plain.flex_shrink), (None, None));
-        let grid: Style = Style::new()
-            .grid_cols(vec![
-                GridTrack::Px(Px::of(100.0)),
-                GridTrack::Fr(Px::of(1.0)),
-            ])
-            .grid_rows(vec![GridTrack::Auto])
-            .col_span(2)
-            .flex_grow(1)
-            .min_w(50)
-            .max_w(400)
-            .build();
-        assert_ne!(
-            grid, plain,
-            "grid/flex/clamp presence participates in identity"
-        );
-        assert_eq!(
-            grid.grid_cols,
-            vec![GridTrack::Px(Px::of(100.0)), GridTrack::Fr(Px::of(1.0))]
-        );
-        let mut t = crate::interner::Interner::new();
-        let same: Style = Style::new()
-            .grid_cols(vec![
-                GridTrack::Px(Px::of(100.0)),
-                GridTrack::Fr(Px::of(1.0)),
-            ])
-            .grid_rows(vec![GridTrack::Auto])
-            .col_span(2)
-            .flex_grow(1)
-            .min_w(50)
-            .max_w(400)
-            .build();
-        assert_eq!(grid.clone().intern(&mut t), same.intern(&mut t));
-    }
-}
+mod tests;

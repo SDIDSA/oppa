@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { isFirefox, launchFirefox } from './driver.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(here, '..', '..', 'crates', 'oppa-web', 'web');
@@ -26,7 +27,7 @@ const EDGE_CANDIDATES = [
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
 const edge = EDGE_CANDIDATES.find((p) => fs.existsSync(p));
-if (!edge) {
+if (!edge && !isFirefox) {
   console.error('webapp: no Edge binary found (loud requirement, never a silent pass)');
   process.exit(2);
 }
@@ -80,15 +81,23 @@ const verdict = {
 };
 
 let browser = null;
+let ffCleanup = null;
 try {
-  browser = await puppeteer.launch({
-    executablePath: edge,
-    headless: true,
-    args: ['--hide-scrollbars'],
-    defaultViewport: { width: 900, height: 700, deviceScaleFactor: 1 },
-  });
+  if (isFirefox) {
+    ({ browser, cleanup: ffCleanup } = await launchFirefox());
+  } else {
+    browser = await puppeteer.launch({
+      executablePath: edge,
+      headless: true,
+      args: ['--hide-scrollbars'],
+      defaultViewport: { width: 900, height: 700, deviceScaleFactor: 1 },
+    });
+  }
   verdict.browser = await browser.userAgent();
   const page = await browser.newPage();
+  if (isFirefox) {
+    await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 1 });
+  }
   const errors = [];
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   page.on('console', (m) => {
@@ -215,6 +224,7 @@ fs.writeFileSync(path.join(resultsDir, 'webapp.json'), JSON.stringify(verdict, n
 console.log(
   `webapp: ready=${verdict.ready} states=${verdict.initial}/${verdict.after_click1}/${verdict.after_click2} fetch=${verdict.fetch_quote} nav=${verdict.nav_push_url_ok}/${verdict.nav_forward_settings} storage=${verdict.storage_persisted_on}/${verdict.storage_persisted_off} img=${verdict.img_decoded} pass=${verdict.pass}${verdict.note ? ' note=' + verdict.note : ''}`,
 );
-await browser?.close();
+if (ffCleanup) await ffCleanup();
+else await browser?.close();
 server.kill();
 process.exit(verdict.pass ? 0 : 1);

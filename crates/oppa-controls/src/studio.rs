@@ -263,6 +263,17 @@ fn task_status_cell(ctx: &Ctx, p: &GridCellProps<Task>) -> VNode {
             height: 28.0,
             debug: SharedString::from("task-done"),
             on_press: flip,
+            icon: None,
+            icon_size: 16.0,
+            vector_icon: None,
+            fill: None,
+            pressed_fill: None,
+            ink: None,
+            radius: None,
+            text_style: None,
+            label_center: crate::button::ButtonLabelCenter::Group,
+            full_width: false,
+            content_pad: 0.0,
         },
         Button,
     )
@@ -665,6 +676,7 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
                 label: SharedString::from("Search"),
                 initial: SharedString::from(""),
                 placeholder: Some(SharedString::from("Filter tasks…")),
+                placeholder_ink: None,
                 enabled: true,
                 width: 220.0,
                 height: 32.0,
@@ -676,6 +688,9 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
                 required: false,
                 error_message: None,
                 helper_text: None,
+                icon: None,
+                icon_size: 16.0,
+                focused: None,
             },
             UncontrolledTextInput,
         ),
@@ -690,6 +705,17 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
                 height: 32.0,
                 debug: SharedString::from("studio-theme"),
                 on_press: theme_toggle.clone(),
+                icon: None,
+                icon_size: 16.0,
+                vector_icon: None,
+                fill: None,
+                pressed_fill: None,
+                ink: None,
+                radius: None,
+                text_style: None,
+                label_center: crate::button::ButtonLabelCenter::Group,
+                full_width: false,
+                content_pad: 0.0,
             },
             Button,
         ),
@@ -715,6 +741,17 @@ pub fn TaskStudio(ctx: &Ctx, props: &StudioProps) -> VNode {
                 height: 32.0,
                 debug: SharedString::from("studio-add"),
                 on_press: add.clone(),
+                icon: None,
+                icon_size: 16.0,
+                vector_icon: None,
+                fill: None,
+                pressed_fill: None,
+                ink: None,
+                radius: None,
+                text_style: None,
+                label_center: crate::button::ButtonLabelCenter::Group,
+                full_width: false,
+                content_pad: 0.0,
             },
             Button,
         ),
@@ -906,6 +943,17 @@ fn sort_button(ctx: &Ctx, mode: &Signal<u8>, value: u8, label: &str, debug: &str
             height: 32.0,
             debug: SharedString::from(debug),
             on_press: press,
+            icon: None,
+            icon_size: 16.0,
+            vector_icon: None,
+            fill: None,
+            pressed_fill: None,
+            ink: None,
+            radius: None,
+            text_style: None,
+            label_center: crate::button::ButtonLabelCenter::Group,
+            full_width: false,
+            content_pad: 0.0,
         },
         Button,
     )
@@ -932,6 +980,17 @@ fn export_content(ctx: &Ctx, p: &ExportContentProps) -> VNode {
             height: 32.0,
             debug: p.debug.clone(),
             on_press: p.on_export.clone(),
+            icon: None,
+            icon_size: 16.0,
+            vector_icon: None,
+            fill: None,
+            pressed_fill: None,
+            ink: None,
+            radius: None,
+            text_style: None,
+            label_center: crate::button::ButtonLabelCenter::Group,
+            full_width: false,
+            content_pad: 0.0,
         },
         Button,
     )
@@ -955,118 +1014,4 @@ fn export_button(ctx: &Ctx, label: &str, debug: &str, tip: &str, on_export: Acti
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rows_of(tasks: Vec<Task>) -> Vec<Row<Task>> {
-        tasks
-            .into_iter()
-            .enumerate()
-            .map(|(i, value)| Row {
-                id: RowId(i as u64),
-                value,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn json_escapes_and_shapes() {
-        let rows = rows_of(vec![Task {
-            title: SharedString::from("Say \"hi\"\nnow"),
-            notes: SharedString::from("back\\slash"),
-            priority: 2,
-            done: false,
-        }]);
-        assert_eq!(
-            export_tasks_json(&rows),
-            "{\"tasks\":[{\"id\":0,\"title\":\"Say \\\"hi\\\"\\nnow\",\"notes\":\"back\\\\slash\",\"priority\":2,\"done\":false}]}"
-        );
-        assert_eq!(export_tasks_json(&[]), "{\"tasks\":[]}");
-    }
-
-    #[test]
-    fn csv_quotes_only_when_needed() {
-        let rows = rows_of(vec![
-            Task {
-                title: SharedString::from("plain"),
-                notes: SharedString::from("has, comma"),
-                priority: 0,
-                done: true,
-            },
-            Task {
-                title: SharedString::from("quote \"me\""),
-                notes: SharedString::from("line\nbreak"),
-                priority: 1,
-                done: false,
-            },
-        ]);
-        assert_eq!(
-            export_tasks_csv(&rows),
-            "id,title,notes,priority,done\n0,plain,\"has, comma\",0,true\n1,\"quote \"\"me\"\"\",\"line\nbreak\",1,false\n"
-        );
-    }
-
-    #[test]
-    fn priority_labels_cover_bytes() {
-        assert_eq!(priority_label(0), "Low");
-        assert_eq!(priority_label(1), "Medium");
-        assert_eq!(priority_label(2), "High");
-        assert_eq!(priority_label(9), "Low");
-    }
-
-    /// Phase 39b (decision 380): the upgraded studio mounts the
-    /// Splitter body (grid + inspector behind one divider), the
-    /// Menubar (File/View titles opening a Menu popup), the
-    /// RichText status, and the Canvas done-meter — same E2E
-    /// debugs inside (`studio-add`, `studio-search`, `insp-title`,
-    /// `task-title`, `modal-confirm` all preserved). Settles
-    /// bounded (full-studio headless quiescence is NOT asserted:
-    /// the tree keeps frame demand without input even unmodified
-    /// (probe-verified pre-existing — DesktopLoop pumps it in
-    /// production/E2E, so this test drives bounded frames and
-    /// asserts structure, never `run_until_idle`).
-    #[test]
-    fn studio_mounts_splitter_menubar_and_meter() {
-        use oppa::{find_retained_by_debug, ComponentHost, InputEvent};
-        let host = ComponentHost::new();
-        host.mount(
-            "Studio",
-            StudioProps {
-                seed: sample_tasks(),
-                key: oppa::fetch_key("test:studio-39b"),
-                hooks: None,
-            },
-            TaskStudio,
-        );
-        for _ in 0..50 {
-            host.run_once();
-        }
-        for debug in [
-            "studio-split-divider",
-            "menubar-bar",
-            "studio-meter",
-            "studio-grid",
-            "studio-add",
-            "studio-search",
-        ] {
-            assert_eq!(
-                find_retained_by_debug(&host, debug).len(),
-                1,
-                "{debug} mounts"
-            );
-        }
-        // File title opens a Menu popup (standalone dropdown).
-        let title = find_retained_by_debug(&host, "menubar-title-0")[0];
-        let b = host.committed_box(title).expect("title hit box");
-        host.inject_input(InputEvent::pointer_down(b.x + b.w / 2.0, b.y + b.h / 2.0));
-        host.inject_input(InputEvent::pointer_up(b.x + b.w / 2.0, b.y + b.h / 2.0));
-        for _ in 0..50 {
-            host.run_once();
-        }
-        assert_eq!(
-            find_retained_by_debug(&host, "menu-popup").len(),
-            1,
-            "File opens its menu"
-        );
-    }
-}
+mod tests;

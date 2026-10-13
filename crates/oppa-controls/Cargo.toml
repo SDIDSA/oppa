@@ -7,6 +7,10 @@ description = "G2: shipped control catalog — Button, Checkbox, Toggle, Slider 
 
 [dependencies]
 oppa = { path = "../oppa" }
+# Decision 478: SVG icon deposits for control icon slots (resvg
+# rasterizer — the same backend `oppa-dom` rides on wasm, so this
+# stays portable to every target).
+oppa-image = { path = "../oppa-image" }
 # Round 14.1: generic `#[derive(Props)]` for the catalog's generic
 # props (zero-dep macro crate, same workspace).
 oppa-macros = { path = "../oppa-macros" }

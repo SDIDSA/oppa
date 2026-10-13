@@ -18,7 +18,7 @@
 //! `transition:none` suppression) and stepped inline re-declarations
 //! for keyframe tracks (evaluated per frame through the same
 //! resolvers, suppressed the same one commit); all three hooks
-//! consume it (cpu/vello/dom `hook.rs`).
+//! consume it (cpu/gpu/dom `hook.rs`).
 //!
 //! v1 animatables ([`AnimProp`]): `bg` and `opacity` — the CSS-expressible
 //! set (§9.1), so the DOM mapping holds. Both are paint-only (never in the

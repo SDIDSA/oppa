@@ -4,9 +4,11 @@
 //!
 //! Your app grows from here: add controls from `oppa-controls`
 //! (see `docs/ARCHITECTURE.md`), headless tests from `oppa-testkit`.
+//! Run it with `cargo run` (the desktop equivalent of web
+//! `cargo oppa serve`).
 
 use oppa::{AlignItems, Column, Ctx, SharedString, Style, Text, VNode};
-use oppa_app::{run_desktop, WindowOptions};
+use oppa_app::desktop_main;
 use oppa_controls::{Button, ButtonProps};
 
 fn hello(ctx: &Ctx, _props: &()) -> VNode {
@@ -34,9 +36,4 @@ fn hello(ctx: &Ctx, _props: &()) -> VNode {
         ])
 }
 
-fn main() {
-    if let Err(e) = run_desktop(WindowOptions::new("Hello, Oppa", 400, 300), (), hello) {
-        eprintln!("hello-desktop: FATAL: {e}");
-        std::process::exit(1);
-    }
-}
+desktop_main!("Hello, Oppa", 400, 300, hello);

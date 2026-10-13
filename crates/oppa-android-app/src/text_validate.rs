@@ -3,7 +3,7 @@
 //! `oppa-text-android` and writes `shapes.txt` in the exact line
 //! format the host reference test compares (`text | id:adv ... |
 //! total`), plus the JNI platform-font record (`fonts_jni.txt` via
-//! [`super::fonts_jni`]).
+//! [`oppa_android_runner::fonts_jni`]).
 //!
 //! Corpus entries are `\u{...}` escapes only (decision 45 — no
 //! literal non-ASCII in source).
@@ -56,7 +56,7 @@ pub fn validate_text(app: &android_activity::AndroidApp, dir: &Path) -> Result<S
     let shape_ms = t.elapsed().as_secs_f64() * 1000.0;
     let body = lines.join("\n") + "\n";
     std::fs::write(dir.join("shapes.txt"), &body).map_err(|e| format!("write shapes.txt: {e}"))?;
-    let jni_record = super::fonts_jni::query_system_fonts(app)?;
+    let jni_record = oppa_android_runner::fonts_jni::query_system_fonts(app)?;
     std::fs::write(dir.join("fonts_jni.txt"), format!("{jni_record}\n"))
         .map_err(|e| format!("write fonts_jni.txt: {e}"))?;
     let jni_count = jni_record.lines().count();

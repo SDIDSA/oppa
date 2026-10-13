@@ -5,8 +5,7 @@ closed, Phase 36 PR1 Invoke/RangeValue).
 Sources: [`STATE.md`](../../STATE.md) (Done); code: `crates/oppa-shell-win/`,
 `crates/oppa-text-dwrite/`.
 
-- **Framework behavior:** full pipeline ownership; Vello GPU backend
-  (M6) + tiny-skia CPU backend (M4).
+- **Framework behavior:** full pipeline ownership; GPU rasterizer (`oppa-gpu`: `gpu`/`gpu-auto` Vulkan-first, `gpu-vulkan` / `gpu-dx12` / `gpu-gl` pins) + tiny-skia CPU backend (M4, GDI fallback). Decisions 388–389 removed Vello entirely and dropped the `custom` qualifier.
 - **Platform behavior (current):** real Win32 window
   (`WNDCLASSEXW`/`CreateWindowExW`/proc) on `PlatformShell`
   (`pump_events` + `set_ime`); real `WM_IME_*` handling with
@@ -27,6 +26,7 @@ Sources: [`STATE.md`](../../STATE.md) (Done); code: `crates/oppa-shell-win/`,
 - **Planned:** none open — Vello backend, UIA Invoke/RangeValue,
   and the hot-reload dylib swap all shipped (see
   [`STATE.md`](../../STATE.md) Done).
+- **File pickers (decisions 422/425):** Win32 open (`GetOpenFileNameW`) + COM save/folder, all three on the `DesktopLoop` slots with shared handles (missing slots refuse as `PickError::Unsupported`); the kitchen-sink example forwards them, so its Platform tab drives native dialogs.
 - **Packaging:** release exe is the blessed path; installer
   story open — see [packaging](../packaging.md) (G4,
   decision 215).

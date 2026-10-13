@@ -29,6 +29,7 @@ concept, this file wins.
 - **Date (`YYYY-MM-DD`)** — the picked-day value (decision 370): validated `Date::new` (loud) for authors, `parse_date` (`None`) for user text; every picker path binds into `[min, max]`.
 - **Bar recipe (highlight cursor)** — the shared Toolbar/Menubar interaction (decision 371): one press-owner container holds framework focus while a highlight cursor roves handlerless cells (Menu twins: effective/step/hit); Enter invokes, taps hit-test.
 - **FilePicker path** — the controlled picked destination (decision 371): `Some` on successful browse/save/pick (open takes the first path), untouched by dismissal; backends stay runner-owned, the control wraps request/poll.
+- **Picked file (`PickedFile` / `FileOpener`)** — the bytes open seam (decision 423): `name` (file name only, never a path) + `bytes` over async `request_bytes` / `poll_bytes`; Android SAF intents and Web pickers resolve by generation (stale discards).
 - **NavHost** — the declarative router (decision 372): renders the `NavStack` current route's factory; unknown names empty quietly; system back stays runner-owned (BackPress chain).
 - **App data dir (`app_data_dir`)** — the OS settings/cache home (decision 373): `%APPDATA%` / macOS support / `$XDG_DATA_HOME` or `~/.local/share` for one validated app-name segment (wasm refuses, escapes refuse); pairs with `NativeFs`.
 - **Value loop (U8)** — the DOM → framework text channel (decisions 377–379): `input` → pid + full value → `InputEvent::Text` → session commit (`on_change` parity, caret to end); fields bind by author-passed signal; focused swaps skip via keyed patches; preedit never forwards.
@@ -44,3 +45,4 @@ concept, this file wins.
 - **Fetcher** — the pluggable fetch backend seam (decision 362): `fetch(url)` off-thread; scripted doubles, app closures, and the wasm platform binding meet here, never a built-in client.
 - **Persisted** — signal-backed write-through persistence (decision 364): reads track, writes hit the signal and the `KvStore` synchronously; collections snapshot values in commit order through the same hook.
 - **Slot** — a stable virtualization position in `ScrollArea`; keys are slots, not items.
+- **GPU rasterizer (`oppa-gpu`)** — the pure-Rust GPU backend implementing `RendererBackend` on standard `wgpu` render pipelines (decision 384; the only GPU backend since decision 388): analytical SDF antialiasing for rects/circles, closed-form separable 2D Gaussian erf shadows, dynamic glyph atlas, Lyon vector path tessellation, zero compute shaders, direct swapchain render passes.

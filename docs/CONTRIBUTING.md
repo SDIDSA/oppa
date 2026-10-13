@@ -9,8 +9,8 @@ shape and `crates/` wins for behavior.
 ```powershell
 $env:CARGO_INCREMENTAL="0"   # Windows only
 cargo fmt --all -- --check
-cargo clippy --all-targets    # pre-existing lints are on record (FpsApp naming, oppa-app type-complexity, oppa-web borrow/import) — zero new warnings per round
-cargo check --target wasm32-unknown-unknown -p oppa -p oppa-controls -p oppa-dom -p oppa-web
+cargo clippy --all-targets    # zero warnings across all targets (Phase 40a decision 381)
+cargo check --target wasm32-unknown-unknown -p oppa -p oppa-controls -p oppa-dom -p oppa-app -p oppa-web
 cargo test --workspace --no-fail-fast   # CI runs parallel; use -j1 locally if GPU flakes
 ```
 
@@ -23,8 +23,14 @@ never fail and never pass silently.
 
 ## Entry points
 
-- Desktop: `run_desktop(WindowOptions, props, root)` / `run_desktop_with` hook.
-- Web: `WasmHost::mount_root / click / key / tick`.
+- Desktop: `run_desktop(WindowOptions, props, root)` /
+  `run_desktop_with` hook, or one-line `oppa_app::desktop_main!`.
+- Apps: `cargo oppa check|build|run --desktop|--web|--android`
+  (exactly one target; `serve` is `run --web`); Android refuses
+  loudly without a pipeline/device.
+- Web: app roots via `oppa_web::export_app!` over
+  `WasmHost::mount_root`; pages boot
+  the shared `web/oppa-bootstrap.js`; bindings `click / key / tick`.
 - Headless tests: testkit `Harness::new / mount / tap / assert` (public API only);
   `Harness::key / key_with / type_text / press_labeled` for keyboard/text.
 - Hot reload: `HotRegistry` + static/dylib source + `reload_to` → `ReloadReport`.

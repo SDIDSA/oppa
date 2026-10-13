@@ -1,0 +1,184 @@
+//! Headless proof of the Stylebook root: the same tree every
+//! `--style` mounts — no window, no platform code.
+
+use oppa::{drag_regions_for_style, find_retained_by_debug, WindowStyle};
+use oppa_testkit::Harness;
+use stylebook::{
+    parse_native_buttons_flag, parse_style_arg, style_arg, style_blurb, style_hint, style_title,
+    ChromeHooks, StylebookProps, StylebookRoot,
+};
+
+fn mount_style(style: WindowStyle) -> Harness {
+    mount_style_native(style, false)
+}
+
+fn mount_style_native(style: WindowStyle, native: bool) -> Harness {
+    let app = Harness::new();
+    app.mount(
+        "Stylebook",
+        StylebookProps {
+            style,
+            native,
+            hooks: ChromeHooks::default(),
+        },
+        StylebookRoot,
+    );
+    app
+}
+
+fn has_node(app: &Harness, debug: &str) -> bool {
+    !find_retained_by_debug(app.host(), debug).is_empty()
+}
+
+/// Decision 482: every style mounts its card with a working
+/// counter (the scene stays interactive under each chrome).
+#[test]
+fn counter_counts_under_every_style() {
+    for style in [
+        WindowStyle::Decorated,
+        WindowStyle::Undecorated,
+        WindowStyle::Transparent,
+        WindowStyle::Extended,
+    ] {
+        let app = mount_style(style);
+        assert!(has_node(&app, "stylebook-card"), "{style:?} cards");
+        app.tap("button");
+        app.run_idle();
+        let count: Vec<_> = find_retained_by_debug(app.host(), "button")
+            .into_iter()
+            .filter_map(|id| app.host().committed_box(id))
+            .collect();
+        assert_eq!(count.len(), 1, "{style:?} keeps one counter button");
+    }
+}
+
+/// Decision 494: custom chrome renders only under `Extended` —
+/// `Decorated` keeps the native title bar and `Undecorated` /
+/// `Transparent` stay bare rectangles (no in-app chrome at all).
+/// Native buttons are declared only with the flag (off draws a
+/// buttonless drag-only bar).
+#[test]
+fn chrome_renders_only_under_extended() {
+    let app = mount_style_native(WindowStyle::Extended, true);
+    assert!(has_node(&app, oppa::HEADER_BAR_DEBUG), "extended bars");
+    assert!(has_node(&app, "stylebook-chrome"), "extended chromes");
+    for debug in ["header-min", "header-max", "header-close"] {
+        assert!(has_node(&app, debug), "native declares {debug}");
+    }
+    let bare = mount_style_native(WindowStyle::Extended, false);
+    assert!(
+        has_node(&bare, oppa::HEADER_BAR_DEBUG),
+        "buttonless bar still identifies"
+    );
+    for debug in ["header-min", "header-max", "header-close"] {
+        assert!(
+            !has_node(&bare, debug),
+            "native-off draws no {debug} at all"
+        );
+    }
+    for style in [
+        WindowStyle::Decorated,
+        WindowStyle::Undecorated,
+        WindowStyle::Transparent,
+    ] {
+        let app = mount_style(style);
+        assert!(
+            !has_node(&app, oppa::HEADER_BAR_DEBUG),
+            "{style:?} mounts no chrome"
+        );
+        assert!(
+            !has_node(&app, "header-close"),
+            "{style:?} declares no buttons"
+        );
+    }
+}
+
+/// Decision 494: only `Extended` publishes an OS drag region — the
+/// runners publish through the one `drag_regions_for_style` policy
+/// point, so every other style publishes nothing. (The buttonless
+/// title chrome needs a text service for height, so the publish
+/// proof mounts the native cluster with its explicit 40px cells.)
+#[test]
+fn drag_region_publishes_only_in_extended() {
+    for style in [
+        WindowStyle::Decorated,
+        WindowStyle::Undecorated,
+        WindowStyle::Transparent,
+    ] {
+        let app = mount_style(style);
+        assert!(
+            drag_regions_for_style(app.host(), style).is_empty(),
+            "{style:?} publishes no drag region"
+        );
+    }
+    let app = mount_style_native(WindowStyle::Extended, true);
+    assert!(
+        !drag_regions_for_style(app.host(), WindowStyle::Extended).is_empty(),
+        "extended publishes the bar region"
+    );
+}
+
+/// Decision 482: style metadata names every variant exactly once
+/// (the window title and card copy read it — no silent fallback
+/// string anywhere).
+#[test]
+fn style_metadata_covers_every_variant() {
+    assert_eq!(
+        [
+            style_title(WindowStyle::Decorated),
+            style_title(WindowStyle::Undecorated),
+            style_title(WindowStyle::Transparent),
+            style_title(WindowStyle::Extended),
+        ],
+        ["Decorated", "Undecorated", "Transparent", "Extended"]
+    );
+    for style in [
+        WindowStyle::Decorated,
+        WindowStyle::Undecorated,
+        WindowStyle::Transparent,
+        WindowStyle::Extended,
+    ] {
+        assert!(
+            !style_blurb(style).is_empty(),
+            "{style:?} carries its contract line"
+        );
+        assert!(
+            !style_hint(style).is_empty(),
+            "{style:?} names how it moves"
+        );
+        assert!(
+            ["decorated", "undecorated", "transparent", "extended"].contains(&style_arg(style)),
+            "{style:?} relaunches by name"
+        );
+    }
+}
+
+/// Decision 485: argv parsing is total and loud — every style
+/// parses, garbage refuses naming the spellings, absence defaults
+/// to `Extended`, and `--native-buttons` is a pure presence flag.
+#[test]
+fn argv_parsing_selects_style_and_native_flag() {
+    use oppa::WindowStyle as S;
+    assert_eq!(parse_style_arg(None).expect("default"), S::Extended);
+    assert_eq!(
+        parse_style_arg(Some("transparent")).expect("named"),
+        S::Transparent
+    );
+    assert!(
+        parse_style_arg(Some("borderless")).is_err(),
+        "unknown chrome refuses loudly"
+    );
+    let on = [
+        "--style".to_string(),
+        "extended".to_string(),
+        "--native-buttons".to_string(),
+    ];
+    assert!(
+        parse_native_buttons_flag(&on),
+        "flag present declares buttons"
+    );
+    assert!(
+        !parse_native_buttons_flag(&on[..2]),
+        "flag absent draws no buttons"
+    );
+}

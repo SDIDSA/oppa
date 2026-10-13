@@ -224,6 +224,7 @@ fn kind_of(cmd: &AndroidCmd) -> EventKind {
         AndroidCmd::PointerCancel => EventKind::Release,
         AndroidCmd::Key { .. } => EventKind::Key,
         AndroidCmd::CommitText { .. } | AndroidCmd::DeleteSurrounding { .. } => EventKind::Ime,
+        AndroidCmd::ComposeText { .. } | AndroidCmd::FinishComposing => EventKind::Ime,
     }
 }
 
@@ -286,7 +287,10 @@ impl PlatformShell for AndroidShell {
                     // nothing routes them).
                     let runner_matched = matches!(
                         cmd,
-                        AndroidCmd::CommitText { .. } | AndroidCmd::DeleteSurrounding { .. }
+                        AndroidCmd::CommitText { .. }
+                            | AndroidCmd::DeleteSurrounding { .. }
+                            | AndroidCmd::ComposeText { .. }
+                            | AndroidCmd::FinishComposing
                     );
                     if !runner_matched {
                         out.push(Event {
@@ -331,6 +335,21 @@ mod tests {
         assert_eq!(
             classify_keycode(keycodes::DPAD_DOWN),
             oppa::input::keys::DOWN
+        );
+    }
+
+    /// DEL maps to the framework Backspace (decision 243 — runners
+    /// route it to the focused field's session; the router stays
+    /// quiet).
+    #[test]
+    fn del_classifies_to_backspace() {
+        assert_eq!(
+            classify_keycode(keycodes::DEL),
+            oppa::input::keys::BACKSPACE
+        );
+        assert_eq!(
+            classify_keycode(keycodes::FORWARD_DEL),
+            oppa::input::keys::DELETE
         );
     }
 
@@ -426,7 +445,8 @@ mod tests {
 
     /// Round 3.1 (decision 260): soft-keyboard text classifies to
     /// runner-matched commands with NO M0 event (no fabricated
-    /// targets — the loop consumes them directly).
+    /// targets — the loop consumes them directly). Decision 438
+    /// adds composition to the same table.
     #[test]
     fn text_intake_classifies_without_m0_events() {
         let mut shell = AndroidShell::new(ShellConfig::default());
@@ -437,6 +457,10 @@ mod tests {
             before_chars: 1,
             after_chars: 0,
         });
+        shell.push_event(AndroidEvent::ComposeText {
+            text: "ni".to_string(),
+        });
+        shell.push_event(AndroidEvent::FinishComposing);
         assert!(
             shell.pump_events().is_empty(),
             "runner-matched text emits no trait events"
@@ -451,6 +475,10 @@ mod tests {
                     before_chars: 1,
                     after_chars: 0,
                 },
+                AndroidCmd::ComposeText {
+                    text: "ni".to_string()
+                },
+                AndroidCmd::FinishComposing,
             ]
         );
         assert!(shell.take_errors().is_empty());
@@ -473,6 +501,21 @@ mod tests {
             after_chars: 0,
         }
         .to_input_event();
+    }
+
+    #[test]
+    #[should_panic(expected = "must match ComposeText first")]
+    fn compose_text_refuses_pipeline_mapping_loudly() {
+        AndroidCmd::ComposeText {
+            text: "ni".to_string(),
+        }
+        .to_input_event();
+    }
+
+    #[test]
+    #[should_panic(expected = "must match FinishComposing first")]
+    fn finish_composing_refuses_pipeline_mapping_loudly() {
+        AndroidCmd::FinishComposing.to_input_event();
     }
 
     /// Round 3.1 (decision 260): the visibility policy matrix —

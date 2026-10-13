@@ -14,6 +14,15 @@
 <body>
 <div id="oppa-status">booting…</div>
 <div id="oppa-root" tabindex="0"></div>
-<script type="module" src="./sink-bootstrap.js"></script>
+<script type="module">
+import { bootOppa } from "./oppa-bootstrap.js";
+
+await bootOppa({
+  module: "./pkg/oppa_web.js",
+  className: "WebApp",
+  ctor: "new_sink",
+  statusReady: "sink ready",
+});
+</script>
 </body>
 </html>

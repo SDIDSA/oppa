@@ -18,6 +18,7 @@ import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isFirefox, launchFirefox } from './driver.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const resultsDir = path.resolve(here, '..', 'results');
@@ -28,19 +29,29 @@ const EDGE_CANDIDATES = [
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
 const edge = EDGE_CANDIDATES.find((p) => fs.existsSync(p));
-if (!edge) {
+if (!edge && !isFirefox) {
   console.error('M7 dom_text: no Edge binary found (loud requirement, never a silent pass)');
   process.exit(2);
 }
 
-const browser = await puppeteer.launch({
-  executablePath: edge,
-  headless: true,
-  args: ['--font-render-hinting=none', '--disable-lcd-text', '--hide-scrollbars'],
-  defaultViewport: { width: 500, height: 200, deviceScaleFactor: 1 },
-});
+let browser = null;
+let ffCleanup = null;
+if (isFirefox) {
+  ({ browser, cleanup: ffCleanup } = await launchFirefox());
+} else {
+  browser = await puppeteer.launch({
+    executablePath: edge,
+    headless: true,
+    args: ['--font-render-hinting=none', '--disable-lcd-text', '--hide-scrollbars'],
+    defaultViewport: { width: 500, height: 200, deviceScaleFactor: 1 },
+  });
+}
 const page = await browser.newPage();
-const client = await page.createCDPSession();
+if (isFirefox) {
+  await page.setViewport({ width: 500, height: 200, deviceScaleFactor: 1 });
+}
+// BiDi has no CDP session: Firefox arms use high-level input below.
+const client = isFirefox ? null : await page.createCDPSession();
 await page.goto('file:///' + pageFile.replaceAll('\\', '/'));
 // Test-only chrome normalization (see header): production HTML keeps its chrome.
 await page.evaluate(() => {
@@ -54,6 +65,10 @@ const state = () => page.evaluate(() => {
   return { value: el.value, start: el.selectionStart, end: el.selectionEnd };
 });
 const click = async (x, y, clickCount = 1) => {
+  if (isFirefox) {
+    await page.mouse.click(x, y, { count: clickCount });
+    return;
+  }
   await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount });
   await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount });
 };
@@ -62,14 +77,49 @@ const dblclick = async (x, y) => {
   await click(x, y, 2);
 };
 const drag = async (x1, y, x2) => {
+  if (isFirefox) {
+    // Real drags move continuously: step 1px so the selection extends
+    // on every motion (an endpoint-only jump selects nothing).
+    await page.mouse.move(x1, y);
+    await page.mouse.down({ button: 'left' });
+    const step = x2 >= x1 ? 1 : -1;
+    for (let x = x1; step > 0 ? x <= x2 : x >= x2; x += step) {
+      await page.mouse.move(x, y);
+    }
+    await page.mouse.up({ button: 'left' });
+    return;
+  }
   await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: x1, y, button: 'left', buttons: 1, clickCount: 1 });
   await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x2, y, button: 'left', buttons: 1 });
   await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x2, y, button: 'left', buttons: 0, clickCount: 1 });
 };
-const type = (text) => client.send('Input.insertText', { text });
+// BiDi has no insertText primitive: trusted key-by-key typing (the same
+// trusted path, one key event per char — the undo suite tolerates both
+// burst shapes by design).
+const type = (text) => (isFirefox ? page.keyboard.type(text) : client.send('Input.insertText', { text }));
 const key = async (vk, keyName, modifiers = 0) => {
+  if (isFirefox) {
+    const held = [];
+    if (modifiers & 2) held.push('Control');
+    if (modifiers & 8) held.push('Shift');
+    for (const m of held) await page.keyboard.down(m);
+    await page.keyboard.press(keyName === 'Z' ? 'z' : keyName);
+    for (const m of [...held].reverse()) await page.keyboard.up(m);
+    return;
+  }
   await client.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers, windowsVirtualKeyCode: vk, key: keyName });
   await client.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers, windowsVirtualKeyCode: vk, key: keyName });
+};
+// Shift+End (select-to-end): raw CDP pair on Edge, held-Shift press on Firefox.
+const shiftEnd = async () => {
+  if (isFirefox) {
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('End');
+    await page.keyboard.up('Shift');
+    return;
+  }
+  await client.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers: 8, windowsVirtualKeyCode: END, key: 'End' });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 8, windowsVirtualKeyCode: END, key: 'End' });
 };
 const HOME = 36, END = 35, RIGHT = 39, KEY_Z = 90;
 
@@ -161,8 +211,7 @@ const check = (suite, op, cond, got, want) => {
 {
   const suite = { name: 'multibyte_edit', steps: [] };
   await key(HOME, 'Home');
-  await client.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers: 8, windowsVirtualKeyCode: END, key: 'End' });
-  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 8, windowsVirtualKeyCode: END, key: 'End' });
+  await shiftEnd();
   await type('日本語x');
   let st = await state();
   check(suite, 'replace-all', st.value === '日本語x', st, { value: '日本語x' });
@@ -182,8 +231,7 @@ const check = (suite, op, cond, got, want) => {
 {
   const suite = { name: 'undo_granularity', steps: [] };
   await key(HOME, 'Home');
-  await client.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers: 8, windowsVirtualKeyCode: END, key: 'End' });
-  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 8, windowsVirtualKeyCode: END, key: 'End' });
+  await shiftEnd();
   await type('Hello world');
   await key(HOME, 'Home');
   await type('a');
@@ -219,5 +267,6 @@ const verdict = {
 fs.writeFileSync(path.join(resultsDir, 'dom_text.json'), JSON.stringify(verdict, null, 2));
 console.log(`M7 dom_text: ${failed} failed steps across ${suites.length} suites`);
 for (const d of divergences) console.log(`  DIVERGENCE ${d.suite} ${d.op}: ${JSON.stringify(d.got)}`);
-await browser.close();
+if (ffCleanup) await ffCleanup();
+else await browser.close();
 process.exit(verdict.pass ? 0 : 1);

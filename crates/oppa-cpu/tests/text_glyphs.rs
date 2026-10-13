@@ -15,6 +15,10 @@ const FID: FontId = FontId(7);
 
 /// "Hi" at 16px: H + i cells, one explicit run.
 fn hi_plan() -> FramePlan {
+    hi_plan_ink(Color(0x00_00_00))
+}
+
+fn hi_plan_ink(ink: Color) -> FramePlan {
     let font = FontRef::try_from_slice(DEJAVU).expect("dejavu parses");
     let h = font.glyph_id('H').0 as u32;
     let i = font.glyph_id('i').0 as u32;
@@ -43,7 +47,7 @@ fn hi_plan() -> FramePlan {
                 family: "DejaVu Sans".to_string(),
                 font_id: FID,
             }],
-            ink: Color(0x00_00_00),
+            ink,
             opacity: 1.0,
         }],
         full_repaint: true,
@@ -51,10 +55,25 @@ fn hi_plan() -> FramePlan {
     }
 }
 
+fn paint_hi_ink(ink: Color) -> Vec<u8> {
+    let mut be = CpuBackend::new();
+    be.set_font_for(FID, DEJAVU.into(), 0);
+    let s = be
+        .create_surface(SurfaceDesc {
+            width_px: 60,
+            height_px: 40,
+            background: Color(0xFF_FF_FF),
+        })
+        .expect("surface");
+    let plan = hi_plan_ink(ink);
+    be.paint(s, &plan).expect("paint");
+    be.pixmap(s).expect("pixmap").data().to_vec()
+}
+
 fn paint_hi(faced: bool) -> Vec<u8> {
     let mut be = CpuBackend::new();
     if faced {
-        be.set_font_for(FID, DEJAVU.to_vec(), 0);
+        be.set_font_for(FID, DEJAVU.into(), 0);
     }
     let s = be
         .create_surface(SurfaceDesc {
@@ -119,8 +138,36 @@ fn raster_is_deterministic() {
 }
 
 #[test]
+fn translucent_ink_blends_by_its_alpha() {
+    // Darkest pixel of the opaque render = full-coverage glyph core.
+    let solid = paint_hi_ink(Color(0x00_00_00));
+    let (core, _) = solid
+        .chunks_exact(4)
+        .enumerate()
+        .min_by_key(|(_, c)| c[0])
+        .expect("inked pixels");
+    let (cx, cy) = ((core % 60) as u32, (core / 60) as u32);
+    assert!(
+        solid[(cy as usize * 60 + cx as usize) * 4] < 64,
+        "sampled a solid glyph core"
+    );
+    // Same pixel at 50% ink alpha over white: ~127 either way.
+    let half = paint_hi_ink(Color(0x80_00_00_00));
+    let v = half[(cy as usize * 60 + cx as usize) * 4];
+    assert!(
+        (100..=160).contains(&v),
+        "half-alpha ink blends, got {v} at ({cx}, {cy})"
+    );
+    // And 24-bit white ink is a no-op over a white surface (the
+    // alpha rule leaves 24-bit colors fully opaque by construction).
+    let clear = paint_hi_ink(Color(0x00_FF_FF_FF));
+    let v = clear[(cy as usize * 60 + cx as usize) * 4];
+    assert!(v > 200, "white-on-white untouched, got {v}");
+}
+
+#[test]
 #[should_panic(expected = "font bytes rejected")]
 fn invalid_face_bytes_fail_loud_at_registration() {
     let mut be = CpuBackend::new();
-    be.set_font_for(FID, vec![0, 1, 2, 3], 0);
+    be.set_font_for(FID, std::sync::Arc::<[u8]>::from([0, 1, 2, 3]), 0);
 }

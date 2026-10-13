@@ -145,6 +145,24 @@ impl WindowControl for LinuxWindowControl {
             apply_icon(window, &icon);
         }
     }
+
+    /// Decision 482 (`Extended`-mode caption bridge): minimizes to
+    /// the taskbar/dock. Best-effort like every other call here (no
+    /// window attached absorbs silently).
+    fn minimize(&self) {
+        if let Some(window) = self.inner.borrow().window.as_ref() {
+            window.set_minimized(true);
+        }
+    }
+
+    /// Decision 482 (same bridge): toggles maximized/restored. Reads
+    /// the live maximized state (never a cached flag — the user may
+    /// have tiled/snapped through the compositor since the call).
+    fn toggle_maximize(&self) {
+        if let Some(window) = self.inner.borrow().window.as_ref() {
+            window.set_maximized(!window.is_maximized());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -179,6 +197,17 @@ mod tests {
         // Reset clears back to the OS default.
         c.set_icon(None);
         assert_eq!(c.desired().icon, None);
+    }
+
+    /// Decision 482: the caption bridge absorbs silently with no
+    /// window attached (best-effort presentational hints — a
+    /// minimize with no window is never a wiring bug).
+    #[test]
+    fn caption_bridge_without_window_is_quiet() {
+        let c = LinuxWindowControl::new();
+        c.minimize();
+        c.toggle_maximize();
+        assert!(!c.desired().fullscreen, "bridge touches no desired state");
     }
 
     /// Round 20.3 (decision 326): a validated icon converts into a

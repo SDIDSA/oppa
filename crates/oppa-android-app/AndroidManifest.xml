@@ -5,9 +5,12 @@
     android:versionName="1.0">
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <!-- No hardcoded android:debuggable here (lint HardcodedDebugMode
+        is fatal on release): Gradle debug builds auto-assign
+        debuggable=true. The manual aapt2 fallback path must pass the
+        link-time debug-mode flag to keep run-as working. -->
     <application android:label="oppa"
-        android:hasCode="false"
-        android:debuggable="true"
+        android:hasCode="true"
         android:extractNativeLibs="true">
         <activity android:name="android.app.NativeActivity"
             android:exported="true"
@@ -19,5 +22,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- SAF open trampoline (decision 427): transparent receiver
+            for the chooser result — NativeActivity cannot take
+            `onActivityResult`, so this activity fires the intent and
+            forwards bytes to native, then finishes. Unexported, off
+            recents. NOTE: no `noHistory` here — the trampoline must
+            survive in the stack behind DocumentsUI, otherwise the
+            result has nowhere to land and the pick vanishes. -->
+        <activity android:name="com.oppa.app.OppaPickerActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>

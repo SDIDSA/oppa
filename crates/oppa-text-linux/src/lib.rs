@@ -73,8 +73,8 @@ impl LinuxTextService {
         self.inner.families()
     }
 
-    /// Raw bytes + collection index of the face behind `id`.
-    pub fn face_bytes(&self, id: oppa::text::FontId) -> Option<(&[u8], u32)> {
+    /// Shared bytes + collection index of the face behind `id`.
+    pub fn face_bytes(&self, id: oppa::text::FontId) -> Option<(std::sync::Arc<[u8]>, u32)> {
         self.inner.face_bytes(id)
     }
 

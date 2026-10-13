@@ -13,6 +13,9 @@ path = "src/lib.rs"
 oppa = { path = "../../crates/oppa" }
 oppa-controls = { path = "../../crates/oppa-controls" }
 oppa-web = { path = "../../crates/oppa-web" }
-wasm-bindgen = "0.2"
+# Exact pin matching the workspace lockfile (serve refuses CLI/lock
+# skew loudly — a floating "0.2" would resolve past the installed
+# CLI on fresh scaffolds; the mirror test below keeps this in sync).
+wasm-bindgen = "=0.2.128"
 
 [workspace]

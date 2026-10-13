@@ -71,16 +71,26 @@ fn main() {
                     default_name: name,
                     initial_dir: None,
                 };
-                if let Some(path) = loop_.save_file_dialog(options) {
-                    if let Err(e) = std::fs::write(&path, h.export_out.get().to_string()) {
-                        eprintln!("task_studio: save failed: {e}");
+                match loop_.save_file_dialog(options) {
+                    Ok(Some(path)) => {
+                        if let Err(e) = std::fs::write(&path, h.export_out.get().to_string()) {
+                            eprintln!("task_studio: save failed: {e}");
+                            return;
+                        }
+                        h.saved_snapshot.set(h.export_out.get().clone());
+                    }
+                    Ok(None) => {
+                        // Dialog cancelled: stay open with the drift intact
+                        // (the next close re-raises the modal).
                         return;
                     }
-                    h.saved_snapshot.set(h.export_out.get().clone());
-                } else {
-                    // Dialog cancelled: stay open with the drift intact
-                    // (the next close re-raises the modal).
-                    return;
+                    Err(e) => {
+                        // No backend / backend failure is loud (decision
+                        // 422): never misread as cancellation — stay open
+                        // and keep the drift.
+                        eprintln!("task_studio: save dialog refused: {e}");
+                        return;
+                    }
                 }
             }
             loop_.host().request_close();

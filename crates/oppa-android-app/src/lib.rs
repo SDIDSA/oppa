@@ -8,44 +8,52 @@
 //! lifecycle (`android_main`); JNI is used for platform queries only
 //! (font list, input-method policy). The workload reuses the exact
 //! workspace pieces the host oracle proves — `FramePlanBuilder`,
-//! `CpuBackend`, `VelloBackend` (`ensure_gpu_gles` for the
-//! GL-constrained device), `AndroidShell` classification into the
-//! shared `InputEvent` pipeline, `oppa-text-android` shaping,
-//! core `dispatch_ime_event`. The visible image goes through
-//! `wgpu::Surface` from the `NativeWindow` (`surface.rs`: scene to
-//! intermediate texture, blit, present). Text rides the device's own
-//! `/system/fonts` through `AndroidTextService` (layout family
-//! `Roboto`), with every face injected into both backends —
-//! otherwise Vello refuses text runs loudly at paint.
+//! `CpuBackend`, `GpuBackend`, `AndroidShell` classification
+//! into the shared `InputEvent` pipeline, `oppa-text-android`
+//! shaping, core `dispatch_ime_event`. The visible image goes
+//! through `wgpu::Surface` from the `NativeWindow` (`surface.rs`:
+//! scene to intermediate texture, blit, present). Text rides the
+//! device's own `/system/fonts` through `AndroidTextService`
+//! (layout family `Roboto`), with every face injected into both
+//! backends — otherwise gpu refuses text runs loudly at paint. The
+//! retained scene is `SceneCore` (`oppa-app`) — host, plan builder,
+//! CPU + GPU paint arms, theme/DPR/resize contract, and GPU bring-up
+//! are all the unified engine now; this shell contributes only the
+//! device glue (lifecycle, touches, swapchain, JNI).
 //!
 //! Output files (internal data dir): `cpu_off.rgba`,
 //! `cpu_on.rgba`, `{gl,vulkan}_on.rgba` (raw RGBA8 row-major,
 //! live-window WxH — exactly one GPU path writes, GL first then Vulkan),
 //! `shapes.txt` (reference-corpus shaping), `fonts_jni.txt`
-//! (platform font list), `taps.txt` (input batches + density),
+//! (platform font list), `taps.txt` (per-batch input/density oracle
+//! lines first, run-log summary appended below — decision 399),
 //! `imm.txt` (composition feeds + IMM policy record), `meta.txt`
 //! (adapter/timings/sizes/state incl. swapchain + text + tap
 //! records + scoped-storage resolution/validation), `error.txt`
 //! on any caught failure instead of a silent NAV crash, `DONE` last.
 
 mod app_storage;
-mod fonts_jni;
 mod frameloop;
-mod ime_bridge;
 mod ime_validate;
-mod imm_mode;
+mod picker_bridge;
+mod picker_validate;
 mod surface;
 mod text_validate;
-mod touch;
+
+// Shared interactive pieces (moved verbatim to the runner crate —
+// this harness uses the same modules, no second copies).
+use oppa_android_runner::{ime_bridge, touch};
+
+/// Java package of this proof APK (the runner resolves `OppaUi` /
+/// `OppaIme` inside it).
+const JAVA_PACKAGE: &str = "com.oppa.app";
 
 use std::path::Path;
 use std::time::Instant;
 
 use android_activity::{AndroidApp, MainEvent, PollEvent};
-use oppa::{Color, ComponentHost, Ctx, Props, RendererBackend, SurfaceDesc, VNode};
-use oppa_cpu::{CpuBackend, FramePlanBuilder};
+use oppa::{Color, ComponentHost, Ctx, DebugOverlayConfig, Props, VNode};
 use oppa_text_android::AndroidTextService;
-use oppa_vello::VelloBackend;
 
 /// Default scene size before the live window is known
 /// (`SceneState::refit` adopts the real `NativeWindow` dimensions —
@@ -57,24 +65,33 @@ const MH: f32 = 2400.0;
 /// `adb input` gestures must land here. The post-proof interactive
 /// phase runs unbounded (until Destroy).
 const TAP_BUDGET_SECS: u64 = 100;
-/// Scene background: white, matching the desktop Kitchen Sink
-/// (`oppa-app` paints the same scene on a white CPU surface — one
-/// showcase, one look, every target). The blank-vs-rendered
-/// distinction this sacrifices (white is the OS default window
-/// background too) is covered by the `assert_content` loud guard in
-/// the pixel proof and every tap batch: a uniform pixmap fails the
-/// run instead of passing silently.
-const SINK_BG: Color = Color(0xFF_FF_FF);
+/// Scene background is the host theme's page `background` (desktop
+/// `frame.rs` rule — Light white, Dark near-black), never a fixed
+/// color: the blank-vs-rendered distinction this sacrifices (Light
+/// white is the OS default window background too) is covered by the
+/// `assert_content` loud guard in the pixel proof and every tap
+/// batch: a uniform pixmap fails the run instead of passing
+/// silently. The guard always compares against the surfaces'
+/// current bg (threaded through, never this module's assumption).
 /// Layout family on-device (must exist in `/system/fonts`; the
 /// fallback chain covers the rest).
 const SINK_FAMILY: &str = "Roboto";
 
-fn sink_desc(w: u32, h: u32) -> SurfaceDesc {
-    SurfaceDesc {
-        width_px: w.max(1),
-        height_px: h.max(1),
-        background: SINK_BG,
-    }
+/// Build flags (decision 393; decision 426 keeps the benchmark
+/// phase armed): `DEBUG_BADGE` arms the FPS overlay before mount,
+/// `BENCHMARK_PHASE` runs the bounded present phase uncapped
+/// (settle → repaint → present every frame, badge clock per
+/// present). The uncapped proof loops stay ANR-safe through the
+/// per-frame heartbeat drain (`drain_input_queue` — taps during
+/// startup discard instead of starving dispatch). The unbounded
+/// interactive phase always stays event-paced Fifo, flags or not.
+const DEBUG_BADGE: bool = true;
+const BENCHMARK_PHASE: bool = true;
+
+/// Page background for a host (desktop `frame.rs` rule — the
+/// surface clear follows the host theme mode).
+fn themed_page_bg(host: &ComponentHost) -> Color {
+    host.theme_tokens().background
 }
 
 /// Pluggable app root (Round 6.4, decision 275): mounts an
@@ -90,73 +107,105 @@ pub fn mount_app<P: Props>(host: &ComponentHost, props: P, render: fn(&Ctx, &P) 
     host.mount("MobileApp", props, render);
 }
 
-/// Straightens a tiny-skia pixmap to raw RGBA8 (loud on any
-/// non-opaque pixel — the m10 oracle's conversion, same rule).
-fn straight_rgba(px: &tiny_skia::Pixmap) -> Result<Vec<u8>, String> {
-    let mut out = Vec::with_capacity(px.width() as usize * px.height() as usize * 4);
-    for p in px.pixels() {
-        if p.alpha() != 255 {
-            return Err("non-opaque pixel in fallback surface".to_string());
-        }
-        out.push(p.red());
-        out.push(p.green());
-        out.push(p.blue());
-        out.push(255);
+/// Writes the taps oracle file (decision 399): per-batch
+/// input/density records first, run-log summary lines appended below.
+/// The end-of-run summary write used to overwrite the batch records
+/// (the whole-file `tap_log` write clobbered the incremental
+/// `tap_lines` writes); now both sections share one file with stable
+/// per-line layouts and no new output path for host pulls. Either
+/// section may be empty (empty batches stay oracle-silent, quiet runs
+/// stay summary-silent) — never a missing trailing newline.
+fn write_taps_file(
+    taps_path: &std::path::Path,
+    tap_lines: &[String],
+    tap_log: &[String],
+) -> Result<(), String> {
+    let mut body = String::new();
+    if !tap_lines.is_empty() {
+        body.push_str(&tap_lines.join("\n"));
+        body.push('\n');
     }
-    Ok(out)
+    if !tap_log.is_empty() {
+        body.push_str(&tap_log.join("\n"));
+        body.push('\n');
+    }
+    std::fs::write(taps_path, body).map_err(|e| format!("write taps.txt: {e}"))?;
+    Ok(())
 }
 
-/// One tap batch: inject commands, run, repaint the CPU arm
-/// (and the Vello scene when a GPU backend is handed in), assert the
-/// repainted pixmap still carries content (the blank-screen guard),
-/// and append the taps record incrementally (a later failure keeps
-/// the earlier batches).
-#[allow(clippy::too_many_arguments)]
+/// Drains the platform input queue, discarding everything
+/// (decision 426 — the ANR heartbeat: synchronous proof stretches
+/// never service input otherwise, and one undispatched MotionEvent
+/// ANRs the app within 5 s on device. Discard, never inject —
+/// proof frames stay identical; the stay-alive drain below is the
+/// same rule at the run's tail).
+fn drain_input_queue(app: &AndroidApp) {
+    match app.input_events_iter() {
+        Ok(mut iter) => loop {
+            let more = iter.next(|_| android_activity::InputStatus::Handled);
+            if !more {
+                break;
+            }
+        },
+        Err(e) => eprintln!("oppa-android-app: heartbeat input drain: {e:?}"),
+    }
+}
+
+/// One tap batch: inject commands into the engine host, run idle,
+/// repaint through the engine (the committed frame plans encode into
+/// BOTH arms — the GPU twin is enabled from setup, so an offscreen
+/// readback later proves its pixels), assert the repainted pixmap
+/// still carries content (the blank-screen guard), and append the
+/// taps record incrementally for non-empty batches (benchmark frames
+/// call this with empty commands — they repaint + assert but leave
+/// the taps record alone).
+///
+/// The engine's theme contract rides every repaint: a tapped theme
+/// toggle refits the page background + surfaces before painting
+/// (desktop `frame.rs` rule), so the guard below compares against
+/// the live bg, never a stale assumption.
+///
+/// Returns `(changed, note, gpu_scene)`: `gpu_scene` is the CURRENT
+/// GPU scene id — a theme rebase re-homes it inside the engine
+/// repaint, and the present loop must present the returned id, never
+/// a stale copy (presenting a destroyed surface aborts the loop and
+/// the app freezes on its last frame).
 fn apply_tap_batch(
-    host: &mut ComponentHost,
-    builder: &mut FramePlanBuilder,
-    cpu: &mut CpuBackend,
-    csurf: oppa::SurfaceId,
-    vello: Option<(&mut VelloBackend, oppa::SurfaceId)>,
+    state: &mut SceneState,
     cmds: &[oppa_shell_android::events::AndroidCmd],
     density: f32,
     tap_lines: &mut Vec<String>,
     taps_path: &std::path::Path,
-) -> Result<(bool, String), String> {
+) -> Result<(bool, String, oppa::SurfaceId), String> {
+    let scene = &mut state.scene;
     for cmd in cmds.iter().cloned() {
-        host.inject_input(cmd.to_input_event());
+        scene.host().inject_input(cmd.to_input_event());
     }
-    host.run_until_idle();
-    let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
-    cpu.paint(csurf, &plan)
-        .map_err(|e| format!("cpu paint tap: {e:?}"))?;
-    if let Some((backend, vsurf)) = vello {
-        backend
-            .paint(vsurf, &plan)
-            .map_err(|e| format!("vello paint tap: {e:?}"))?;
-    }
-    let px = cpu.pixmap(csurf).ok_or("cpu pixmap missing")?;
-    let (w, h) = (px.width(), px.height());
-    let bytes = straight_rgba(px)?;
-    assert_content(&bytes, w, h, SINK_BG, "tap repaint")?;
+    scene.host().run_until_idle();
+    scene.repaint()?;
+    let page_bg = themed_page_bg(scene.host());
+    let (w, h) = scene.viewport();
+    let bytes = scene.rgba8()?;
+    assert_content(&bytes, w, h, page_bg, "tap repaint")?;
     let line = format!("cmds={cmds:?} density={density}");
-    tap_lines.push(line.clone());
-    let _ = std::fs::write(taps_path, tap_lines.join("\n") + "\n");
-    Ok((true, line))
+    if !cmds.is_empty() {
+        tap_lines.push(line.clone());
+        let _ = std::fs::write(taps_path, tap_lines.join("\n") + "\n");
+    }
+    Ok((true, line, scene.gpu_surface_id()))
 }
 
 /// Headless tap phase (no window/surface): drains live input
-/// through the shell mapping and repaints the CPU arm per batch.
+/// through the shell mapping and repaints the scene per batch.
 /// State flips are CPU-proven here; on-screen proof needs the
 /// swapchain path (used when the window serves the scene size).
-/// Runs the full budget so `adb input` gestures land.
-#[allow(clippy::too_many_arguments)]
+/// Runs the full budget so `adb input` gestures land. The per-batch
+/// timing lines ride `log` into `taps.txt` through the decision-399
+/// helper (oracle records first, run-log lines appended below) —
+/// leaving them in memory only would drop the headless evidence.
 fn drive_headless_taps(
     app: &AndroidApp,
-    host: &mut ComponentHost,
-    builder: &mut FramePlanBuilder,
-    cpu: &mut CpuBackend,
-    csurf: oppa::SurfaceId,
+    state: &mut SceneState,
     touch: &mut touch::TouchDriver,
     density: f32,
     dir: &std::path::Path,
@@ -171,27 +220,42 @@ fn drive_headless_taps(
     let end = Instant::now() + Duration::from_secs(budget_secs);
     let mut batches = 0u32;
     let t_open = Instant::now();
+    // Hoisted (decision 428 — the per-iteration locals they replace
+    // reset every pass, so Pause never stuck and the loop stepped
+    // while stopped).
+    let mut destroyed = false;
+    let mut paused = false;
     while Instant::now() < end {
-        let mut destroyed = false;
-        let mut paused = false;
         app.poll_events(Some(Duration::from_millis(200)), |event| match event {
             PollEvent::Main(MainEvent::Destroy) => {
                 destroyed = true;
             }
             PollEvent::Main(MainEvent::Pause) => {
                 paused = true;
-                host.set_lifecycle(oppa::shell::AppLifecycleState::Paused);
+                state
+                    .scene
+                    .host()
+                    .set_lifecycle(oppa::shell::AppLifecycleState::Paused);
             }
             PollEvent::Main(MainEvent::Resume { .. }) => {
                 paused = false;
-                host.set_lifecycle(oppa::shell::AppLifecycleState::Active);
+                state
+                    .scene
+                    .host()
+                    .set_lifecycle(oppa::shell::AppLifecycleState::Active);
             }
             PollEvent::Main(MainEvent::SaveState { .. }) => {
-                host.set_lifecycle(oppa::shell::AppLifecycleState::Suspended);
+                state
+                    .scene
+                    .host()
+                    .set_lifecycle(oppa::shell::AppLifecycleState::Suspended);
             }
             PollEvent::Main(MainEvent::Stop) => {
                 paused = true;
-                host.set_lifecycle(oppa::shell::AppLifecycleState::Suspended);
+                state
+                    .scene
+                    .host()
+                    .set_lifecycle(oppa::shell::AppLifecycleState::Suspended);
             }
             _ => {}
         });
@@ -210,21 +274,14 @@ fn drive_headless_taps(
         }
         batches += 1;
         let elapsed_ms = t_open.elapsed().as_secs_f64() * 1000.0;
-        let (_, note) = apply_tap_batch(
-            host,
-            builder,
-            cpu,
-            csurf,
-            None,
-            &cmds,
-            density,
-            &mut tap_lines,
-            &taps_path,
-        )?;
+        let (_, note, _) = apply_tap_batch(state, &cmds, density, &mut tap_lines, &taps_path)?;
+        // No swapchain here, so no presents tick the badge clock —
+        // note per batch so the badge in the CPU pixmaps stays live
+        // at batch cadence instead of freezing at mount values.
+        state.scene.note_frame_presented();
         log.push(format!("batch={batches} t={elapsed_ms:.0}ms {note}"));
     }
-    std::fs::write(&taps_path, tap_lines.join("\n") + "\n")
-        .map_err(|e| format!("write taps.txt: {e}"))?;
+    write_taps_file(&taps_path, &tap_lines, log).map_err(|e| format!("write taps.txt: {e}"))?;
     let s = touch.stats_summary();
     Ok(format!(
         "presented=headless-no-window batches={batches} {s}"
@@ -256,40 +313,53 @@ fn assert_content(bytes: &[u8], w: u32, h: u32, bg: Color, what: &str) -> Result
 }
 
 /// The retained scene: everything the tap-phase step needs to
-/// inject, run, repaint both arms, and read back.
-struct SceneState {
-    host: ComponentHost,
-    builder: FramePlanBuilder,
-    cpu: CpuBackend,
-    csurf: oppa::SurfaceId,
-    backend: VelloBackend,
-    vsurf: oppa::SurfaceId,
-    /// Scene size in device px (adopted from the live window by
-    /// [`SceneState::refit` — `MW`x`MH` until then).
-    size: (u32, u32),
-    /// Output scale: device px per dp (Round 7.7 — mirrors the
-    /// desktop `DesktopLoop` DPR: the host viewport is dp, surfaces
-    /// and plans are device px, text advances scale here; 1.0 until
-    /// `set_density` learns the config density).
-    dpr: f32,
+/// inject, run, repaint both arms, and read back. One field — the
+/// unified engine [`SceneCore`](oppa_app::SceneCore) owns the host,
+/// the plan builder, both paint arms (CPU pixmap + GPU scene twin)
+/// with their surfaces, the diff cursor, the theme/DPR/resize
+/// contract, and the GPU bring-up state; this shell adds nothing on
+/// top (all device-specific behavior lives in the loop below).
+pub(crate) struct SceneState {
+    /// The unified loop engine (see `crates/oppa-app/src/scene.rs`).
+    scene: oppa_app::SceneCore,
+    /// The sink's shared dialog handles (decision 431): retained so
+    /// the present loop can tick the pick registry per iteration —
+    /// async settlements publish into the signals without another
+    /// press. `None` for embedder roots mounted through
+    /// [`SceneState::setup_with`], which carry no sink.
+    pub(crate) dialogs: Option<std::rc::Rc<std::cell::RefCell<oppa_controls::SinkDialogs>>>,
 }
 
 impl SceneState {
-    fn setup() -> Result<Self, String> {
-        Self::setup_with((), oppa_controls::KitchenSinkApp)
+    /// Proof scene setup (decision 427): installs the SAF picker
+    /// bridge first (needs the scoped dirs), then mounts the
+    /// Kitchen Sink with the bridge handle in its open slot — the
+    /// Browse button fires the real trampoline here, everywhere
+    /// else keeps the scripted default.
+    fn setup(app: &AndroidApp, dirs: &oppa_shell_android::AppDirs) -> Result<Self, String> {
+        // Installs the SAF picker bridge first (needs the scoped
+        // dirs), then mounts the Kitchen Sink with the bridge handle
+        // in its open slot.
+        let picker_record = picker_bridge::ensure_picker(app, &dirs.files_dir)?;
+        eprintln!("oppa-android-app: {picker_record}");
+        let props = oppa_controls::KitchenSinkProps::default();
+        props.dialogs.borrow_mut().open =
+            std::rc::Rc::new(std::cell::RefCell::new(picker_bridge::PickerHandle));
+        let dialogs = props.dialogs.clone();
+        let mut state = Self::setup_with(props, oppa_controls::KitchenSinkApp)?;
+        state.dialogs = Some(dialogs);
+        Ok(state)
     }
 
-    /// Pluggable scene setup (Round 6.4): the same retained +
-    /// CPU + Vello bring-up over any root component (the
-    /// headless-testable shape of [`mount_app`] above). The
-    /// proof loop calls `setup()` (the Kitchen Sink); embedders
-    /// pass their own root.
+    /// Pluggable scene setup (Round 6.4): the same engine bring-up
+    /// over any root component (the headless-testable shape of
+    /// [`mount_app`] above). The proof loop calls `setup()` (the
+    /// Kitchen Sink); embedders pass their own root.
     ///
     /// Text rides the device's `/system/fonts` through
-    /// `AndroidTextService` (layout family `Roboto`, the desktop
-    /// `LinuxTextService` pattern from `oppa-app`: collect faces
-    /// first, move the service into the host, inject every face
-    /// into BOTH backends before the first paint — otherwise Vello
+    /// `AndroidTextService` (layout family `Roboto`): collect faces
+    /// first, move the service into the engine, inject every face
+    /// into BOTH backends before the first paint — otherwise custom
     /// refuses text runs loudly and the CPU arm draws bars).
     pub fn setup_with<P: Props>(props: P, render: fn(&Ctx, &P) -> VNode) -> Result<Self, String> {
         let (texts, skipped) = AndroidTextService::from_dir(Path::new("/system/fonts"))
@@ -297,156 +367,103 @@ impl SceneState {
         if !skipped.is_empty() {
             eprintln!("oppa-android-app: skipped font files: {skipped:?}");
         }
+        // The service moves into the host inside `SceneCore::new`;
+        // the family print reads it before that move.
         let families = texts.families().to_vec();
         eprintln!("oppa-android-app: font families: {families:?}");
-        let mut font_pairs: Vec<(oppa::text::FontId, Vec<u8>, u32)> = Vec::new();
+        let mut font_pairs: Vec<(oppa::text::FontId, std::sync::Arc<[u8]>, u32)> = Vec::new();
         for id in texts.all_font_ids() {
             if let Some((bytes, index)) = texts.face_bytes(id) {
-                font_pairs.push((id, bytes.to_vec(), index));
+                font_pairs.push((id, bytes.into(), index));
             }
         }
         if font_pairs.is_empty() {
             return Err("android fonts: no usable faces in /system/fonts".to_string());
         }
-        let host = ComponentHost::new();
-        host.set_viewport(MW, MH);
-        host.set_layout_config(oppa::layout::LayoutTextConfig {
-            family: SINK_FAMILY.to_string(),
-            ..Default::default()
-        });
-        host.set_text_service(Box::new(texts));
-        mount_app(&host, props, render);
-        host.run_until_idle();
-        let builder = FramePlanBuilder::new(1.0);
-        let size = (MW as u32, MH as u32);
-        let mut cpu = CpuBackend::new();
-        let csurf = cpu
-            .create_surface(sink_desc(size.0, size.1))
-            .map_err(|e| format!("cpu surface: {e:?}"))?;
-        for d in host.diffs_from(0) {
-            cpu.commit(&d).map_err(|e| format!("cpu commit: {e:?}"))?;
-        }
-        let mut backend = VelloBackend::new();
-        let vsurf = backend
-            .create_surface(sink_desc(size.0, size.1))
-            .map_err(|e| format!("vello surface: {e:?}"))?;
-        for d in host.diffs_from(0) {
-            backend
-                .commit(&d)
-                .map_err(|e| format!("vello commit: {e:?}"))?;
-        }
+        let mut scene =
+            oppa_app::SceneCore::new(MW as u32, MH as u32, Box::new(texts), SINK_FAMILY)?;
+        // Inject every face into BOTH backends before the first
+        // paint (decision 200 — bars vs tofu, see the module doc).
         for (id, bytes, index) in font_pairs {
-            cpu.set_font_for(id, bytes.clone(), index);
-            backend.set_font_for(id, bytes, index);
+            scene.set_font_for(id, bytes, index);
         }
+        // Benchmark build (decision 393): the debug FPS badge is
+        // armed when `DEBUG_BADGE` is on — `OPPA_DEBUG_FPS` is
+        // unsettable under NativeActivity (apps inherit the zygote
+        // env), so the app configures the host programmatically
+        // BEFORE mount and the overlay wrap lands in the first
+        // commit both arms paint below. Bare `Gpu` until the
+        // swapchain row wins (the present loop publishes `Gpu/GL` /
+        // `Gpu/Vulkan` after bring-up — the desktop
+        // `presenter_badge_name` vocabulary).
+        if DEBUG_BADGE {
+            scene.host().set_debug_overlay(DebugOverlayConfig::all());
+            scene.host().set_presenter_name("Gpu");
+        }
+        mount_app(scene.host(), props, render);
+        scene.host().run_until_idle();
+        // The GPU arm is enabled from setup (not at the present
+        // loop): every repaint — including the offscreen proof's —
+        // paints the GPU scene twin, so the offscreen readback
+        // proves real GPU pixels. The custom rasterizer needs no
+        // device for encoding (only `present_gpu` needs the
+        // swapchain context); the swapchain rows
+        // (`ensure_gpu_for_surface_pinned`, adapter + format) come
+        // at the present loop (`surface::drive_present_loop`).
+        scene.enable_gpu_pinned(oppa_app::RendererKind::GpuAuto, wgpu::PresentMode::Fifo);
         Ok(Self {
-            host,
-            builder,
-            cpu,
-            csurf,
-            backend,
-            vsurf,
-            size,
-            dpr: 1.0,
+            scene,
+            dialogs: None,
         })
     }
 
     /// Re-bases the scene on the config density (Round 7.7 — the
-    /// desktop Round 2.4 rule ported: dp viewport, device-px plans).
-    /// Layout config + builder follow the new ratio, the host
-    /// viewport rescales to dp, layout re-runs (measure keys carry
-    /// the DPR, so text re-shapes), and both arms repaint.
-    /// Same-value calls are a no-op. Non-finite or non-positive
-    /// scales panic loudly (a scale is never zero/NaN — the driver
-    /// maps `dpi/160` first).
+    /// desktop Round 2.4 rule ported): the engine rescales the
+    /// layout config + builder + host viewport to dp, refits the
+    /// paint surface to device px, and re-runs layout (measure keys
+    /// carry the DPR, so text re-shapes). Same-value calls are a
+    /// no-op. Non-finite or non-positive scales panic loudly inside
+    /// the engine (a scale is never zero/NaN — the driver maps
+    /// `dpi/160` first).
     fn set_density(&mut self, dpr: f32) -> Result<(), String> {
-        if !dpr.is_finite() || dpr <= 0.0 {
-            panic!(
-                "android scene: device pixel ratio {dpr} refused — scales are finite and positive"
-            );
-        }
-        if dpr == self.dpr {
-            return Ok(());
-        }
-        self.dpr = dpr;
-        let mut config = self.host.layout_config();
-        config.device_pixel_ratio = dpr;
-        self.host.set_layout_config(config);
-        self.builder.set_dpr(dpr);
-        let (w, h) = self.size;
-        self.host.set_viewport(w as f32 / dpr, h as f32 / dpr);
-        self.host.run_until_idle();
-        self.repaint("density")?;
-        Ok(())
+        self.scene.set_device_pixel_ratio(dpr)
     }
 
     /// Viewport in dp (what the router hit-tests touch against —
     /// intake arrives density-normalized from `TouchDriver`).
     fn viewport_dp(&self) -> (f32, f32) {
-        let (w, h) = self.size;
-        (w as f32 / self.dpr, h as f32 / self.dpr)
+        let (w, h) = self.scene.viewport();
+        (w as f32 / self.scene.dpr(), h as f32 / self.scene.dpr())
     }
 
-    /// Adopts the live window size (Round 7.6): viewport + both
-    /// scene surfaces refit to `(w, h)`, commits replayed so the new
-    /// surfaces' `live_nodes` match, then both arms repaint.
-    /// Same-size calls are a no-op. Loud on any failure.
-    /// `(w, h)` are device px; the host viewport divides by the DPR
-    /// (Round 7.7 — dp viewport, device-px plans).
-    fn refit(&mut self, w: u32, h: u32) -> Result<(), String> {
-        let (w, h) = (w.max(1), h.max(1));
-        if (w, h) == self.size {
-            return Ok(());
-        }
-        self.size = (w, h);
-        let (vw, vh) = self.viewport_dp();
-        self.host.set_viewport(vw, vh);
-        let old_c = self.csurf;
-        self.csurf = self
-            .cpu
-            .create_surface(sink_desc(w, h))
-            .map_err(|e| format!("cpu refit surface: {e:?}"))?;
-        let _ = self.cpu.destroy_surface(old_c);
-        let old_v = self.vsurf;
-        self.vsurf = self
-            .backend
-            .create_surface(sink_desc(w, h))
-            .map_err(|e| format!("vello refit surface: {e:?}"))?;
-        let _ = self.backend.destroy_surface(old_v);
-        for d in self.host.diffs_from(0) {
-            self.cpu
-                .commit(&d)
-                .map_err(|e| format!("cpu refit commit: {e:?}"))?;
-            self.backend
-                .commit(&d)
-                .map_err(|e| format!("vello refit commit: {e:?}"))?;
-        }
-        self.host.run_until_idle();
-        self.repaint("refit")?;
+    /// Adopts the live window size (Round 7.6): the engine's resize
+    /// refits the viewport and both paint surfaces and re-runs
+    /// layout (commits replayed so the new surfaces' `live_nodes`
+    /// match); the repaint repaints both arms. Same-size calls are
+    /// a no-op. Loud on any failure. `(w, h)` are device px; the
+    /// host viewport divides by the DPR (Round 7.7 — dp viewport,
+    /// device-px plans).
+    pub(crate) fn refit(&mut self, w: u32, h: u32) -> Result<(), String> {
+        self.scene.resize(w.max(1), h.max(1))?;
+        self.scene.repaint()?;
         Ok(())
     }
 
-    /// Rebuilds the full plan and repaints both arms (correctness
-    /// over damage-minimality for the proof loop — batches are few).
+    /// Rebuilds the full plan and repaints both arms through the
+    /// engine (correctness over damage-minimality for the proof
+    /// loop — batches are few). `what` rides the error context
+    /// (which phase refused) — the engine is the body otherwise.
     fn repaint(&mut self, what: &str) -> Result<(), String> {
-        // Theme contract round: the build theme follows the host
-        // mode (Android never enters Dark today — Light default —
-        // but the plan must not hardcode the assumption).
-        self.builder.set_theme_mode(self.host.theme().mode());
-        let plan = self
-            .host
-            .with_retained_mut(|rec, styles| self.builder.build_full(rec, styles));
-        self.cpu
-            .paint(self.csurf, &plan)
-            .map_err(|e| format!("cpu paint {what}: {e:?}"))?;
-        self.backend
-            .paint(self.vsurf, &plan)
-            .map_err(|e| format!("vello paint {what}: {e:?}"))?;
+        self.scene
+            .repaint()
+            .map_err(|e| format!("repaint {what}: {e}"))?;
         Ok(())
     }
 
+    /// Straight RGBA8 pixels of the CPU pixmap (the engine's opaque
+    /// readback rule — a non-opaque pixel is a loud `Err`).
     fn cpu_bytes(&self) -> Result<Vec<u8>, String> {
-        straight_rgba(self.cpu.pixmap(self.csurf).ok_or("cpu pixmap missing")?)
+        self.scene.rgba8()
     }
 }
 
@@ -458,15 +475,20 @@ impl SceneState {
 /// (it depends on what sits at the viewport center), so interaction
 /// is RECORDED, never required — the hard gates are content: both
 /// arms must render non-blank pixmaps at the live scene size.
-fn run_pixel_proof(state: &mut SceneState, dir: &std::path::Path) -> Result<String, String> {
+fn run_pixel_proof(
+    app: &AndroidApp,
+    state: &mut SceneState,
+    dir: &std::path::Path,
+) -> Result<String, String> {
     let t_all = Instant::now();
-    let (w, h) = state.size;
+    let (w, h) = state.scene.viewport();
+    let bg = themed_page_bg(state.scene.host());
     // CPU arm, base scene.
     let t = Instant::now();
     state.repaint("base")?;
     let base = state.cpu_bytes()?;
     let cpu_base_ms = t.elapsed().as_secs_f64() * 1000.0;
-    assert_content(&base, w, h, SINK_BG, "cpu base")?;
+    assert_content(&base, w, h, bg, "cpu base")?;
     std::fs::write(dir.join("cpu_off.rgba"), &base).map_err(|e| format!("write off: {e}"))?;
 
     // Interaction probe: tap at the viewport center in dp
@@ -475,29 +497,32 @@ fn run_pixel_proof(state: &mut SceneState, dir: &std::path::Path) -> Result<Stri
     // receives it through the shared pipeline).
     let (vw, vh) = state.viewport_dp();
     state
-        .host
+        .scene
+        .host()
         .inject_input(oppa::InputEvent::pointer_down(vw / 2.0, vh / 2.0));
     state
-        .host
+        .scene
+        .host()
         .inject_input(oppa::InputEvent::pointer_up(vw / 2.0, vh / 2.0));
-    state.host.run_until_idle();
+    state.scene.host().run_until_idle();
     let t = Instant::now();
     state.repaint("tapped")?;
     let tapped = state.cpu_bytes()?;
     let cpu_tapped_ms = t.elapsed().as_secs_f64() * 1000.0;
-    assert_content(&tapped, w, h, SINK_BG, "cpu tapped")?;
+    assert_content(&tapped, w, h, bg, "cpu tapped")?;
     let interacted = base != tapped;
     std::fs::write(dir.join("cpu_on.rgba"), &tapped).map_err(|e| format!("write on: {e}"))?;
 
-    // GPU arm: GL-constrained device first (the M10
-    // row); SwiftShader's GLES translator has no compute, so on
-    // the emulator that refusal is expected and the Vulkan row is
-    // attempted next. Exactly one path writes pixels; both attempts
-    // are recorded.
+    // GPU arm: GL first, then Vulkan (decision 388 — the custom
+    // rasterizer needs no compute shaders, so unlike the retired
+    // Vello arm the GLES row is expected to serve, including on
+    // SwiftShader; a refusal still falls through to Vulkan loudly).
+    // Exactly one path writes pixels; both attempts are recorded.
     let t = Instant::now();
-    let gl_err = match state.backend.ensure_gpu_gles() {
+    let gl_err = match state.scene.ensure_benchmark_gpu_gles() {
         Ok(a) => {
             let gpu_meta = finish_gpu_arm(
+                app,
                 state,
                 dir,
                 t,
@@ -508,16 +533,17 @@ fn run_pixel_proof(state: &mut SceneState, dir: &std::path::Path) -> Result<Stri
                 cpu_tapped_ms,
                 interacted,
             )?;
-            return finish_damage_arm(state, dir, gpu_meta);
+            return finish_damage_arm(app, state, dir, gpu_meta);
         }
-        Err(e) => format!("{e:?}"),
+        Err(e) => e.to_string(),
     };
     let gl_device_ms = t.elapsed().as_secs_f64() * 1000.0;
     let t = Instant::now();
-    let adapter = state.backend.ensure_gpu_vulkan().map_err(|e| {
-        format!("gl device refused [{gl_err} ({gl_device_ms:.1}ms)]; vulkan refused [{e:?}]")
+    let adapter = state.scene.ensure_benchmark_gpu_vulkan().map_err(|e| {
+        format!("gl device refused [{gl_err} ({gl_device_ms:.1}ms)]; vulkan refused [{e}]")
     })?;
     let gpu_meta = finish_gpu_arm(
+        app,
         state,
         dir,
         t,
@@ -528,7 +554,7 @@ fn run_pixel_proof(state: &mut SceneState, dir: &std::path::Path) -> Result<Stri
         cpu_tapped_ms,
         interacted,
     )?;
-    finish_damage_arm(state, dir, gpu_meta)
+    finish_damage_arm(app, state, dir, gpu_meta)
 }
 
 /// Sustained damage-loop tail (Round 20.4, decision 327): after the
@@ -538,24 +564,19 @@ fn run_pixel_proof(state: &mut SceneState, dir: &std::path::Path) -> Result<Stri
 /// the oracle/meta lines next to the cold numbers (plus
 /// `damage.txt` beside `frameloop.txt`).
 fn finish_damage_arm(
+    app: &AndroidApp,
     state: &mut SceneState,
     dir: &std::path::Path,
     gpu_meta: String,
 ) -> Result<String, String> {
-    let (w, h) = state.size;
+    let (w, h) = state.scene.viewport();
     let (vw, vh) = state.viewport_dp();
-    let SceneState {
-        host,
-        builder,
-        cpu,
-        csurf,
-        ..
-    } = state;
+    // The damage loop measures THIS scene through the engine's
+    // benchmark seam (`SceneCore::benchmark_cpu_frame` — decision
+    // 400 closed the `parts_mut` escape hatch): same host, same
+    // builder, same CPU arm, live surface re-read every frame.
     let damage_record = frameloop::run_sustained_damage_loop(
-        host,
-        builder,
-        cpu,
-        *csurf,
+        &mut state.scene,
         w as usize * h as usize * 4,
         dir,
         "cpu",
@@ -563,6 +584,7 @@ fn finish_damage_arm(
             host.inject_input(oppa::InputEvent::pointer_down(vw / 2.0, vh / 2.0));
             host.inject_input(oppa::InputEvent::pointer_up(vw / 2.0, vh / 2.0));
         },
+        || drain_input_queue(app),
     )?;
     Ok(format!("{gpu_meta}{damage_record}"))
 }
@@ -571,6 +593,7 @@ fn finish_damage_arm(
 /// pixels + meta (the scene is already painted tapped-side by the caller).
 #[allow(clippy::too_many_arguments)]
 fn finish_gpu_arm(
+    app: &AndroidApp,
     state: &mut SceneState,
     dir: &std::path::Path,
     t_device: Instant,
@@ -582,32 +605,41 @@ fn finish_gpu_arm(
     interacted: bool,
 ) -> Result<String, String> {
     let gl_device_ms = t_device.elapsed().as_secs_f64() * 1000.0;
-    let (w, h) = state.size;
+    let (w, h) = state.scene.viewport();
     // Frame-loop decomposition FIRST (its first full render is the
     // true first render — pipeline compilation included — so it
-    // runs before the oracle read below).
+    // runs before the oracle read below). It measures THIS twin
+    // through the engine's benchmark seam (decision 400) against the
+    // live GPU surface id (re-read every frame — a refit re-homing
+    // can never read a destroyed scene).
     let frameloop_record = frameloop::run_frame_loop(
-        &mut state.backend,
-        state.vsurf,
+        &mut state.scene,
         dir,
         w as usize * h as usize * 4,
         tag,
+        || drain_input_queue(app),
     )?;
     let t = Instant::now();
     let img = state
-        .backend
-        .render_pixels(state.vsurf)
-        .map_err(|e| format!("{tag} readback: {e:?}"))?;
+        .scene
+        .benchmark_gpu_pixels()
+        .map_err(|e| format!("{tag} readback: {e}"))?;
     let gl_read_ms = t.elapsed().as_secs_f64() * 1000.0;
     if img.width != w || img.height != h {
         return Err(format!("{tag} size mismatch {}x{}", img.width, img.height));
     }
-    assert_content(&img.pixels, w, h, SINK_BG, &format!("{tag} readback"))?;
+    assert_content(
+        &img.pixels,
+        w,
+        h,
+        themed_page_bg(state.scene.host()),
+        &format!("{tag} readback"),
+    )?;
     std::fs::write(dir.join(format!("{tag}_on.rgba")), &img.pixels)
         .map_err(|e| format!("write {tag}: {e}"))?;
 
     let total_ms = t_all.elapsed().as_secs_f64() * 1000.0;
-    let dpr = state.dpr;
+    let dpr = state.scene.dpr();
     Ok(format!(
         "path={tag}\nadapter={adapter}\ncpu_off_ms={cpu_base_ms:.1}\ncpu_on_ms={cpu_tapped_ms:.1}\n\
          gpu_device_ms={gl_device_ms:.1}\ngpu_paint_ms=n/a\ngpu_read_ms={gl_read_ms:.1}\n\
@@ -633,7 +665,7 @@ fn android_main(app: AndroidApp) {
         let (dirs, dirs_record) = app_storage::resolve_and_validate(&app)?;
         let dir = dirs.files_dir.clone();
         phase("setup");
-        let mut state = SceneState::setup()?;
+        let mut state = SceneState::setup(&app, &dirs)?;
 
         // Touch driver before the pixel proof (Round 7.7): the
         // config density re-bases the scene to dp (viewport dp,
@@ -647,11 +679,15 @@ fn android_main(app: AndroidApp) {
         let density = touch.density();
         state.set_density(density)?;
         phase("pixels");
-        let pixel_meta = run_pixel_proof(&mut state, &dir)?;
+        let pixel_meta = run_pixel_proof(&app, &mut state, &dir)?;
         // Oracle record lands immediately (a later present failure
         // must not take the timings with it — the phone proved it).
         std::fs::write(dir.join("oracle.txt"), &pixel_meta)
             .map_err(|e| format!("write oracle.txt: {e}"))?;
+        // Heartbeat after the long synchronous proof (decision 426 —
+        // the loops above drain per frame, this covers the seams
+        // between phases).
+        drain_input_queue(&app);
 
         // Composition feed #1 (pre-tap): M1 shapes through the
         // dispatch seam + policy into the shell IME log.
@@ -664,13 +700,23 @@ fn android_main(app: AndroidApp) {
         phase("text");
         let text_record = text_validate::validate_text(&app, &dir)?;
 
+        // Picker read-path validation (decision 424): MediaStore
+        // round-trip + opener-rendezvous routing with real
+        // ContentResolver bytes — needs no window either (the
+        // resolver is window-independent), so it lands here beside
+        // the text slice. The DocumentsUI gesture stays manual.
+        phase("picker");
+        let picker_proof_record = picker_validate::validate_picker(&app, &dir)?;
+        drain_input_queue(&app);
+
         // Present + tap phase: the live window size is adopted first
         // (Round 7.6 — system-bar insets included), then the swapchain
         // presents the Kitchen Sink while `adb input` gestures drive
         // the shell's touch mapping: every batch injects pointer
         // events, runs idle, rebuilds the plan, commits both arms,
-        // and re-presents on change. Split borrows: the step closure
-        // owns host/cpu, the driver owns the GPU backend. Runs until
+        // and re-presents on change. The step runs through the
+        // engine on the whole `SceneState` (the arms serialize, so
+        // no split borrow is needed). Runs until
         // the budget elapses or the activity is destroyed (the final
         // stay-alive loop below holds the process until Destroy per
         // the android-activity contract).
@@ -684,19 +730,9 @@ fn android_main(app: AndroidApp) {
                 // are still CPU-proven through the headless tap phase
                 // — on-screen proof stays open, everything else lands.
                 eprintln!("oppa-android-app: {e}; headless tap phase");
-                let SceneState {
-                    host,
-                    builder,
-                    cpu,
-                    csurf,
-                    ..
-                } = &mut state;
                 drive_headless_taps(
                     &app,
-                    host,
-                    builder,
-                    cpu,
-                    *csurf,
+                    &mut state,
                     &mut touch,
                     density,
                     &dir,
@@ -704,47 +740,26 @@ fn android_main(app: AndroidApp) {
                     &mut tap_log,
                 )?
             }
-            Ok((window, ww, wh)) => {
+            Ok((_window, ww, wh)) => {
                 state.refit(ww, wh)?;
                 touch
                     .shell_mut()
                     .note_surface_changed(ww as f32 / density, wh as f32 / density);
-                let SceneState {
-                    host,
-                    builder,
-                    cpu,
-                    csurf,
-                    backend,
-                    vsurf,
-                    ..
-                } = &mut state;
                 phase("loop");
                 let record = surface::drive_present_loop(
                     &app,
-                    &window,
-                    backend,
-                    *vsurf,
+                    &mut state,
                     ww,
                     wh,
                     &mut touch,
                     Some(TAP_BUDGET_SECS),
                     &mut tap_log,
-                    |backend, cmds| {
-                        apply_tap_batch(
-                            host,
-                            builder,
-                            cpu,
-                            *csurf,
-                            Some((backend, *vsurf)),
-                            cmds,
-                            density,
-                            &mut tap_lines,
-                            &taps_path,
-                        )
-                    },
+                    BENCHMARK_PHASE,
+                    density,
+                    &mut tap_lines,
+                    &taps_path,
                 )?;
-                std::fs::write(&taps_path, tap_log.join("\n") + "\n")
-                    .map_err(|e| format!("write taps.txt: {e}"))?;
+                write_taps_file(&taps_path, &tap_lines, &tap_log)?;
                 record
             }
         };
@@ -758,12 +773,18 @@ fn android_main(app: AndroidApp) {
         // registered, queue drained (empty — no proxy traffic in
         // the proof loop), show/hide round-tripped verbatim.
         phase("bridge");
-        let bridge_register = ime_bridge::ensure_ime_callbacks(&app)?;
+        let bridge_register = ime_bridge::ensure_ime_callbacks(&app, JAVA_PACKAGE)?;
         let bridge_drained = ime_bridge::drain_ime_queue_into(touch.shell_mut());
         let bridge_show = ime_bridge::show_keyboard(&app)?;
         let bridge_hide = ime_bridge::hide_keyboard(&app)?;
         let bridge_record =
             format!("{bridge_register} drained={bridge_drained} {bridge_show} {bridge_hide}");
+        // Picker bridge record (decision 427): re-resolve the
+        // native entry (registration itself is idempotent, but this
+        // re-proves the trampoline class loads + links on device —
+        // a missing `OppaPickerActivity` fails loudly here, never
+        // at first tap).
+        let picker_record = picker_bridge::ensure_picker_callbacks(&app)?;
         let ime_log: Vec<String> = touch
             .shell_mut()
             .take_ime_log()
@@ -773,7 +794,7 @@ fn android_main(app: AndroidApp) {
         std::fs::write(
             dir.join("imm.txt"),
             format!(
-                "feed1={feed1}\nfeed2={feed2}\n{imm_record}\nbridge={bridge_record}\nshell_ime_log={ime_log:?}\n"
+                "feed1={feed1}\nfeed2={feed2}\n{imm_record}\nbridge={bridge_record}\npicker={picker_record}\nshell_ime_log={ime_log:?}\n"
             ),
         )
         .map_err(|e| format!("write imm.txt: {e}"))?;
@@ -784,7 +805,7 @@ fn android_main(app: AndroidApp) {
         // repeats) so host pull tooling keeps its timing — the bonus
         // UI phase that follows must never take the evidence with it.
         let meta =
-            format!("{pixel_meta}presented={presented}\n{text_record}\nstorage={dirs_record}\n");
+            format!("{pixel_meta}presented={presented}\n{text_record}\n{picker_proof_record}\nstorage={dirs_record}\n");
         std::fs::write(dir.join("meta.txt"), &meta).map_err(|e| format!("write meta.txt: {e}"))?;
         std::fs::write(dir.join("DONE"), "ok").map_err(|e| format!("write DONE: {e}"))?;
 
@@ -797,51 +818,62 @@ fn android_main(app: AndroidApp) {
         // non-fatal: degrading bonus interactivity must not rewrite
         // the banked proof into `error.txt`.
         phase("interactive");
-        if let Some(window) = app.native_window() {
-            let (ww, wh) = state.size;
-            let SceneState {
-                host,
-                builder,
-                cpu,
-                csurf,
-                backend,
-                vsurf,
-                ..
-            } = &mut state;
-            match surface::drive_present_loop(
-                &app,
-                &window,
-                backend,
-                *vsurf,
-                ww,
-                wh,
-                &mut touch,
-                None,
-                &mut tap_log,
-                |backend, cmds| {
-                    apply_tap_batch(
-                        host,
-                        builder,
-                        cpu,
-                        *csurf,
-                        Some((backend, *vsurf)),
-                        cmds,
-                        density,
-                        &mut tap_lines,
-                        &taps_path,
-                    )
-                },
-            ) {
-                Ok(record) => tap_log.push(format!("interactive: {record}")),
-                Err(e) => {
-                    let note = format!("interactive aborted (proof banked, UI degraded): {e}");
-                    eprintln!("oppa-android-app: {note}");
-                    tap_log.push(note);
-                }
+        // Decision 428: wait for the window to come back (up to 30s)
+        // instead of snapshotting it once — the old one-shot check
+        // ran while DocumentsUI was still front (Stop had destroyed
+        // the window, Resume had not recreated it yet) and gave up
+        // permanently, leaving a front-but-black activity that never
+        // presented again. A window that never returns keeps the old
+        // skip note below.
+        match surface::wait_for_window(&app, &mut tap_log) {
+            Err(_) => {
+                tap_log.push("interactive skipped (no window)".to_string());
+                // Headless runs never reach the windowed write above and
+                // `drive_headless_taps` wrote before this note existed —
+                // re-persist best-effort so the skip is on record, never
+                // memory-only (the windowed arm's `let _` rule: bonus-phase
+                // bookkeeping must not fail the banked proof).
+                let _ = write_taps_file(&taps_path, &tap_lines, &tap_log);
             }
-            let _ = std::fs::write(&taps_path, tap_log.join("\n") + "\n");
-        } else {
-            tap_log.push("interactive skipped (no window)".to_string());
+            Ok((_window, ww, wh)) => {
+                // Adopt the live size (it may have turned over with
+                // the window); best-effort — a refit refusal degrades
+                // bonus interactivity, never the banked proof.
+                if state.scene.viewport() != (ww, wh) {
+                    if let Err(e) = state.refit(ww, wh) {
+                        tap_log.push(format!("interactive refit degraded: {e}"));
+                    }
+                    touch
+                        .shell_mut()
+                        .note_surface_changed(ww as f32 / density, wh as f32 / density);
+                }
+                // Interactive phase stays display-paced (decision 393):
+                // the badge keeps ticking on presents, but no uncapped
+                // spin past the bounded budget — bonus UI must not burn
+                // the device until Destroy.
+                let record_result = surface::drive_present_loop(
+                    &app,
+                    &mut state,
+                    ww,
+                    wh,
+                    &mut touch,
+                    None,
+                    &mut tap_log,
+                    false,
+                    density,
+                    &mut tap_lines,
+                    &taps_path,
+                );
+                match record_result {
+                    Ok(record) => tap_log.push(format!("interactive: {record}")),
+                    Err(e) => {
+                        let note = format!("interactive aborted (proof banked, UI degraded): {e}");
+                        eprintln!("oppa-android-app: {note}");
+                        tap_log.push(note);
+                    }
+                }
+                let _ = write_taps_file(&taps_path, &tap_lines, &tap_log);
+            }
         }
 
         Ok::<_, String>(meta)

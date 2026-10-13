@@ -3,7 +3,7 @@ name = "oppa-android-app"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "M10 on-device proof app: Kitchen Sink scene render (CPU + GLES arms) with timings, driven by NativeActivity, no Java"
+description = "M10 on-device proof app: Kitchen Sink scene render (CPU + GPU arms) with timings, driven by NativeActivity, no Java"
 
 [workspace]
 
@@ -13,9 +13,11 @@ path = "src/lib.rs"
 
 [dependencies]
 oppa = { path = "../oppa" }
+oppa-android-runner = { path = "../oppa-android-runner" }
+oppa-app = { path = "../oppa-app" }
 oppa-controls = { path = "../oppa-controls" }
 oppa-cpu = { path = "../oppa-cpu" }
-oppa-vello = { path = "../oppa-vello" }
+oppa-gpu = { path = "../oppa-gpu" }
 oppa-text-android = { path = "../oppa-text-android" }
 oppa-shell-android = { path = "../oppa-shell-android" }
 tiny-skia = "0.12"

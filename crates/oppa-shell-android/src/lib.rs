@@ -16,6 +16,12 @@
 //! and [`AndroidLifecycle::transition`]; no classification logic
 //! lives there, so this crate's tests cover the contract.
 //!
+//! File picking follows the same split (decision 423): the pure
+//! SAF spec + pending/resolve rendezvous lives in [`picker`]
+//! (host-tested); intent launch, `onActivityResult` routing, and
+//! `ContentResolver` byte reads live device-side in
+//! `oppa-android-app` (Blocked — no such plumbing exists yet).
+//!
 //! Hot reload on Android is **restart-only** (locked #16, re-confirmed
 //! M10 against current AOSP sepolicy: W^X `neverallow`s on app-home
 //! execute still stand — see the M10 ROUNDS entry). This crate
@@ -31,18 +37,29 @@
 //! here). The JNI muscle (`showSoftInput`/`hideSoftInputFromWindow`
 //! calls, native-method registration) lives in `oppa-android-app`
 //! where `jni` + `AndroidApp` exist — this crate keeps no NDK/JNI
-//! linkage.
+//! linkage. Decision 443 adds the selection-toolbar mirror half
+//! that stays host-provable the same way: the menu action queue +
+//! show/update/hide state machine ([`selection_menu`]).
 
 pub mod app_dirs;
 pub mod events;
 pub mod ime_queue;
+pub mod input_controller;
 pub mod lifecycle;
+pub mod picker;
+pub mod selection_menu;
 pub mod shell;
 
 pub use app_dirs::{dirs_record, resolve_app_dirs, validate_dirs, AppDirs, DirSource};
 pub use events::{AndroidCmd, AndroidEvent, ShellError};
 pub use ime_queue::{ImeTextItem, ImeTextQueue};
+pub use input_controller::{AndroidInput, HandleSide, ToolbarItem, ToolbarModel, ToolbarOp};
 pub use lifecycle::{AndroidLifecycle, LifecycleError, LifecycleState};
+pub use picker::{AndroidFileOpener, SafOpenSpec, ACTION_OPEN_DOCUMENT, CATEGORY_OPENABLE};
+pub use selection_menu::{
+    byte_to_utf16_units, show_permitted, utf16_to_byte_units, MenuAction, MenuActionQueue, MenuOp,
+    MenuSnapshot, MenuSync, SelCause,
+};
 pub use shell::{
     commit_text_to_focused, delete_surrounding_to_focused, field_event, AndroidShell, ImeRequest,
     ShellConfig,

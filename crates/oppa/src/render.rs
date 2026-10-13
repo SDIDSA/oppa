@@ -13,7 +13,7 @@
 //! - `Color` is opaque sRGB `0xRRGGBB`. There is no alpha channel in v1;
 //!   translucency arrives via the separate `opacity` fields (and the
 //!   `PushLayer` op). A `bg` of [`Color::TRANSPARENT`] emits no fill op.
-//!   (M5 re-record: alpha stays open, M6 Vello-blend owner — decision 98.)
+//!   (M5 re-record: alpha stays open, GPU-blend owner — decision 98.)
 //! - `Style::ink` (M5) overrides the text color; [`DrawOp::Text`] falls
 //!   back to the build theme's `text_primary` when absent (theme
 //!   contract round; Light's is fixed [`INK`], near-black — the M4
@@ -26,7 +26,7 @@
 //!   unrendered history.
 //! - Shadow blur is native per backend (Phase 36 PR4, decision 356 —
 //!   supersedes the Round-1.3 quantized stepped expansion for
-//!   `blur > 0`: Vello gaussian blurred-rounded-rect, CPU box-blur,
+//!   `blur > 0`: GPU separable erf approximation, CPU box-blur,
 //!   CSS `box-shadow`). [`Caps::blur_backdrop`] stays false (no
 //!   backdrop blur anywhere — that stays a follow-up).
 //!   `blur_radius == 0` keeps the offset solid on every backend,
@@ -34,8 +34,8 @@
 //! - `RImg` paints registered pixels, refuses the rest (G8, decisions
 //!   222-223; Phase 36 PR4, decision 359 — the static path): all three
 //!   backends serve one [`ImageCache`](crate::component::ImageCache)
-//!   deposit — CPU/Vello through `insert_cached` (straight-alpha peniko
-//!   upload on Vello; the two agree pixel-exact on the oracle), DOM as
+//!   deposit — CPU/GPU through `insert_cached` (the two agree
+//!   pixel-exact on the oracle), DOM as
 //!   a PNG data-URI `<img>`. Bare URL keys keep rendering as URLs on
 //!   DOM (round-4.4 rule). Unregistered ids refuse loudly rather than
 //!   paint placeholders; video stays out (animated frames never land
@@ -46,7 +46,7 @@
 //!   Backends parse the same data through their native engines
 //!   (tiny-skia via a backend-owned parser — `tiny-skia-path` 0.12
 //!   ships no `from_svg`, verified against the registry source —
-//!   Vello via `kurbo::BezPath::from_svg`, DOM via inline `<svg>`);
+//!   GPU via lyon tessellation, DOM via inline `<svg>`);
 //!   stroke caps/joins are fixed round everywhere. Invalid data
 //!   refuses loudly (backend error, never a silent skip).
 
@@ -71,9 +71,20 @@ pub const INK: Color = Color(0x11_11_11);
 /// Fixed until the Phase-11 theme system owns it (recorded, not silent).
 pub const SELECTION_FILL: Color = Color(0xB3_D7_FF);
 
+/// Selected-text ink (decision 475): glyphs covered by the session
+/// selection paint in this ink instead of their resolved ink, on every
+/// pixel backend (the shared builder splits `Text` ops at selection
+/// boundaries — cluster granularity, the shaping atomicity rule).
+/// Fixed near-black against the fixed light-blue fill in both themes:
+/// dark-mode `text_primary` (~white) on light blue has no contrast,
+/// so selected runs invert to dark rather than keeping their ink.
+/// The DOM backend needs no twin (the browser inverts native
+/// selections itself, fields and plain text alike).
+pub const SELECTION_INK: Color = Color(0x11_11_11);
+
 /// Caret bar width in device px (Round 15.1, decision 312): the shared
 /// builder paints every focused caret as a vertical bar exactly this
-/// wide, so CPU, Vello, and DOM agree by construction (the DOM arm
+/// wide, so CPU, GPU, and DOM agree by construction (the DOM arm
 /// converts to CSS px through its own DPR, same origin-relative rule
 /// as the selection divs).
 pub const CARET_WIDTH_PX: f32 = 2.0;
@@ -105,12 +116,42 @@ pub struct SelectionPaint {
     pub range: (usize, usize),
 }
 
+/// Selection-handle bar width in device px (decision 454, enlarged
+/// round 458): handles paint as a caret-plus bar at each selection
+/// edge plus a filled knob below the line, so every backend agrees
+/// by construction (the caret-width precedent, decision 312).
+/// Sized for fingers, not cursors — knobs deliberately overflow
+/// the field box like native teardrops.
+pub const HANDLE_WIDTH_PX: f32 = 3.0;
+
+/// Selection-handle knob radius in device px (decision 454, enlarged
+/// round 458 for touch: one `Circle` op per handle, no new backend
+/// machinery). Reasoned, not a derived law.
+pub const HANDLE_KNOB_R_PX: f32 = 11.0;
+
+/// One renderer-drawn selection handle (decision 454): the selection
+/// edge (`edge`) plus the edge bar's absolute box-space origin
+/// (`x`, `y`, device px) and line height (`h`). The knob centres on
+/// (`x`, `y + h + HANDLE_KNOB_R_PX`). Constructed by the host from
+/// laid clusters (no shaper — handles paint headless); `None` paints
+/// exactly the pre-454 plan. A collapsed selection paints no handles
+/// (the caret bar owns that state — one overlay at a time).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct HandlePaint {
+    pub field: NodeId,
+    pub edge: crate::input::HandleEdge,
+    pub x: f32,
+    pub y: f32,
+    pub h: f32,
+    pub color: Color,
+}
+
 /// Which presenter family a backend belongs to (renderer-contract doc).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PresenterKind {
     /// Software rasterizer (M4: tiny-skia; ADR-0009 fallback).
     Cpu,
-    /// GPU display-list consumer (M6: Vello).
+    /// GPU display-list consumer.
     GpuDrawList,
     /// Browser-owned pixels (M7: DOM).
     Dom,
@@ -186,7 +227,7 @@ pub struct PlacedGlyph {
 /// 110): the per-run font identity decision 105 deferred. `glyph_range`
 /// indexes the op's flattened `glyphs` vec; `family` is the
 /// backend-resolvable family name (CSS `font-family` on DOM, atlas-face
-/// key on Vello); `font_id` is the shaper-local id (DWrite file
+/// key on GPU); `font_id` is the shaper-local id (DWrite file
 /// resolution + diagnostics). Ranges are non-empty, ordered, and
 /// non-overlapping; consecutive same-font runs arrive merged.
 #[derive(Clone, PartialEq, Debug)]
@@ -237,8 +278,8 @@ pub enum DrawOp {
     /// Offset shadow with a native blur radius (Phase 36 PR4, decision
     /// 356 — supersedes the Round-1.3 quantized stepped expansion for
     /// `blur > 0`): `blur_radius` in device px (0 = the shipped offset
-    /// solid). Backends paint natively — Vello gaussian
-    /// blurred-rounded-rect, CPU box-blur, CSS `box-shadow` — agreeing
+    /// solid). Backends paint natively — GPU separable erf
+    /// approximation, CPU box-blur, CSS `box-shadow` — agreeing
     /// tol-banded (exact cross-engine blur parity is not claimed, only
     /// geometry + the zero-blur solid, which stays pixel-exact).
     Shadow {
@@ -262,9 +303,9 @@ pub enum DrawOp {
     /// (cells start at the line top, unchanged). `em_size` is the exact
     /// em size in device px (== `font_size_px × dpr` at measure time —
     /// ends decision 105's `font_size = line_height` scale
-    /// approximation; the Vello encoder sizes runs with it). `fonts`
+    /// approximation; GPU encoders size runs with it). `fonts`
     /// carries the per-run font identity (ends the single-face atlas
-    /// bound — the Vello atlas holds one face per distinct `font_id`).
+    /// approximation; the GPU atlas holds one face per distinct `font_id`).
     /// (M7 lock touch, decision 110.)
     Text {
         node: NodeId,

@@ -19,10 +19,10 @@ use windows::Win32::Graphics::Gdi::{
     MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateIconIndirect, DestroyIcon, GetWindowLongW, GetWindowRect, SendMessageW, SetWindowLongW,
-    SetWindowPos, SetWindowTextW, GWL_EXSTYLE, GWL_STYLE, HWND_TOP, ICON_BIG, ICON_SMALL,
-    SWP_FRAMECHANGED, SWP_NOZORDER, SWP_SHOWWINDOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_SETICON,
-    WS_POPUP, WS_VISIBLE,
+    CreateIconIndirect, DestroyIcon, GetWindowLongW, GetWindowRect, IsZoomed, SendMessageW,
+    SetWindowLongW, SetWindowPos, SetWindowTextW, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_TOP,
+    ICON_BIG, ICON_SMALL, SWP_FRAMECHANGED, SWP_NOZORDER, SWP_SHOWWINDOW, SW_MAXIMIZE, SW_MINIMIZE,
+    SW_RESTORE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_SETICON, WS_POPUP, WS_VISIBLE,
 };
 use windows_core::PCWSTR;
 
@@ -251,6 +251,26 @@ impl WindowControl for Win32WindowControl {
         }
         *icons = owned;
     }
+
+    /// Decision 482 (`Extended`-mode caption bridge): minimizes to
+    /// the taskbar. Best-effort like every other HWND effect here (a
+    /// dead HWND absorbs it — the loop proves forwarding
+    /// headlessly, the OS application is reviewed).
+    fn minimize(&self) {
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_MINIMIZE);
+        }
+    }
+
+    /// Decision 482 (same bridge): toggles maximized/restored. Reads
+    /// the live maximized state (never a cached flag — the user may
+    /// have snapped/maximized through the OS since the last call).
+    fn toggle_maximize(&self) {
+        let maximized = unsafe { IsZoomed(self.hwnd).as_bool() };
+        unsafe {
+            let _ = ShowWindow(self.hwnd, if maximized { SW_RESTORE } else { SW_MAXIMIZE });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +286,7 @@ mod tests {
             record_messages: false,
             suppress_os_composition_window: true,
             visible: false,
+            style: oppa::WindowStyle::Decorated,
         })
         .expect("hidden test window builds")
     }

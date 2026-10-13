@@ -41,10 +41,36 @@ pub mod keycodes {
     pub const TAB: u32 = 61;
     /// Enter.
     pub const ENTER: u32 = 66;
+    /// Backspace (mapped to the framework Backspace — runners
+    /// route it to the focused field's session, decision 243).
+    pub const DEL: u32 = 67;
+    /// Forward delete (mapped to the framework Delete — same
+    /// runner routing as Backspace).
+    pub const FORWARD_DEL: u32 = 112;
     /// Space.
     pub const SPACE: u32 = 62;
     /// Escape.
     pub const ESCAPE: u32 = 111;
+    /// Letter A (decision 442 — Android letters are contiguous
+    /// 29–54, mirroring the contiguous framework 0x41–0x5A, so
+    /// ctrl-combos route; plain presses commit text through the
+    /// decision-460 hardware fallback instead of router silence).
+    pub const A: u32 = 29;
+    /// Letter Z (range end, see `A`).
+    pub const Z: u32 = 54;
+    /// Digit 0 (decision 460 — Android digits are contiguous 7–16,
+    /// mirroring the framework 0x30–0x39; without this they pass
+    /// through raw and collide with control codes — `KEYCODE_1`
+    /// (8) reads as framework Backspace and deletes).
+    pub const DIGIT_0: u32 = 7;
+    /// Digit 9 (range end, see `DIGIT_0`).
+    pub const DIGIT_9: u32 = 16;
+    /// Text-navigation Home (mapped to the framework Home — runners
+    /// route it like the arrows, decision 442). Distinct from
+    /// `KEYCODE_HOME` (3, system home — never intercepted).
+    pub const MOVE_HOME: u32 = 122;
+    /// Text-navigation End (same routing as `MOVE_HOME`).
+    pub const MOVE_END: u32 = 123;
 }
 
 /// One classified Android intake event. Motion coordinates are dp;
@@ -72,10 +98,13 @@ pub enum AndroidEvent {
     },
     /// `ACTION_CANCEL` (gesture preempted — never dispatches).
     MotionCancel,
-    /// `ACTION_DOWN` key (keycode from [`keycodes`]).
-    KeyDown { keycode: u32 },
-    /// `ACTION_UP` key.
-    KeyUp { keycode: u32 },
+    /// `ACTION_DOWN` key (keycode from [`keycodes`], modifiers
+    /// sampled at event time — decision 442, the desktop
+    /// `step_session_nav` matrix needs shift/ctrl on-device).
+    KeyDown { keycode: u32, modifiers: Modifiers },
+    /// `ACTION_UP` key (modifiers sampled like `KeyDown` — release
+    /// is not a second edit, but the router sees the true state).
+    KeyUp { keycode: u32, modifiers: Modifiers },
     /// Soft-keyboard text commit (Round 3.1): the JNI text callback's
     /// payload (`InputConnection.commitText`) — full committed
     /// string, caret follows it (replacement selection is applied by
@@ -85,6 +114,18 @@ pub enum AndroidEvent {
     /// `deleteSurroundingText` char counts (many keyboards send this
     /// instead of key events for backspace).
     DeleteSurrounding { before_chars: u32, after_chars: u32 },
+    /// Soft-keyboard composition update (decision 438): the
+    /// `InputConnection.setComposingText` payload — the live
+    /// composing string (caret: end of text, see the runner's
+    /// preedit feed). Without this every composing keystroke died in
+    /// the proxy's hidden buffer and single-letter taps never
+    /// reached the session.
+    ComposeText { text: String },
+    /// Soft-keyboard finish-composing (decision 461): the
+    /// `InputConnection.finishComposingText` signal — no payload.
+    /// The runner commits the session's open buffer with its own
+    /// text (quiet no-op with no open composition).
+    FinishComposing,
     /// Window focus gain/loss.
     FocusChanged(bool),
 }
@@ -121,6 +162,7 @@ pub enum AndroidCmd {
     Key {
         code: u32,
         pressed: bool,
+        modifiers: Modifiers,
     },
     /// Soft-keyboard commit for the focused session (Round 3.1).
     CommitText {
@@ -131,6 +173,15 @@ pub enum AndroidCmd {
         before_chars: u32,
         after_chars: u32,
     },
+    /// Soft-keyboard composition for the focused session (decision
+    /// 438) — runner-matched into the preedit feed, never injected.
+    ComposeText {
+        text: String,
+    },
+    /// Soft-keyboard finish-composing for the focused session
+    /// (decision 461) — runner-matched into a buffer-text commit,
+    /// never injected.
+    FinishComposing,
 }
 
 impl AndroidCmd {
@@ -172,9 +223,13 @@ impl AndroidCmd {
                 y: f32::NAN,
                 modifiers: Modifiers::NONE,
             },
-            AndroidCmd::Key { code, pressed } => InputEvent::Key {
+            AndroidCmd::Key {
                 code,
-                modifiers: Modifiers::NONE,
+                pressed,
+                modifiers,
+            } => InputEvent::Key {
+                code,
+                modifiers,
                 state: if pressed {
                     KeyState::Pressed
                 } else {
@@ -189,6 +244,14 @@ impl AndroidCmd {
             AndroidCmd::DeleteSurrounding { .. } => panic!(
                 "AndroidCmd::DeleteSurrounding reached to_input_event — surrounding deletes carry no InputEvent mapping by design; \
                  the runner must match DeleteSurrounding first and delete through the focused session"
+            ),
+            AndroidCmd::ComposeText { .. } => panic!(
+                "AndroidCmd::ComposeText reached to_input_event — compositions carry no InputEvent mapping by design; \
+                 the runner must match ComposeText first and feed preedit through the focused session"
+            ),
+            AndroidCmd::FinishComposing => panic!(
+                "AndroidCmd::FinishComposing reached to_input_event — finish signals carry no InputEvent mapping by design; \
+                 the runner must match FinishComposing first and commit the open buffer through the focused session"
             ),
         }
     }
@@ -214,6 +277,18 @@ pub fn classify_keycode(keycode: u32) -> u32 {
         keycodes::DPAD_UP => keys::UP,
         keycodes::DPAD_RIGHT => keys::RIGHT,
         keycodes::DPAD_DOWN => keys::DOWN,
+        keycodes::DEL => keys::BACKSPACE,
+        keycodes::FORWARD_DEL => keys::DELETE,
+        keycodes::MOVE_HOME => keys::HOME,
+        keycodes::MOVE_END => keys::END,
+        // Letters map to the contiguous framework VKs (decision
+        // 442 — only ctrl-held combinations route as actions; plain
+        // presses commit through the decision-460 text fallback).
+        code @ keycodes::A..=keycodes::Z => keys::A + (code - keycodes::A),
+        // Digits map to the contiguous framework 0x30–0x39
+        // (decision 460 — same rule as letters; see the
+        // `keycodes::DIGIT_0` note).
+        code @ keycodes::DIGIT_0..=keycodes::DIGIT_9 => 0x30 + (code - keycodes::DIGIT_0),
         other => other,
     }
 }
@@ -255,13 +330,15 @@ impl AndroidEvent {
                 y: y_dp * density,
             })),
             AndroidEvent::MotionCancel => Ok(Some(AndroidCmd::PointerCancel)),
-            AndroidEvent::KeyDown { keycode } => Ok(Some(AndroidCmd::Key {
+            AndroidEvent::KeyDown { keycode, modifiers } => Ok(Some(AndroidCmd::Key {
                 code: classify_keycode(keycode),
                 pressed: true,
+                modifiers,
             })),
-            AndroidEvent::KeyUp { keycode } => Ok(Some(AndroidCmd::Key {
+            AndroidEvent::KeyUp { keycode, modifiers } => Ok(Some(AndroidCmd::Key {
                 code: classify_keycode(keycode),
                 pressed: false,
+                modifiers,
             })),
             // Soft-keyboard text (Round 3.1): density-independent
             // (no coordinates) — straight through to the
@@ -274,6 +351,12 @@ impl AndroidEvent {
                 before_chars,
                 after_chars,
             })),
+            // Soft-keyboard composition (decision 438): same
+            // density-independent straight-through as commits.
+            AndroidEvent::ComposeText { text } => Ok(Some(AndroidCmd::ComposeText { text })),
+            // Soft-keyboard finish-composing (decision 461): same
+            // straight-through (payload-free).
+            AndroidEvent::FinishComposing => Ok(Some(AndroidCmd::FinishComposing)),
             // Focus intents stay shell-side (the shell cannot name a
             // retained node): the shell records `has_focus`, the loop
             // reads it — no command is produced.

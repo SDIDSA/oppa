@@ -19,6 +19,7 @@ pub mod arena;
 pub mod clipboard;
 pub mod clock;
 pub mod component;
+pub mod debug_overlay;
 pub mod diag;
 pub mod dialog;
 pub mod editing;
@@ -55,10 +56,12 @@ pub use component::{
     MountHandle, OpaqueProps, Props, RenderFn, ScrollOffset, ScrollOffset2D, ScrollXY, Store,
     Theme, TimerId,
 };
+pub use debug_overlay::DebugOverlayConfig;
 pub use diag::{LogEntry, LogLevel, RingLog};
 pub use dialog::{
-    FileDialog, FileDialogOptions, FileFilter, FilePickerOptions, FolderDialog,
-    FolderDialogOptions, PickError, SaveFileDialog, ScriptedDialog, ScriptedFolderDialog,
+    FileDialog, FileDialogOptions, FileFilter, FileOpener, FilePickerOptions, FolderDialog,
+    FolderDialogOptions, OpenOutcome, PickBackend, PickError, PickPress, PickRegistry, PickSession,
+    PickedFile, SaveFileDialog, ScriptedDialog, ScriptedFolderDialog, ScriptedOpener,
     ScriptedSaveDialog,
 };
 pub use editing::{EditSession, EditState, PasteOutcome, CARET_BLINK_PERIOD_SECS, EDIT_UNDO_DEPTH};
@@ -70,9 +73,12 @@ pub use hash::SymbolHash;
 pub use ime::{
     dispatch_ime_event, ImeCompositionEvent, ImeCompositionFeed, ImeCompositionHandler, ImeOps,
 };
+pub use input::actions::{action_for_key, apply_edit_action, text_for_hardware_key, EditAction};
 pub use input::{
     handler_of, hit_test, is_within, press_handler_of, press_owner_node, scroll_owner_node,
-    tab_order, InputEvent, KeyState, Modifiers, PointerAction, PointerButton,
+    tab_order, HandleEdge, InputEvent, KeyState, Modifiers, PointerAction, PointerButton,
+    ToolbarAction, ToolbarItem, ToolbarModel, HANDLE_HIT_SLOP_PX, TOOLBAR_EST_W_PX,
+    TOOLBAR_ROW_H_PX,
 };
 pub use interner::{Interner, StyleId};
 pub use layout::{
@@ -88,9 +94,9 @@ pub use reconciler::{DiffOp, Reconciler, RetainedNode, TreeDiff};
 pub use reload::{AdoptPropsFn, ComponentDesc, DrainPropsFn, DrainedProps, ManifestView};
 pub use render::{
     compute_semantics_diff, BackendError, Caps, CaretPaint, DamageRect, DrawOp, FontRun, FramePlan,
-    PaintStats, PlacedGlyph, PlanStats, PresenterKind, RendererBackend, SelectionPaint,
-    SemanticsDiff, SemanticsEntry, SemanticsSnapshot, SurfaceDesc, SurfaceId, CARET_WIDTH_PX, INK,
-    SELECTION_FILL,
+    HandlePaint, PaintStats, PlacedGlyph, PlanStats, PresenterKind, RendererBackend,
+    SelectionPaint, SemanticsDiff, SemanticsEntry, SemanticsSnapshot, SurfaceDesc, SurfaceId,
+    CARET_WIDTH_PX, HANDLE_KNOB_R_PX, HANDLE_WIDTH_PX, INK, SELECTION_FILL, SELECTION_INK,
 };
 pub use semantics::{Num, Role, Semantics};
 pub use shell::{AppLifecycleState, Event, EventKind, PlatformShell};
@@ -101,8 +107,8 @@ pub use store::{
 };
 pub use style::{
     AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack, IntoPx,
-    JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, Px, Shadow,
-    Style, StyleBuilder, ThemeMode, ThemeTokens, Transition,
+    JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, Px,
+    RadialGradient, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens, Transition,
 };
 pub use system_theme::{ScriptedThemeSource, SystemThemeSource};
 pub use text::{
@@ -112,10 +118,13 @@ pub use text::{
 };
 pub use transition::{ease_at, AnimProp, TransitionEvaluator};
 pub use vnode::{
-    stamp_handler_owner, Canvas, CanvasOp, CanvasSpec, Children, Column, Custom, Div, Element,
-    ElementBuilder, Grid, ImageId, Img, Path, PathSpec, Portal, RichText, Row, ScrollArea,
-    SharedString, Stack, StrokeDesc, Tag, Text, TextArea, TextBuilder, TextClass, TextField,
-    TextSpan, VNode,
+    extract_svg_path, scale_svg_path, stamp_handler_owner, svg_path_data, Canvas, CanvasOp,
+    CanvasSpec, Children, Column, Custom, Div, Element, ElementBuilder, Grid, ImageId, Img, Path,
+    PathSpec, Portal, RichText, Row, ScrollArea, SharedString, Stack, StrokeDesc, Tag, Text,
+    TextArea, TextBuilder, TextClass, TextField, TextSpan, VNode,
 };
-pub use window::{ScriptedWindowControl, WindowCall, WindowControl, WindowIcon};
+pub use window::{
+    drag_regions_for_style, native_caption_zones, title_bar_rect, window_drag_rects, CaptionButton,
+    ScriptedWindowControl, WindowCall, WindowControl, WindowIcon, WindowStyle, HEADER_BAR_DEBUG,
+};
 pub use worker::{HotGeneration, TaskId, TaskScope, TaskStage, WorkerQueue, WorkerResult};

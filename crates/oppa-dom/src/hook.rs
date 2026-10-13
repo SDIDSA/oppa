@@ -1,6 +1,6 @@
 //! PAINT-phase wiring for the DOM backend: same hook shape as the CPU
-//! (`oppa-cpu`) and Vello (`oppa-vello`) hooks (M7 — the third presenter
-//! joins the same phase discipline).
+//! (`oppa-cpu`) and GPU (`oppa-gpu`) hooks — every presenter joins
+//! the same phase discipline.
 //!
 //! Each PAINT phase builds the shared dirty-subtree [`FramePlan`](oppa::FramePlan)
 //! (the builder is shared — same plans, same damage discipline; the DOM
@@ -44,12 +44,17 @@ pub fn install_dom_paint_hook(
         let now = host2.runtime().now_secs();
         // Round 8.2: the shared-plan selection (rasterizers) and the
         // DOM highlight divs (below) ride the same focused session.
-        // Round 15.1: the caret bar rides the same hook (plan `Rect`
-        // + DOM `caret` div from one host query).
+        // (Round 15.1's DOM caret bar is gone — decision 472 leaves
+        // the caret to the browser — but the plan `Rect` still rides
+        // here for the CPU oracle.) Decision 454: the
+        // handle pair rides the same hook (plan bar + `Circle` ops +
+        // DOM `handle` divs from one host query).
         let selection = host2.focused_selection_paint();
         let caret = host2.focused_caret_paint();
+        let handles = host2.focused_handles_paint();
         builder.set_selection(selection);
         builder.set_caret(caret);
+        builder.set_handles(handles);
         let plan = host2.with_retained_mut(|rec, styles| {
             host2.with_evaluator(|ev| builder.build_incremental_evaluated(rec, styles, ev, now))
         });
@@ -64,7 +69,7 @@ pub fn install_dom_paint_hook(
             }
             seen2.set(host2.diff_count());
             be.set_selection(selection);
-            be.set_caret(caret);
+            be.set_handles(handles);
             let stats = host2.with_retained_mut(|rec, styles| {
                 // Phase 36 PR4 (decision 357): feed the backend's
                 // keyframe tracker every frame (settling is

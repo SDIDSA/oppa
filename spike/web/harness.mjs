@@ -15,6 +15,7 @@ import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isFirefox, launchFirefox } from './driver.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const spikeDir = path.resolve(here, '..');
@@ -31,7 +32,7 @@ const edge = EDGE_CANDIDATES.find((p) => fs.existsSync(p));
 const results = {
   arm: 'web-dom',
   rig_version: corpus.rig_version,
-  browser: edge ? 'edge' : 'unknown',
+  browser: isFirefox ? 'firefox' : (edge ? 'edge' : 'unknown'),
   c2_clicks: [],
   c2_caret_rect: [],
   c2_boundary_geometry: [],
@@ -56,27 +57,51 @@ const byteToCp = (str, byte) => {
 };
 const utf16Len = (str) => [...str].length;
 
-const browser = await puppeteer.launch({
-  executablePath: edge,
-  headless: true,
-  args: [
-    // Subpixel-faithful advances, matching the framework arm's shaping rule
-    // (advances stay subpixel; rounding only at commit positions). GDI-style
-    // hinting would quantize every advance ~1px; recorded as a rig factor.
-    '--font-render-hinting=none',
-    '--disable-lcd-text',
-    '--hide-scrollbars',
-  ],
-  defaultViewport: { width: 500, height: 120, deviceScaleFactor: 1 },
-});
+let browser = null;
+let ffCleanup = null;
+if (isFirefox) {
+  ({ browser, cleanup: ffCleanup } = await launchFirefox());
+} else {
+  browser = await puppeteer.launch({
+    executablePath: edge,
+    headless: true,
+    args: [
+      // Subpixel-faithful advances, matching the framework arm's shaping rule
+      // (advances stay subpixel; rounding only at commit positions). GDI-style
+      // hinting would quantize every advance ~1px; recorded as a rig factor.
+      '--font-render-hinting=none',
+      '--disable-lcd-text',
+      '--hide-scrollbars',
+    ],
+    defaultViewport: { width: 500, height: 120, deviceScaleFactor: 1 },
+  });
+}
 const page = await browser.newPage();
+if (isFirefox) {
+  await page.setViewport({ width: 500, height: 120, deviceScaleFactor: 1 });
+}
 await page.goto('file:///' + path.join(spikeDir, 'web', 'index.html').replaceAll('\\', '/'));
 await page.evaluate((stack) => window.__setFont(stack), corpus.font.font_stack.join(', '));
-const client = await page.createCDPSession();
+// BiDi has no CDP session: Firefox arms use high-level input below.
+const client = isFirefox ? null : await page.createCDPSession();
 
 const CLICK_Y = 30; // inside the field's line box
 
 async function mouse(type, x, y, opts = {}) {
+  if (isFirefox) {
+    // Same trusted path via input.performActions: pressed/released carry
+    // the click count, moves track the held button.
+    if (type === 'mousePressed') {
+      await page.mouse.move(x, y);
+      await page.mouse.down({ button: 'left', clickCount: opts.clickCount ?? 1 });
+    } else if (type === 'mouseReleased') {
+      await page.mouse.move(x, y);
+      await page.mouse.up({ button: 'left', clickCount: opts.clickCount ?? 1 });
+    } else {
+      await page.mouse.move(x, y, { buttons: opts.buttons ?? 0 });
+    }
+    return;
+  }
   await client.send('Input.dispatchMouseEvent', {
     type,
     x,
@@ -162,16 +187,33 @@ for (const hit of corpus.hit_strings) {
     }
     {
       await click(clusters[0].x + 1);
-      await click(clusters[Math.min(2, clusters.length - 1)].x + 1, CLICK_Y, { modifiers: 8 });
+      if (isFirefox) {
+        // No in-event modifiers over BiDi (the c4-arm reason — the
+        // `modifiers` option never reaches the pointer event): hold
+        // Shift around the click, exactly like the c4 shift-click arm.
+        await page.keyboard.down('Shift');
+        await click(clusters[Math.min(2, clusters.length - 1)].x + 1, CLICK_Y);
+        await page.keyboard.up('Shift');
+      } else {
+        await click(clusters[Math.min(2, clusters.length - 1)].x + 1, CLICK_Y, { modifiers: 8 });
+      }
       const st = await state();
       selOps.push({ kind: 'shift-click', start: st.start, end: st.end });
     }
     {
       const x = clusters[Math.min(1, clusters.length - 1)].x + 1;
-      await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 1 });
-      await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 1 });
-      await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 2 });
-      await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 2 });
+      if (isFirefox) {
+        // `page.mouse.click` with counted clicks (the dom_text-proven
+        // shape): down/up pairs collapse to a caret over BiDi while the
+        // click API forms a genuine word selection (proven in isolation).
+        await page.mouse.click(x, CLICK_Y, { count: 1 });
+        await page.mouse.click(x, CLICK_Y, { count: 2 });
+      } else {
+        await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 1 });
+        await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 1 });
+        await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 2 });
+        await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 2 });
+      }
       const st = await state();
       selOps.push({ kind: 'dbl-click', x, start: st.start, end: st.end });
     }
@@ -267,6 +309,10 @@ const compShapes = [
   (start, end, text, caret) => ({ selectionStart: start, selectionEnd: end, text, caret }),
 ];
 let setCompositionShape = null;
+if (isFirefox) {
+  results.rig_notes.push({ rig: 'criterion 3 web is rig-limited on Firefox — WebDriver BiDi has no IME composition primitives (no imeSetComposition/imeCommitText twin); composition probing and scenarios skipped, NOT a model verdict' });
+}
+if (!isFirefox) {
 {
   await resetField('');
   for (const shape of compShapes) {
@@ -285,6 +331,7 @@ let setCompositionShape = null;
     results.rig_notes.push({ rig: 'no Input.imeSetComposition shape accepted — criterion 3 web is rig-limited, NOT a model verdict' });
   }
 }
+}
 
 const commitCandidates = [
   { method: 'Input.imeCommitText', params: (start, end, text) => ({ text, selectionStart: start, selectionEnd: end }) },
@@ -292,6 +339,7 @@ const commitCandidates = [
   { method: 'Input.imeCommitText', params: (start, end, text) => ({ text, relativeSelectionStart: start, relativeSelectionEnd: end }) },
 ];
 let commitPath = null;
+if (!isFirefox) {
 {
   await resetField('');
   const probeLog = [];
@@ -323,6 +371,7 @@ let commitPath = null;
   results.rig_notes.push({ rig: 'commit probing', probe_log: probeLog });
   results.rig_notes.push({ rig: 'commit path: ' + (commitPath ? commitPath.method : 'none — cancel+insertText fallback (recorded shape difference)') });
 }
+}
 
 async function imeCancelRaw(start, end) {
   if (!setCompositionShape) return false;
@@ -342,6 +391,7 @@ async function imeCommit(start, end, text) {
 }
 
 for (const scenario of corpus.ime_scenarios) {
+  if (isFirefox) break; // rig-limited: no IME primitives (see note above)
   await resetField(scenario.base);
   compSpan = { start: null, text: '' };
   lastEventCount = 0;
@@ -430,13 +480,28 @@ for (const suite of corpus.op_suites) {
       await mouse('mouseReleased', to, CLICK_Y, { buttons: 0 });
     } else if (step.op === 'shift-click') {
       await click(Math.round(opX[0]));
-      await click(Math.round(opX[1]), CLICK_Y, { modifiers: 8 });
+      if (isFirefox) {
+        // No in-event modifiers over BiDi: hold Shift around the click.
+        await page.keyboard.down('Shift');
+        await click(Math.round(opX[1]), CLICK_Y);
+        await page.keyboard.up('Shift');
+      } else {
+        await click(Math.round(opX[1]), CLICK_Y, { modifiers: 8 });
+      }
     } else if (step.op === 'dbl-click') {
       const x = Math.round(opX[0]);
-      await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 1 });
-      await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 1 });
-      await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 2 });
-      await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 2 });
+      if (isFirefox) {
+        // `page.mouse.click` with counted clicks (the dom_text-proven
+        // shape — same finding as the c2 arm above): down/up pairs
+        // collapse to a caret over BiDi instead of word-selecting.
+        await page.mouse.click(x, CLICK_Y, { count: 1 });
+        await page.mouse.click(x, CLICK_Y, { count: 2 });
+      } else {
+        await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 1 });
+        await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 1 });
+        await mouse('mousePressed', x, CLICK_Y, { buttons: 1, clickCount: 2 });
+        await mouse('mouseReleased', x, CLICK_Y, { buttons: 0, clickCount: 2 });
+      }
     } else if (step.op === 'end') {
       await page.keyboard.press('End');
     } else if (step.op === 'home') {
@@ -464,7 +529,8 @@ for (const suite of corpus.op_suites) {
   results.c4_suites.push({ name: suite.name, base: suite.base, steps: rows });
 }
 
-await browser.close();
+if (typeof ffCleanup === 'function') await ffCleanup();
+else await browser.close();
 
 fs.writeFileSync(path.join(spikeDir, 'results', 'web.json'), JSON.stringify(results, null, 1));
 console.log('web.json written');

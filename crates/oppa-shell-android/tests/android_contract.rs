@@ -198,16 +198,24 @@ fn android_press_roundtrips_the_shared_pipeline() {
 
 #[test]
 fn android_keys_classify_without_forking_quiet_rules() {
+    use oppa::Modifiers;
     let mut rig = Rig::new(1.0);
     // Unknown keycode: classifies, router stays quiet (decision 96).
-    rig.drive(AndroidEvent::KeyDown { keycode: 42 });
-    rig.drive(AndroidEvent::KeyUp { keycode: 42 });
+    rig.drive(AndroidEvent::KeyDown {
+        keycode: 42,
+        modifiers: Modifiers::NONE,
+    });
+    rig.drive(AndroidEvent::KeyUp {
+        keycode: 42,
+        modifiers: Modifiers::NONE,
+    });
     assert_eq!(rig.checked(), Some(false));
     assert_eq!(rig.changes.get(), 0);
     // BACK dismisses (mapped to ESCAPE at the classifier): blurs, and
     // with nothing else focused the Toggle is untouched.
     rig.drive(AndroidEvent::KeyDown {
         keycode: oppa_shell_android::events::keycodes::BACK,
+        modifiers: Modifiers::NONE,
     });
     assert_eq!(rig.checked(), Some(false));
     // Round 3.3: the mapping itself is pinned (BACK == ESC at the
@@ -218,6 +226,86 @@ fn android_keys_classify_without_forking_quiet_rules() {
         oppa::input::keys::ESCAPE,
         "BACK classifies to ESCAPE"
     );
+}
+
+/// Decision 442: key modifiers ride intake → command → pipeline
+/// event (the desktop `step_session_nav` matrix needs shift/ctrl
+/// on-device); letters map to the contiguous framework VKs and
+/// text-navigation Home/End map to the framework kinds.
+#[test]
+fn key_modifiers_and_letter_kinds_classify() {
+    use oppa::{InputEvent, KeyState, Modifiers};
+    // Letters: Android 29–54 → framework 0x41–0x5A.
+    assert_eq!(
+        oppa_shell_android::events::classify_keycode(oppa_shell_android::events::keycodes::A),
+        oppa::input::keys::A,
+        "KEYCODE_A classifies to framework A"
+    );
+    assert_eq!(
+        oppa_shell_android::events::classify_keycode(oppa_shell_android::events::keycodes::Z),
+        oppa::input::keys::Z,
+        "KEYCODE_Z classifies to framework Z"
+    );
+    // Digits: Android 7–16 → framework 0x30–0x39 (decision 460 —
+    // without this KEYCODE_1 (8) collides with framework Backspace).
+    assert_eq!(
+        oppa_shell_android::events::classify_keycode(oppa_shell_android::events::keycodes::DIGIT_0),
+        0x30,
+        "KEYCODE_0 classifies to framework 0x30"
+    );
+    assert_eq!(
+        oppa_shell_android::events::classify_keycode(oppa_shell_android::events::keycodes::DIGIT_9),
+        0x39,
+        "KEYCODE_9 classifies to framework 0x39"
+    );
+    assert_eq!(
+        oppa_shell_android::events::classify_keycode(
+            oppa_shell_android::events::keycodes::MOVE_HOME
+        ),
+        oppa::input::keys::HOME,
+        "MOVE_HOME classifies to HOME"
+    );
+    assert_eq!(
+        oppa_shell_android::events::classify_keycode(
+            oppa_shell_android::events::keycodes::MOVE_END
+        ),
+        oppa::input::keys::END,
+        "MOVE_END classifies to END"
+    );
+    // Modifiers survive classification both directions.
+    let mods = Modifiers {
+        shift: true,
+        ctrl: true,
+        ..Modifiers::NONE
+    };
+    let cmd = AndroidEvent::KeyDown {
+        keycode: oppa_shell_android::events::keycodes::DPAD_LEFT,
+        modifiers: mods,
+    }
+    .classify(1.0)
+    .expect("key classifies")
+    .expect("key produces a command");
+    assert_eq!(
+        cmd,
+        oppa_shell_android::events::AndroidCmd::Key {
+            code: oppa::input::keys::LEFT,
+            pressed: true,
+            modifiers: mods,
+        }
+    );
+    // ... and into the shared pipeline event (no silent NONE).
+    match cmd.to_input_event() {
+        InputEvent::Key {
+            code,
+            modifiers: got,
+            state: KeyState::Pressed,
+            ..
+        } => {
+            assert_eq!(code, oppa::input::keys::LEFT);
+            assert_eq!(got, mods);
+        }
+        other => panic!("expected Key pipeline event, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

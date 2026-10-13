@@ -103,12 +103,38 @@ impl ShellWindow {
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
+        Self::open_with_style(
+            event_loop,
+            title,
+            width,
+            height,
+            oppa::WindowStyle::Decorated,
+        )
+    }
+
+    /// Opens a window with an explicit OS chrome style (decision
+    /// 482): every frameless style clears the server-side
+    /// decorations (`_MOTIF_WM_HINTS` on X11 / the xdg-decoration
+    /// client-side path on Wayland — winit negotiates; a compositor
+    /// that refuses keeps its frame and names it in the boot log,
+    /// never a silent mismatch), and `Transparent` additionally
+    /// requests an alpha-capable visual (compositing is compositor-
+    /// owned — without one the alpha never shows, stated).
+    pub fn open_with_style(
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        title: &str,
+        width: u32,
+        height: u32,
+        style: oppa::WindowStyle,
+    ) -> Result<Self, String> {
         use winit::window::WindowAttributes;
         let window = event_loop
             .create_window(
                 WindowAttributes::default()
                     .with_title(title)
-                    .with_inner_size(winit::dpi::PhysicalSize::new(width, height)),
+                    .with_inner_size(winit::dpi::PhysicalSize::new(width, height))
+                    .with_decorations(!style.is_frameless())
+                    .with_transparent(style.is_transparent()),
             )
             .map_err(|e| format!("create window: {e:?}"))?;
         let window = std::sync::Arc::new(window);
@@ -116,6 +142,20 @@ impl ShellWindow {
             window,
             softbuffer: None,
         })
+    }
+
+    /// Begins an OS window drag (decision 482 — the `Extended`-mode
+    /// Linux half of `HTCAPTION`: the runner calls this
+    /// synchronously from its press handling when the press lands in
+    /// a published drag region outside any press-owning child, and
+    /// the compositor takes the gesture from there — resize, snap,
+    /// and tiling stay compositor-owned throughout). A compositor
+    /// refusal is a loud `Err` (the press already routed normally —
+    /// the window simply does not move, never a stuck capture).
+    pub fn begin_drag(&self) -> Result<(), String> {
+        self.window
+            .drag_window()
+            .map_err(|e| format!("begin drag: {e:?}"))
     }
 
     /// Current inner size in physical pixels.

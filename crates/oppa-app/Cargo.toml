@@ -8,8 +8,15 @@ description = "Desktop application runner: window + event/paint loop over Compon
 [dependencies]
 oppa = { path = "../oppa" }
 oppa-cpu = { path = "../oppa-cpu" }
-oppa-vello = { path = "../oppa-vello" }
-tiny-skia = "0.12"
+
+# The pixel-present legs (GPU twin, wgpu surfaces, raw-window glue)
+# deliberately do not compile into the wasm build: oppa-web runs the
+# shared SceneSession with its own DOM presenter (locked #1 — the
+# browser owns pixels), and no surface/wgpu/readout code path may
+# compile into it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+oppa-gpu = { path = "../oppa-gpu" }
+oppa-text-rustybuzz = { path = "../oppa-text-rustybuzz" }
 wgpu = "29"
 raw-window-handle = "0.6"
 

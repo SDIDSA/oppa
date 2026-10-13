@@ -1,11 +1,11 @@
-//! Linux event/present glue (decision 242, Round 7.4 decision 279):
-//! winit window + `LinuxShell` intake + system text service + GPU-first
-//! paint (Vello hardware swapchains primary, softbuffer CPU fallback).
+//! Linux event/present glue: winit window + `LinuxShell` intake +
+//! system text service + GPU-first paint (custom-rasterizer
+//! hardware swapchains primary, softbuffer CPU fallback).
 //! Structure mirrors the proven `linux_demo` example
 //! (translate → shell → `take_cmds` → `to_input_event` → inject →
 //! repaint → redraw) minus its diagnostics/bounded-run harness, with
-//! the swapchain bring-up mirrored from `oppa-fps::driver` (Vulkan
-//! attempt, pipeline-cache round-trip, Immediate/Mailbox/Fifo pick).
+//! Vulkan-attempt swapchain bring-up (pipeline-cache round-trip,
+//! vsync Fifo-first mode pick).
 //! Under Wayland the GPU path creates hardware swapchains
 //! (`zwp_linux_dmabuf_v1`) running natively on the compositor
 //! (including WSLg) without touching Weston's software SHM
@@ -20,6 +20,9 @@
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use oppa::shell::PlatformShell;
 use oppa::{Ctx, InputEvent, KeyState, Props, VNode};
 use oppa_shell_linux::{
@@ -28,40 +31,79 @@ use oppa_shell_linux::{
 };
 use oppa_text_linux::LinuxTextService;
 
-use crate::{gpu_disabled_by_env, is_edit_shortcut_modifier, DesktopLoop, WindowOptions};
+use crate::{
+    continuous_repaint_override, gpu_disabled_by_env, is_edit_shortcut_modifier, DesktopLoop,
+    WindowOptions,
+};
 
-/// Live hardware present target (Round 7.4): the `wgpu` swapchain
-/// surface for the runner's window plus the negotiated mode and the
-/// backend name for logs. The scene itself lives in
-/// [`DesktopLoop`]'s Vello twin; this is only the swapchain half
-/// (mirrors `oppa-fps::driver::GpuState` minus the scene, which the
-/// loop owns). The `ShellWindow` softbuffer stays alive beside it as
-/// the loud CPU fallback.
+/// Live hardware present target: the `wgpu` swapchain surface for
+/// the runner's window plus the negotiated mode and the backend
+/// name for logs. The scene itself lives in [`DesktopLoop`]'s
+/// GPU twin; this is only the swapchain half. The `ShellWindow`
+/// softbuffer stays alive beside it as the loud CPU fallback.
 struct LinuxGpu {
     surface: wgpu::Surface<'static>,
     mode: wgpu::PresentMode,
     name: String,
 }
 
-/// Ordered GPU backend attempts (mirrors the fps driver: desktop
-/// probes Vulkan first — measured Vello bring-up ~2s vs ~6-16s Dx12
-/// on Windows, and only Vulkan persists pipeline-cache data in
-/// wgpu-hal 29; Linux tries the single Vulkan row).
-fn backend_attempts() -> Vec<(&'static str, wgpu::Backends)> {
-    vec![("vulkan", wgpu::Backends::VULKAN)]
+/// Ordered GPU backend attempts: Linux probes Vulkan first, then
+/// GL — see [`LINUX_GPU_ORDER`](crate::LINUX_GPU_ORDER) (decision
+/// 391). An explicit backend pin still attempts exactly that backend
+/// once so the refusal falls back loudly to CPU (never a silent
+/// substitution when the user named one — including the
+/// meaningless-on-Linux `gpu-dx12`, which fails loudly rather than
+/// substituting) — the pin match lives once in
+/// [`presenter_rows`](crate::presenter_rows).
+struct LinuxSurfaceFactory {
+    raw_window_handle: raw_window_handle::RawWindowHandle,
+    raw_display_handle: raw_window_handle::RawDisplayHandle,
 }
 
-fn cache_dir() -> Option<std::path::PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|b| std::path::PathBuf::from(b).join(".cache/oppa-app"))
+impl LinuxSurfaceFactory {
+    /// Snapshots the winit window into raw handles once (a refused
+    /// handle aborts bring-up before any row probes — the old
+    /// per-attempt `?` shape, without repeating the query per row).
+    fn new(
+        window: &winit::window::Window,
+        display: raw_window_handle::RawDisplayHandle,
+    ) -> Result<Self, String> {
+        let raw_window_handle = window
+            .window_handle()
+            .map_err(|e| format!("window handle: {e:?}"))?
+            .as_raw();
+        Ok(Self {
+            raw_window_handle,
+            raw_display_handle: display,
+        })
+    }
 }
 
-/// Builds the GPU swapchain against `window`, or returns the loud
-/// reason to fall back to CPU (mirrors
-/// `oppa-fps::driver::FpsDriver::build_gpu`: one leaked instance per
-/// attempt, pipeline-cache round-trip, present-mode pick, surface
-/// configure, loop enable).
+impl<'a> crate::SurfaceFactory<'a> for LinuxSurfaceFactory {
+    fn make_surface(
+        &mut self,
+        backends: wgpu::Backends,
+    ) -> Result<crate::BuiltSurface<'a>, String> {
+        // One leaked instance per attempt (the surface borrows it;
+        // the winner lives for the process).
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = backends;
+        let instance: &'static wgpu::Instance = Box::leak(Box::new(wgpu::Instance::new(desc)));
+        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
+            raw_display_handle: Some(self.raw_display_handle),
+            raw_window_handle: self.raw_window_handle,
+        };
+        let surface =
+            unsafe { instance.create_surface_unsafe(target) }.map_err(|e| format!("{e}"))?;
+        Ok(crate::BuiltSurface { instance, surface })
+    }
+}
+
+/// Builds the GPU swapchain against `window` through the shared
+/// presenter ladder ([`LINUX_GPU_ORDER`](crate::LINUX_GPU_ORDER) +
+/// terminal CPU row), or returns the loud reason to fall back to
+/// CPU: one leaked instance per attempt, present-mode pick, surface
+/// configure, loop enable.
 fn build_gpu(
     window: &winit::window::Window,
     display: raw_window_handle::RawDisplayHandle,
@@ -69,67 +111,60 @@ fn build_gpu(
     size: (u32, u32),
 ) -> Result<LinuxGpu, String> {
     let (w, h) = (size.0.max(1), size.1.max(1));
-    for (name, backends) in backend_attempts() {
-        let raw_window = window
-            .window_handle()
-            .map_err(|e| format!("window handle: {e:?}"))?
-            .as_raw();
-        // One leaked instance per attempt (the surface borrows it;
-        // the winner lives for the process — the fps rule).
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = backends;
-        let instance: &'static wgpu::Instance = Box::leak(Box::new(wgpu::Instance::new(desc)));
-        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-            raw_display_handle: Some(display),
-            raw_window_handle: raw_window,
-        };
-        let surface = match unsafe { instance.create_surface_unsafe(target) } {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("oppa-app: {name} surface failed: {e}");
-                continue;
-            }
-        };
-        let cache_path = cache_dir().map(|d| d.join(format!("vello-pipeline-cache-{name}.bin")));
-        let cache_data = cache_path.as_ref().and_then(|p| std::fs::read(p).ok());
-        eprintln!(
-            "oppa-app: {name} pipeline cache {}",
-            cache_data
-                .as_ref()
-                .map(|d| format!("{} bytes loaded (warm)", d.len()))
-                .unwrap_or_else(|| "absent (cold)".to_string())
-        );
-        match loop_.ensure_gpu_for_surface_with_cache(instance, &surface, cache_data) {
-            Ok((adapter, saved)) => {
-                eprintln!("oppa-app: {name} {adapter}");
-                if let (Some(path), Some(data)) = (cache_path, saved) {
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    match std::fs::write(&path, &data) {
-                        Ok(()) => {
-                            eprintln!("oppa-app: pipeline cache {} bytes saved", data.len())
-                        }
-                        Err(e) => eprintln!("oppa-app: pipeline cache save failed: {e}"),
-                    }
-                }
-                let mode = loop_.pick_gpu_mode(&surface);
-                loop_
-                    .configure_gpu_surface(&surface, w, h, mode)
-                    .map_err(|e| format!("configure surface: {e}"))?;
-                loop_.enable_gpu(mode);
-                return Ok(LinuxGpu {
-                    surface,
-                    mode,
-                    name: name.to_string(),
-                });
-            }
-            Err(e) => {
-                eprintln!("oppa-app: {name} gpu failed: {e}");
+    let rows = crate::presenter_rows(&crate::LINUX_GPU_ORDER, true);
+    let mut factory = LinuxSurfaceFactory::new(window, display)?;
+    // Styled (decision 482 — same premultiplied leg as the Windows
+    // bring-up; read once, the closure owns only the scene).
+    let alpha = loop_.surface_alpha_mode();
+    let mut attempt = move |scene: &mut crate::SceneCore,
+                            row: crate::GpuRow,
+                            instance: &wgpu::Instance,
+                            surface: &wgpu::Surface<'_>|
+          -> Result<crate::GpuApplied, crate::RowFail> {
+        let adapter = scene
+            .ensure_gpu_for_surface(instance, surface)
+            .map_err(|e| crate::RowFail::Next(format!("{} gpu failed: {e}", row.name)))?;
+        eprintln!("oppa-app: {} {adapter}", row.name);
+        let mode = scene.pick_gpu_mode(surface);
+        let format = scene
+            .configure_gpu_surface_alpha(surface, w, h, mode, alpha)
+            .map_err(|e| crate::RowFail::Abort(format!("configure surface: {e}")))?;
+        scene.enable_gpu(mode);
+        // Decision 473: nobody reads the CPU pixmap while the
+        // swapchain serves — skip the redundant full-scene software
+        // raster (the Android per-generation precedent, same safety:
+        // transient failures refresh once without leaving GPU mode,
+        // `disable_gpu` re-arms on the loud-failure fallback).
+        scene.set_cpu_paint(false);
+        // Record the winning backend for the debug badge
+        // (decision 387): a closed row vocabulary, so an unknown
+        // name refuses loudly instead of guessing.
+        match crate::GpuApi::from_row_name(row.name) {
+            Some(api) => scene.set_gpu_api(api),
+            None => {
+                return Err(crate::RowFail::Abort(format!(
+                    "winning gpu backend {:?} is not a known row",
+                    row.name
+                )));
             }
         }
+        Ok(crate::GpuApplied {
+            adapter,
+            mode,
+            format,
+        })
+    };
+    match crate::walk_presenter_rows(&rows, &mut factory, &mut attempt, loop_.scene_mut()) {
+        Ok(crate::LadderOutcome::Gpu(up)) => Ok(LinuxGpu {
+            surface: up.surface,
+            mode: up.mode,
+            name: up.name.to_string(),
+        }),
+        // The ladder logs the refusal line; the CPU wording stays
+        // here (the runner owns its softbuffer leg).
+        Ok(crate::LadderOutcome::Cpu) => Err("no working GPU backend".to_string()),
+        Err(e) => Err(e.to_string()),
     }
-    Err("no working GPU backend".to_string())
 }
 
 /// Presents one CPU frame through softbuffer (the fallback half):
@@ -150,12 +185,14 @@ fn cpu_present_to_window(loop_: &DesktopLoop, window: &mut ShellWindow) {
     }
 }
 
-/// Presents through the GPU swapchain with loud CPU fallback (Round
-/// 7.4): `Outdated` reconfigures and retries once (the fps storm
-/// rule, single-shot here — sustained storms reconfigure per frame
-/// rather than sleeping the event loop); any other failure logs the
-/// exact error and falls back to softbuffer for this frame (the next
-/// frame retries GPU — no silent permanent downgrade).
+/// Presents through the GPU swapchain with loud CPU fallback:
+/// `Outdated` reconfigures and retries once (single-shot here —
+/// sustained storms reconfigure per frame rather than sleeping the
+/// event loop); any other failure logs the exact error and falls
+/// back to softbuffer for this frame (the next frame retries GPU —
+/// no silent permanent downgrade). Decision 473: the pixmap may be
+/// opted out while GPU serves, so every fallback edge refreshes it
+/// once without leaving GPU mode (no-op when already painting).
 fn gpu_present_or_cpu(
     loop_: &mut DesktopLoop,
     gpu: &LinuxGpu,
@@ -166,21 +203,32 @@ fn gpu_present_or_cpu(
         Ok(_) => {}
         Err(e) if e.contains("Outdated") => {
             eprintln!("oppa-app: gpu present outdated ({e}); reconfiguring");
-            match loop_.configure_gpu_surface(&gpu.surface, size.0, size.1, gpu.mode) {
+            // Styled (decision 482): the retry keeps the loop's
+            // alpha mode, never a silent opaque revert.
+            match loop_.configure_gpu_surface_styled(&gpu.surface, size.0, size.1, gpu.mode) {
                 Ok(_) => {
                     if let Err(e2) = loop_.present_gpu(&gpu.surface) {
                         eprintln!("oppa-app: gpu retry failed: {e2}; CPU fallback");
+                        if let Err(e3) = loop_.scene_mut().refresh_cpu_pixmap() {
+                            eprintln!("oppa-app: cpu catch-up repaint failed: {e3}");
+                        }
                         cpu_present_to_window(loop_, window);
                     }
                 }
                 Err(ce) => {
                     eprintln!("oppa-app: gpu reconfigure failed: {ce}; CPU fallback");
+                    if let Err(e3) = loop_.scene_mut().refresh_cpu_pixmap() {
+                        eprintln!("oppa-app: cpu catch-up repaint failed: {e3}");
+                    }
                     cpu_present_to_window(loop_, window);
                 }
             }
         }
         Err(e) => {
             eprintln!("oppa-app: gpu present failed: {e}; CPU fallback");
+            if let Err(e3) = loop_.scene_mut().refresh_cpu_pixmap() {
+                eprintln!("oppa-app: cpu catch-up repaint failed: {e3}");
+            }
             cpu_present_to_window(loop_, window);
         }
     }
@@ -291,12 +339,16 @@ impl LinuxRunner {
             return;
         };
         let (w, h) = self.loop_.viewport();
+        // Styled (decision 482): resizes re-apply the loop's alpha
+        // mode, so a transparent window never reverts mid-session.
         if let Err(e) = self
             .loop_
-            .configure_gpu_surface(&gpu.surface, w, h, gpu.mode)
+            .configure_gpu_surface_styled(&gpu.surface, w, h, gpu.mode)
         {
             eprintln!("oppa-app: gpu reconfigure failed: {e}; CPU fallback");
-            self.loop_.disable_gpu();
+            if let Err(e) = self.loop_.disable_gpu() {
+                eprintln!("oppa-app: cpu catch-up repaint failed: {e}");
+            }
         }
     }
 
@@ -364,6 +416,32 @@ impl LinuxRunner {
         }
     }
 
+    /// Attempts an OS window drag for an `Extended`-mode press
+    /// (decision 482): when the press point lands inside a published
+    /// drag region ([`oppa::drag_regions_for_style`] — bar chrome
+    /// minus press-owning children, so nested buttons and fields
+    /// keep their own hit-testing; empty under every non-`Extended`
+    /// style), the compositor takes the gesture via
+    /// [`ShellWindow::begin_drag`]. Loud on compositor refusal
+    /// (the press still routes — the window simply does not move).
+    /// Quiet no-op outside `Extended` and when no window is open yet
+    /// (the policy point gates before any tree walk).
+    fn begin_drag_at(&self, x: f32, y: f32) {
+        let regions = oppa::drag_regions_for_style(self.loop_.host(), self.loop_.window_style());
+        if !regions
+            .iter()
+            .any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
+        {
+            return;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        if let Err(e) = window.begin_drag() {
+            eprintln!("oppa-app: extended drag refused: {e}");
+        }
+    }
+
     /// Escape-at-root exits; everything else flows to the pipeline.
     /// Returns true when the caller should exit the event loop.
     /// (The winit arm needs the `ActiveEventLoop` to exit, so the
@@ -389,10 +467,16 @@ impl LinuxRunner {
 impl winit::application::ApplicationHandler for LinuxRunner {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let (w, h) = self.loop_.viewport();
-        let window = ShellWindow::open(event_loop, &self.title, w, h).unwrap_or_else(|e| {
-            eprintln!("oppa-app: FATAL window open: {e}");
-            std::process::exit(1);
-        });
+        // Decision 482: the window opens with the launch style
+        // (frameless styles drop server decorations; transparent
+        // requests an alpha visual — both best-effort at the
+        // compositor, never silent).
+        let window =
+            ShellWindow::open_with_style(event_loop, &self.title, w, h, self.loop_.window_style())
+                .unwrap_or_else(|e| {
+                    eprintln!("oppa-app: FATAL window open: {e}");
+                    std::process::exit(1);
+                });
         // IME enablement (Round 2.1, decision 256): without this
         // winit never delivers Preedit/Commit (the old "the window
         // never enables IME" bound — now closed).
@@ -426,9 +510,19 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                     let window_ref = self.window.as_ref().expect("window just opened").window();
                     match build_gpu(window_ref, display, &mut self.loop_, size) {
                         Ok(gpu) => {
-                            eprintln!("oppa-app: GPU path ({} / {:?})", gpu.name, gpu.mode);
+                            // Decision 484: same alpha-contract log as
+                            // the Windows bring-up above.
+                            let alpha_note = if self.loop_.window_style().is_transparent() {
+                                " / transparent (premultiplied alpha, alpha-0 clear)"
+                            } else {
+                                ""
+                            };
+                            eprintln!(
+                                "oppa-app: GPU path ({} / {:?}{alpha_note})",
+                                gpu.name, gpu.mode
+                            );
                             self.gpu = Some(gpu);
-                            // Sync the Vello twin before the first
+                            // Sync the GPU twin before the first
                             // present (creation-time scene is stale
                             // once GPU enables both-backend paints).
                             if let Err(e) = self.loop_.repaint() {
@@ -455,6 +549,12 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                 }
             }
         }
+        // Presenter badge for the debug overlay: derived from the
+        // active renderer after bring-up (never a hardcoded path
+        // label).
+        self.loop_
+            .host()
+            .set_presenter_name(self.loop_.presenter_badge_name());
     }
 
     fn window_event(
@@ -529,6 +629,16 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                 }
                 // Present on the active backend (Round 7.4): GPU
                 // swapchain primary with loud softbuffer fallback.
+                // Continuous repaint (benchmark mode): repaint first so
+                // every present carries a fresh frame (the event-driven
+                // path only presents here — its repaints happen at the
+                // input/resize arms above, which request the redraw).
+                if self.loop_.continuous_repaint() {
+                    if let Err(e) = self.loop_.repaint() {
+                        eprintln!("oppa-app: FATAL continuous repaint: {e}");
+                        std::process::exit(1);
+                    }
+                }
                 if self.loop_.is_gpu() {
                     let size = self.loop_.viewport();
                     // Disjoint field borrows (loop + gpu + window)
@@ -541,6 +651,9 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                         }
                         _ => {
                             eprintln!("oppa-app: gpu active without surface; CPU fallback");
+                            if let Err(e) = self.loop_.scene_mut().refresh_cpu_pixmap() {
+                                eprintln!("oppa-app: cpu catch-up repaint failed: {e}");
+                            }
                             if let Some(window) = self.window.as_mut() {
                                 cpu_present_to_window(&self.loop_, window);
                             }
@@ -549,6 +662,15 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                 } else if let Some(window) = self.window.as_mut() {
                     cpu_present_to_window(&self.loop_, window);
                 }
+                // After each presented frame the scene is marked dirty
+                // and the next frame requested (quiet no-op unless
+                // continuous repaint is armed — the event-driven path
+                // is unchanged).
+                self.loop_.rearm_continuous_frame();
+                // Overlay meter tick (both modes): present cadence
+                // drives the FPS clock, throttled badge refresh
+                // included.
+                self.loop_.note_frame_presented();
             }
             ev => {
                 if self.window.is_none() {
@@ -637,6 +759,21 @@ impl winit::application::ApplicationHandler for LinuxRunner {
                         if *pressed && *code == oppa::input::keys::DELETE {
                             changed |= self.delete_forward_fatal();
                             continue;
+                        }
+                    }
+                    // `Extended`-mode OS drag (decision 482): a
+                    // primary press landing in a published drag region
+                    // (bar chrome minus press-owning children) hands
+                    // the gesture to the compositor synchronously —
+                    // the Linux half of `HTCAPTION`. The press still
+                    // routes afterwards (focus follows the click like
+                    // every title-bar press); a compositor refusal
+                    // logs loudly and the press routes alone (the
+                    // window simply does not move, never a stuck
+                    // capture).
+                    if let LinuxCmd::PointerDown { x, y, button, .. } = &cmd {
+                        if *button == oppa::PointerButton::Primary {
+                            self.begin_drag_at(*x, *y);
                         }
                     }
                     let event = cmd.to_input_event(modifiers);
@@ -738,6 +875,14 @@ impl winit::application::ApplicationHandler for LinuxRunner {
         if self.loop_.host().take_close_request() && self.loop_.close_requested() {
             event_loop.exit();
         }
+        // Decision 495: the maximized state follows the live window
+        // (the caption glyph swaps on it — change-gated inside, so
+        // steady state never re-renders).
+        if let Some(window) = self.window.as_ref() {
+            self.loop_
+                .host()
+                .set_maximized(window.window().is_maximized());
+        }
         // X11 selection serving (Round 2.2, OQ-G3-1): answer peer
         // requests without blocking; while our clipboard owns a
         // servable selection, wake periodically so another app's
@@ -761,6 +906,16 @@ impl winit::application::ApplicationHandler for LinuxRunner {
             let delta_ms = (due_ms - self.loop_.host().now_ms()).max(0.0);
             let tick = now + std::time::Duration::from_secs_f64(delta_ms / 1000.0);
             wake = Some(wake.map_or(tick, |w| w.min(tick)));
+        }
+        if self.loop_.continuous_repaint() {
+            // Uncapped loop: a redraw every iteration with an
+            // immediate poll — vsync modes pace themselves at present.
+            // The horizon above is skipped, never slept.
+            if let Some(window) = self.window.as_ref() {
+                window.window().request_redraw();
+            }
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+            return;
         }
         match wake {
             Some(t) => event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(t)),
@@ -803,30 +958,63 @@ pub fn run_linux<P: Props>(
         std::env::set_var("DISPLAY", ":0");
     }
 
-    // System text service first (loud when the system has no fonts —
-    // the demo's policy, kept: a window without text is a lie).
-    let (texts, skipped) =
-        LinuxTextService::system().map_err(|e| format!("oppa-app: linux fonts: {e}"))?;
-    if !skipped.is_empty() {
-        eprintln!("oppa-app: skipped font files: {skipped:?}");
-    }
-    let families = texts.families().to_vec();
-    let family = ["DejaVu Sans", "Ubuntu", "Noto Sans"]
-        .into_iter()
-        .find(|f| families.iter().any(|g| g == f))
-        .ok_or_else(|| "oppa-app: no latin family on system".to_string())?
-        .to_string();
-
-    let all_font_ids = texts.all_font_ids();
-    let mut font_pairs = Vec::with_capacity(all_font_ids.len());
-    for id in all_font_ids {
-        if let Some((bytes, index)) = texts.face_bytes(id) {
-            font_pairs.push((id, bytes.to_vec(), index));
+    // Text service (Round 27.1): app-bundled fonts replace the
+    // system service — the app shapes, measures, and rasterizes
+    // from its own bytes on every OS, so outlines agree everywhere.
+    // Every bundled face injects into both raster backends before
+    // first paint (same rule as the system set below). Without
+    // `app_fonts` this stays the shipped system path.
+    let (service, family, mut app_font_pairs): (
+        Box<dyn oppa::text::TextService>,
+        String,
+        Vec<(oppa::text::FontId, std::sync::Arc<[u8]>, u32)>,
+    ) = match &options.app_fonts {
+        Some(app_fonts) => {
+            let svc =
+                oppa_text_rustybuzz::RustybuzzService::from_bytes_with_chain(app_fonts.faces, &[])
+                    .map_err(|e| format!("oppa-app: app fonts: {e}"))?
+                    .0;
+            let mut pairs = Vec::new();
+            for id in svc.all_font_ids() {
+                if let Some((bytes, index)) = svc.face_bytes(id) {
+                    pairs.push((id, bytes, index));
+                }
+            }
+            if pairs.is_empty() {
+                return Err(
+                    "oppa-app: app fonts produced no faces — refused, never silent".to_string(),
+                );
+            }
+            (Box::new(svc), app_fonts.family.to_string(), pairs)
         }
-    }
+        None => {
+            // System text service first (loud when the system has no fonts —
+            // the demo's policy, kept: a window without text is a lie).
+            let (texts, skipped) =
+                LinuxTextService::system().map_err(|e| format!("oppa-app: linux fonts: {e}"))?;
+            if !skipped.is_empty() {
+                eprintln!("oppa-app: skipped font files: {skipped:?}");
+            }
+            let families = texts.families().to_vec();
+            let family = ["DejaVu Sans", "Ubuntu", "Noto Sans"]
+                .into_iter()
+                .find(|f| families.iter().any(|g| g == f))
+                .ok_or_else(|| "oppa-app: no latin family on system".to_string())?
+                .to_string();
+
+            let all_font_ids = texts.all_font_ids();
+            let mut font_pairs = Vec::with_capacity(all_font_ids.len());
+            for id in all_font_ids {
+                if let Some((bytes, index)) = texts.face_bytes(id) {
+                    font_pairs.push((id, bytes.into(), index));
+                }
+            }
+            (Box::new(texts), family, font_pairs)
+        }
+    };
 
     let mut runner = LinuxRunner {
-        loop_: DesktopLoop::new(options.width, options.height, Box::new(texts), &family)?,
+        loop_: DesktopLoop::new(options.width, options.height, service, &family)?,
         shell: LinuxShell::new(ShellConfig {
             title: options.title.clone(),
             density: 1.0,
@@ -841,12 +1029,12 @@ pub fn run_linux<P: Props>(
         window_control: LinuxWindowControl::new(),
     };
 
-    // Inject raster faces for all system font ids (decision 278, closes
-    // the decision-277 Linux follow-up; Round 7.4 lands them in BOTH
-    // backends via `DesktopLoop::set_font_for`): bold text and chevrons
-    // rasterize real glyph outlines on the CPU pixmap and on the Vello
-    // twin instead of advance-cell bars / loud-no-face refusals.
-    for (id, bytes, index) in font_pairs {
+    // Inject raster faces for every service face (decision 278 —
+    // both backends via `DesktopLoop::set_font_for`): bold text and
+    // chevrons rasterize real glyph outlines on the CPU pixmap and
+    // on the GPU twin instead of advance-cell bars /
+    // loud-no-face refusals.
+    for (id, bytes, index) in std::mem::take(&mut app_font_pairs) {
         runner.loop_.set_font_for(id, bytes, index);
     }
 
@@ -869,16 +1057,25 @@ pub fn run_linux<P: Props>(
     // unused slot costs no thread).
     runner
         .loop_
-        .set_save_dialog(Box::new(LinuxFileDialog::new(StdRunner)));
+        .set_save_dialog(Rc::new(RefCell::new(LinuxFileDialog::new(StdRunner))));
     runner
         .loop_
-        .set_folder_dialog(Box::new(LinuxFileDialog::new(StdRunner)));
+        .set_folder_dialog(Rc::new(RefCell::new(LinuxFileDialog::new(StdRunner))));
+    // Native open dialog (decision 425 — same backend family, its
+    // own instance behind the loop's open slot for request/poll).
+    runner
+        .loop_
+        .set_open_dialog(Rc::new(RefCell::new(LinuxFileDialog::new(StdRunner))));
     // OS theme at startup (Round 16.2, decision 315): install the
     // portal reader and sync before mount so the first paint already
     // matches the system (unreadable stays a quiet no-op, never a
     // repaint spin); the watcher below covers live flips.
     runner.loop_.set_theme_source(Box::new(LinuxSystemTheme));
     let _ = runner.loop_.sync_system_theme()?;
+    // Selection handles are a mobile affordance (decision 474):
+    // mouse selections never grow touch bars/knobs — same rule as
+    // the Windows runner above.
+    runner.loop_.host().set_selection_handles_visible(false);
     runner.theme_watcher = Some(LinuxThemeWatcher::new());
     // Runtime window chrome (Round 16.3, decision 316 — the loop
     // forwards into the shared control; the runner attaches the
@@ -886,6 +1083,22 @@ pub fn run_linux<P: Props>(
     runner
         .loop_
         .set_window_control(Box::new(runner.window_control.clone()));
+    runner
+        .loop_
+        .set_continuous_repaint(options.continuous_repaint || continuous_repaint_override());
+    // Decision 482: same chrome recording as the Windows runner
+    // (swapchain reconfigures re-apply the matching alpha mode;
+    // transparent windows clear to alpha-0). Decision 485: native
+    // caption zones are a Windows-only seam (no OS zones exist under
+    // server-side CSD), so the flag is recorded but never publishes
+    // here — the app's bridged buttons always own the press on Linux.
+    runner.loop_.set_window_style(options.window_style);
+    runner
+        .loop_
+        .set_native_caption_buttons(options.native_caption_buttons);
+    runner
+        .loop_
+        .set_transparent_clear(options.window_style.is_transparent());
     runner.loop_.mount("App", props, component);
     // App ownership (Round 25.3, decision 338): after mount (host
     // signals exist) and after the platform backend installs above

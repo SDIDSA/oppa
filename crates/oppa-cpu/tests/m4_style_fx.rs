@@ -402,3 +402,109 @@ fn render_negative_edge(_ctx: &Ctx, _: &()) -> VNode {
 fn negative_edge_refuses_loudly() {
     let _ = plan_of(render_negative_edge);
 }
+
+fn render_radial(_ctx: &Ctx, _: &()) -> VNode {
+    Div("root").child(
+        Div("fx")
+            .style(Style::new().size(10, 10).bg_radial(
+                5.0,
+                5.0,
+                4.0,
+                Color(0x00_00_00),
+                Color(0xFF_FF_FF),
+            ))
+            .build(),
+    )
+}
+
+#[test]
+fn radial_gradient_expands_to_descending_circles() {
+    let ops = plan_of(render_radial);
+    // r = 4 -> 4 one-px rings, largest (rim) first, ~1px center last.
+    assert_eq!(ops.len(), 4, "one circle per radius px: {ops:?}");
+    let mut prev_r = f32::INFINITY;
+    for (k, op) in ops.iter().enumerate() {
+        match op {
+            DrawOp::Circle {
+                cx: 5.0,
+                cy: 5.0,
+                r,
+                ..
+            } => {
+                assert!(*r < prev_r, "ring {k} descends, got {r}");
+                assert_eq!(*r, 4.0 - k as f32, "ring {k} lands exactly");
+                prev_r = *r;
+            }
+            other => panic!("ring {k} is a centered circle: {other:?}"),
+        }
+    }
+    let rim = match ops[0] {
+        DrawOp::Circle { color, .. } => color,
+        ref other => panic!("{other:?}"),
+    };
+    let core = match ops[3] {
+        DrawOp::Circle { color, .. } => color,
+        ref other => panic!("{other:?}"),
+    };
+    // t = rad/r: rim t = 1 -> `to`, center t = 1/4 -> 255/4 = 63.75 -> 64.
+    assert_eq!(rim, Color(0xFF_FF_FF), "rim wears `to`: {rim:?}");
+    assert_eq!(core, Color(0x40_40_40), "center lerps to `from`: {core:?}");
+}
+
+fn render_radial_bg_conflict(_ctx: &Ctx, _: &()) -> VNode {
+    Div("root").child(
+        Div("fx")
+            .style(Style::new().size(10, 10).bg(Color(1)).bg_radial(
+                5.0,
+                5.0,
+                4.0,
+                Color(1),
+                Color(2),
+            ))
+            .build(),
+    )
+}
+
+#[test]
+#[should_panic(expected = "bg + bg_radial")]
+fn bg_plus_radial_refuses_loudly() {
+    let _ = plan_of(render_radial_bg_conflict);
+}
+
+fn render_both_gradients(_ctx: &Ctx, _: &()) -> VNode {
+    Div("root").child(
+        Div("fx")
+            .style(
+                Style::new()
+                    .size(10, 10)
+                    .bg_gradient(Color(1), Color(2))
+                    .bg_radial(5.0, 5.0, 4.0, Color(1), Color(2)),
+            )
+            .build(),
+    )
+}
+
+#[test]
+#[should_panic(expected = "bg_gradient + bg_radial")]
+fn both_gradients_refuse_loudly() {
+    let _ = plan_of(render_both_gradients);
+}
+
+fn render_radial_radius(_ctx: &Ctx, _: &()) -> VNode {
+    Div("root").child(
+        Div("fx")
+            .style(
+                Style::new()
+                    .size(10, 10)
+                    .radius(3)
+                    .bg_radial(5.0, 5.0, 4.0, Color(1), Color(2)),
+            )
+            .build(),
+    )
+}
+
+#[test]
+#[should_panic(expected = "radius/circle")]
+fn radial_with_radius_refuses_loudly() {
+    let _ = plan_of(render_radial_radius);
+}

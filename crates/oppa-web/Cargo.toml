@@ -11,6 +11,10 @@ path = "src/lib.rs"
 
 [dependencies]
 oppa = { path = "../oppa" }
+# The shared session loop engine (decision 398): the web DOM loop runs
+# the same platform-free prologue the desktop/Android pixel loops run
+# (the pixel-present legs are cfg-gated out of this dep on wasm).
+oppa-app = { path = "../oppa-app" }
 oppa-controls = { path = "../oppa-controls" }
 oppa-cpu = { path = "../oppa-cpu" }
 oppa-dom = { path = "../oppa-dom" }

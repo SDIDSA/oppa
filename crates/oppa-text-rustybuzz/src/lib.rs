@@ -53,9 +53,11 @@ use oppa::text::{
     ShapedRun, TextError, TextRun, TextService, TextStyle,
 };
 
-/// One loaded face file entry (bytes owned; parsed per shape call).
+/// One loaded face file entry (bytes shared per file — a
+/// collection's faces reference one allocation, decision 439;
+/// parsed per shape call).
 struct LoadedFace {
-    bytes: Vec<u8>,
+    bytes: std::sync::Arc<[u8]>,
     ttc_index: u32,
     family: String,
     weight: u16,
@@ -115,7 +117,7 @@ impl RustybuzzService {
                 }
             }
         }
-        let (faces, mut load_skipped) = load_faces(&inputs);
+        let (faces, mut load_skipped) = load_faces(inputs);
         skipped.append(&mut load_skipped);
         if faces.is_empty() {
             return Err(format!(
@@ -152,7 +154,7 @@ impl RustybuzzService {
                 )
             })
             .collect();
-        let (faces, skipped) = load_faces(&inputs);
+        let (faces, skipped) = load_faces(inputs);
         if faces.is_empty() {
             return Err(format!("no usable faces in memory (skipped: {skipped:?})"));
         }
@@ -219,12 +221,13 @@ impl RustybuzzService {
         &self.chain
     }
 
-    /// Raw bytes + collection index of the face behind `id` (atlas
-    /// injection for renderers: Vello `set_font_for` and CPU
-    /// `set_font_for` take the same pair the file-backed path
-    /// resolves through `font_file_source`). `None` for unknown
-    /// ids — loud at the call site, never a fallback face.
-    pub fn face_bytes(&self, id: FontId) -> Option<(&[u8], u32)> {
+    /// Shared bytes + collection index of the face behind `id`
+    /// (atlas injection for renderers: both `set_font_for`s take
+    /// the shared allocation the file-backed path resolves through
+    /// `font_file_source` — cloning the `Arc` shares, never copies).
+    /// `None` for unknown ids — loud at the call site, never a
+    /// fallback face.
+    pub fn face_bytes(&self, id: FontId) -> Option<(std::sync::Arc<[u8]>, u32)> {
         let family_idx = (id.0 / 4096) as usize;
         let within = (id.0 % 4096) as usize;
         let name = self.families.get(family_idx)?;
@@ -232,7 +235,7 @@ impl RustybuzzService {
         for face in &self.faces {
             if &face.family == name {
                 if seen == within {
-                    return Some((&face.bytes, face.ttc_index));
+                    return Some((face.bytes.clone(), face.ttc_index));
                 }
                 seen += 1;
             }
@@ -346,16 +349,20 @@ fn collect_font_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> 
 /// name table carries no family name; the file name fills the face
 /// record (error notes). Behavior is identical for dir and memory
 /// input (same strings, same order).
-fn load_faces(inputs: &[(String, String, String, Vec<u8>)]) -> (Vec<LoadedFace>, Vec<String>) {
+fn load_faces(inputs: Vec<(String, String, String, Vec<u8>)>) -> (Vec<LoadedFace>, Vec<String>) {
     let mut faces = Vec::new();
     let mut skipped = Vec::new();
     for (label, stem, file_name, bytes) in inputs {
-        let count = rustybuzz::ttf_parser::fonts_in_collection(bytes)
+        // One allocation per file (decision 439): the read buffer
+        // moves into the shared allocation (never copied) and every
+        // face in the collection references it.
+        let shared: std::sync::Arc<[u8]> = bytes.into();
+        let count = rustybuzz::ttf_parser::fonts_in_collection(&shared)
             .unwrap_or(1)
             .max(1);
         let mut usable = 0;
         for index in 0..count {
-            match face_record(bytes, index, stem, file_name) {
+            match face_record(&shared, index, &stem, &file_name) {
                 Some(face) => {
                     faces.push(face);
                     usable += 1;
@@ -365,7 +372,7 @@ fn load_faces(inputs: &[(String, String, String, Vec<u8>)]) -> (Vec<LoadedFace>,
                 }
             }
         }
-        if usable == 0 && !skipped.iter().any(|s| s.starts_with(label)) {
+        if usable == 0 && !skipped.iter().any(|s| s.starts_with(&label)) {
             skipped.push(format!("{label}: no usable faces"));
         }
     }
@@ -377,7 +384,12 @@ fn load_faces(inputs: &[(String, String, String, Vec<u8>)]) -> (Vec<LoadedFace>,
 /// memory input); weight from the OS/2 table with subfamily-name
 /// fallback (Bold → 700 else 400); style from the head mac-style
 /// bits (italic/oblique → Italic/Oblique else Normal).
-fn face_record(bytes: &[u8], index: u32, stem: &str, file_name: &str) -> Option<LoadedFace> {
+fn face_record(
+    bytes: &std::sync::Arc<[u8]>,
+    index: u32,
+    stem: &str,
+    file_name: &str,
+) -> Option<LoadedFace> {
     let parsed = rustybuzz::ttf_parser::Face::parse(bytes, index).ok()?;
     let mut family: Option<String> = None;
     let mut subfamily: Option<String> = None;
@@ -407,7 +419,7 @@ fn face_record(bytes: &[u8], index: u32, stem: &str, file_name: &str) -> Option<
         FontStyle::Normal
     };
     Some(LoadedFace {
-        bytes: bytes.to_vec(),
+        bytes: bytes.clone(),
         ttc_index: index,
         family,
         weight,
@@ -765,7 +777,7 @@ mod unit_tests {
         let run = svc.shape("FPS: 60", &style).expect("shape");
         let fid = run.runs[0].font_id;
         let (face_bytes, index) = svc.face_bytes(fid).expect("face bytes");
-        assert_eq!(face_bytes, bytes);
+        assert_eq!(&*face_bytes, bytes);
         assert_eq!(index, 0);
         assert!(svc.face_bytes(FontId(4096 * 999)).is_none());
     }
