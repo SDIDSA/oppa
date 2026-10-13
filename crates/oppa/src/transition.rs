@@ -310,7 +310,7 @@ impl TransitionEvaluator {
                         self.targets.insert(*id, t);
                     }
                 }
-                DiffOp::Remove { id } => {
+                DiffOp::Remove { id, .. } => {
                     self.targets.remove(id);
                     self.active.remove(id);
                 }

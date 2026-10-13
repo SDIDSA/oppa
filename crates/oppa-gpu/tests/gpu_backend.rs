@@ -174,8 +174,12 @@ fn test_retained_splice_and_commit() {
 
     // Commit node remove removes ops from surface
     let diff = TreeDiff {
-        ops: vec![DiffOp::Remove { id: n1 }],
+        ops: vec![DiffOp::Remove {
+            id: n1,
+            owner: None,
+        }],
         suppress_transitions: false,
+        ..Default::default()
     };
     backend.commit(&diff).unwrap();
     assert_eq!(backend.retained_op_count(s), Some(1));

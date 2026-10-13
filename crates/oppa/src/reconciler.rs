@@ -60,6 +60,12 @@ pub struct RetainedNode {
     pub tag: Tag,
     pub debug: String,
     pub key: Option<u64>,
+    /// Owning component instance (decision 519): the instance whose run
+    /// built this node (innermost `Ctx::child` wins at stamp time;
+    /// text leaves inherit the parent owner). The host's
+    /// subtree-unmount sweep reads this to identify dead instances;
+    /// layout/paint/hit never consult it, so plans stay byte-identical.
+    pub owner: Option<u64>,
     pub style: StyleId,
     pub text: Option<std::sync::Arc<str>>,
     pub text_hint: Option<TextClass>,
@@ -106,6 +112,11 @@ pub enum DiffOp {
     },
     Remove {
         id: NodeId,
+        /// Owner snapshot at retire time (decision 519): the arena
+        /// retires the node in the same step, so the host cannot look
+        /// the owner up later — the op carries it. `None` = unstamped
+        /// (hand-built trees never stamp; nothing owns them).
+        owner: Option<u64>,
     },
     Move {
         id: NodeId,
@@ -140,6 +151,13 @@ impl DiffOp {
 pub struct TreeDiff {
     pub ops: Vec<DiffOp>,
     pub suppress_transitions: bool,
+    /// Owners displaced without a `Remove` (decision 519): slot-keyed
+    /// recycling can pair a surviving node with a new owner's VNode
+    /// (conditional branches sharing one unkeyed slot), transferring
+    /// ownership with no removal op. The host treats these like
+    /// `Remove` owners when hunting dead instances (a displaced owner
+    /// with no other live node is dead too).
+    pub displaced_owners: Vec<u64>,
 }
 
 impl TreeDiff {
@@ -192,6 +210,7 @@ impl Reconciler {
         let mut diff = TreeDiff {
             ops: Vec::new(),
             suppress_transitions: binding_fired,
+            displaced_owners: Vec::new(),
         };
         match (old, new) {
             (None, VNode::Hole) => {
@@ -393,11 +412,15 @@ impl Reconciler {
                 panic!("M2 roots and keyed slots hold single Elements; fragments only compose child lists")
             }
             VNode::Text(text) => {
+                // Decision 519: text leaves carry no stamp — they inherit
+                // the parent owner (attribution for hand-built trees).
+                let owner = self.parent_owner(parent);
                 let id = self.alloc_node(NewNode {
                     parent,
                     tag: Tag::Text,
                     debug: "text",
                     key: None,
+                    owner,
                     style: styles.intern(Style::default()),
                     text: Some(text.clone()),
                     text_hint: None,
@@ -432,11 +455,14 @@ impl Reconciler {
                 // per span. Same dirty bits as text leaves (the M4 F2
                 // rule — fresh nodes feed every pass).
                 let joined: std::sync::Arc<str> = rich.joined_text().into();
+                // Decision 519: same inheritance as text leaves above.
+                let owner = self.parent_owner(parent);
                 let id = self.alloc_node(NewNode {
                     parent,
                     tag: Tag::Text,
                     debug: "rich",
                     key: None,
+                    owner,
                     style: styles.intern(Style::default()),
                     text: Some(joined),
                     text_hint: Some(rich.style),
@@ -472,11 +498,16 @@ impl Reconciler {
                 }
                 let handler_ids: Vec<(EventKind, HandlerId)> =
                     e.handlers.iter().map(|h| (h.kind, h.id)).collect();
+                // Decision 519: the element stamp wins (innermost
+                // `Ctx::child` stamped it); unstamped elements inherit
+                // the parent owner like text leaves.
+                let owner = e.owner.get().or_else(|| self.parent_owner(parent));
                 let id = self.alloc_node(NewNode {
                     parent,
                     tag: e.tag,
                     debug: &e.debug,
                     key: e.key,
+                    owner,
                     style: style_id,
                     text: None,
                     text_hint: e.text_hint,
@@ -514,6 +545,7 @@ impl Reconciler {
             tag: p.tag,
             debug: p.debug.to_string(),
             key: p.key,
+            owner: p.owner,
             style: p.style,
             text: p.text,
             text_hint: p.text_hint,
@@ -543,6 +575,14 @@ impl Reconciler {
         }
     }
 
+    /// Owner of the parent retained node (`None` at the root or for
+    /// retired parents): text leaves and unstamped elements inherit
+    /// this at build time (decision 519 — hand-built VNodes never
+    /// stamp, so inheritance is the only attribution they get).
+    fn parent_owner(&self, parent: Option<NodeId>) -> Option<u64> {
+        parent.and_then(|p| self.arena.try_get(p.gen()).ok().and_then(|n| n.owner))
+    }
+
     fn remove_subtree(&mut self, id: NodeId, diff: &mut TreeDiff) {
         let children = std::mem::take(&mut self.arena.get_mut(id.gen()).children);
         for child in children {
@@ -556,8 +596,12 @@ impl Reconciler {
         if self.arena.get(id.gen()).layout.is_some() {
             self.boxes_dropped = true;
         }
+        // Decision 519: snapshot the owner before retiring — the host
+        // identifies dead instances from `Remove` owners (the arena
+        // cannot answer after this line).
+        let owner = self.arena.get(id.gen()).owner;
         let _ = self.arena.retire(id.gen());
-        diff.ops.push(DiffOp::Remove { id });
+        diff.ops.push(DiffOp::Remove { id, owner });
     }
 
     // -- diffing -------------------------------------------------------------
@@ -618,6 +662,20 @@ impl Reconciler {
                 debug_assert_eq!(a.tag, b.tag, "incompatible tags must replace, not diff");
                 if a.debug != b.debug {
                     self.arena.get_mut(id.gen()).debug = b.debug.clone();
+                }
+                // Decision 519: ownership follows the latest stamp —
+                // slot-keyed recycling can re-home a surviving node
+                // under a new owner's VNode with no removal op. The
+                // displaced owner is recorded for the host sweep (dead
+                // exactly when it owns no other live node).
+                if let Some(stamp) = b.owner.get() {
+                    let cur = self.arena.get(id.gen()).owner;
+                    if cur != Some(stamp) {
+                        if let Some(old) = cur {
+                            diff.displaced_owners.push(old);
+                        }
+                        self.arena.get_mut(id.gen()).owner = Some(stamp);
+                    }
                 }
                 let mut mask = PassMask::EMPTY;
                 let mut style_changed = false;
@@ -837,6 +895,9 @@ struct NewNode<'a> {
     tag: Tag,
     debug: &'a str,
     key: Option<u64>,
+    /// Owning component instance (decision 519 — see
+    /// [`RetainedNode::owner`]).
+    owner: Option<u64>,
     style: StyleId,
     text: Option<std::sync::Arc<str>>,
     text_hint: Option<TextClass>,

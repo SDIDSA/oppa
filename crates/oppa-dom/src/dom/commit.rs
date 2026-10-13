@@ -154,7 +154,7 @@ impl RendererBackend for DomBackend {
                         }
                     }
                 }
-                DiffOp::Remove { id } => {
+                DiffOp::Remove { id, .. } => {
                     let mut stack = vec![*id];
                     while let Some(cur) = stack.pop() {
                         if let Some(el) = self.elements.remove(&cur) {

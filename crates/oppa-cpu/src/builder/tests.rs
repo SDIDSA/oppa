@@ -322,6 +322,7 @@ fn bad_canvas_scene(ctx: &Ctx, _: &CanvasProps) -> VNode {
         tag: oppa::Tag::Canvas,
         debug: "bad-canvas".to_string(),
         key: None,
+        owner: std::cell::Cell::new(None),
         style: oppa::Style::new().size(100, 50).build(),
         text_hint: None,
         image: None,

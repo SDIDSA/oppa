@@ -218,6 +218,10 @@ impl ComponentHost {
         // the reconciler drains closures in the root effect, where the
         // running owner is always the root.
         crate::vnode::stamp_handler_owner(&vnode, inst);
+        // Decision 519: stamp the same instance on the run's elements
+        // (node ownership for the subtree-unmount sweep — innermost
+        // `Ctx::child` stamps already landed, this fills the rest).
+        crate::vnode::stamp_node_owner(&vnode, inst);
 
         // When debug performance overlay is enabled, wrap the root so the
         // app subtree lays out exactly as the bare root: a block `Div`
@@ -395,6 +399,15 @@ impl ComponentHost {
         // cleared through the instance recorded at Down time (never
         // through the retired node, whose paths refuse loudly).
         self.clear_retired_input(&diff);
+        // Decision 519: subtree-unmount instance retirement — inline
+        // instances that own no live node after this commit are evicted
+        // in the same cut (cleanups run first, cancelling per-render
+        // timers; leftover timers and handler-ownership rows are swept).
+        // Effect-holding roots are never swept (explicit unmount only —
+        // multi-root hosts park non-winning roots). Tracks already
+        // retired above; completion observers keep the fire-on-unmount
+        // contract (no behavior change there).
+        self.retire_dead_instances(&diff);
         // TIME drive (M8, §9.1): the commit that creates interpolations
         // arms the shared settle drain (one animation while anything
         // lives — tracks or observers); frames continue at cadence
@@ -422,6 +435,86 @@ impl ComponentHost {
                 meter.note_commit_dirty(diff.ops.len());
             }
         }
+    }
+
+    /// Evicts component instances that own no live retained node after
+    /// this commit's removals (decision 519 — the subtree-unmount
+    /// retirement closing Blocked row 2).
+    ///
+    /// Candidates come from two channels: `Remove` owners (snapshotted
+    /// pre-retire — the arena cannot answer after) and displaced owners
+    /// (slot-keyed recycling re-homing a survivor with no removal op).
+    /// A candidate survives when any live node still names it (a shared
+    /// ancestor's other branch, a recycled slot elsewhere) or when it
+    /// holds a scheduler effect — effect-holders are roots, and roots
+    /// unmount only through their handle (`MountHandle::unmount`): one
+    /// host may mount several roots over a single last-run-wins tree,
+    /// so a non-winning root is parked, never dead, and the sweep must
+    /// not retire its effect. Otherwise the instance is dead and is
+    /// evicted in this ordering:
+    ///
+    /// 1. `evict_instance` per dead instance (sorted for determinism):
+    ///    child instances first (recursion), then LIFO cleanups — the
+    ///    per-render timer cancels land here — then record drop and
+    ///    parent-link scrub (re-show allocates fresh and re-seeds
+    ///    state). Dead subtree instances never hold effects (roots are
+    ///    skipped above), so no effect retires in this cut.
+    /// 2. Leftover timer sweep by owner (backstop for timers that
+    ///    outlived their cleanup — the tick backstop alone cannot see
+    ///    them while the record lingers, which is exactly the bug).
+    /// 3. Handler-ownership row prune (routing never resolves through
+    ///    evicted instances; closures stay registered — identity is
+    ///    id-keyed, never owner-keyed).
+    ///
+    /// Quiet when nothing was removed or displaced (no census walk).
+    /// Writes no signals itself (user cleanups may schedule — the normal
+    /// pump carries that); paint plans never see the owner metadata.
+    fn retire_dead_instances(&self, diff: &TreeDiff) {
+        let mut candidates: HashSet<u64> = HashSet::new();
+        for op in &diff.ops {
+            if let DiffOp::Remove {
+                owner: Some(owner), ..
+            } = op
+            {
+                candidates.insert(*owner);
+            }
+        }
+        candidates.extend(diff.displaced_owners.iter().copied());
+        if candidates.is_empty() {
+            return;
+        }
+        // Live-owner census over surviving nodes only (dead instances
+        // own zero — that is the eviction predicate).
+        let live: HashSet<u64> = {
+            let rec = self.inner.rec.borrow();
+            let mut live = HashSet::new();
+            for id in rec.retained_ids() {
+                if let Some(owner) = rec.get(id).and_then(|n| n.owner) {
+                    live.insert(owner);
+                }
+            }
+            live
+        };
+        let effects = self.inner.effects.borrow();
+        let mut dead: Vec<u64> = candidates
+            .difference(&live)
+            .copied()
+            .filter(|inst| !effects.contains_key(inst))
+            .collect();
+        drop(effects);
+        if dead.is_empty() {
+            return;
+        }
+        dead.sort_unstable();
+        for instance in &dead {
+            self.evict_instance(*instance);
+        }
+        let dead_set: HashSet<u64> = dead.into_iter().collect();
+        self.inner
+            .timers
+            .borrow_mut()
+            .retain(|t| !dead_set.contains(&t.owner));
+        self.inner.rt.prune_handler_owners(&dead_set);
     }
 
     /// Arms the shared TIME settle drain unless already armed

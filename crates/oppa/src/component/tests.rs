@@ -1444,3 +1444,307 @@ fn pump_frames_drains_once_worlds_early() {
         assert_eq!(ev.active_count(), 0, "track retired");
     });
 }
+
+// ---------------------------------------------------------------------------
+// Decision 519: subtree-unmount instance retirement
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct RetireBranchProps {
+    cleaned: Rc<Cell<bool>>,
+    timeout_fired: Rc<Cell<usize>>,
+    interval_fired: Rc<Cell<usize>>,
+    /// The branch instance's private signal, read back every render —
+    /// re-seeds to 0 exactly when the instance is fresh (evicted +
+    /// re-allocated), and keeps the timeout-written 1 when it lingered.
+    reseeds: Rc<Cell<u32>>,
+}
+impl Props for RetireBranchProps {}
+
+fn retire_branch_comp(ctx: &Ctx, props: &RetireBranchProps) -> VNode {
+    let sticky = ctx.signal(0u32);
+    props.reseeds.set(sticky.get());
+    let c = props.cleaned.clone();
+    ctx.on_cleanup(move || {
+        c.set(true);
+    });
+    let t = props.timeout_fired.clone();
+    let tw = sticky.clone();
+    ctx.use_timeout(100.0, move || {
+        t.set(t.get() + 1);
+        tw.set(1);
+    });
+    let iv = props.interval_fired.clone();
+    ctx.use_interval(50.0, move || {
+        iv.set(iv.get() + 1);
+    });
+    crate::vnode::Div("retire-branch").build()
+}
+
+#[derive(Clone)]
+struct RetireToggleProps {
+    show: Signal<bool>,
+    branch: RetireBranchProps,
+}
+impl Props for RetireToggleProps {}
+
+fn retire_toggle_comp(ctx: &Ctx, props: &RetireToggleProps) -> VNode {
+    let mut kids = Vec::new();
+    if props.show.get() {
+        kids.push(ctx.child("RetireBranch", 1, &props.branch, retire_branch_comp));
+    }
+    crate::vnode::Div("retire-root").children(kids)
+}
+
+/// Hiding a subtree evicts its instances in the same cut: cleanups run
+/// (cancelling per-render timers), dead timers leave no horizon and
+/// never fire, and re-showing re-seeds instance state fresh.
+#[test]
+fn subtree_unmount_retires_instance_timers_and_cleanups() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let show = host.runtime().signal(true);
+    let cleaned = Rc::new(Cell::new(false));
+    let timeout_fired = Rc::new(Cell::new(0));
+    let interval_fired = Rc::new(Cell::new(0));
+    let reseeds = Rc::new(Cell::new(99));
+    let branch = RetireBranchProps {
+        cleaned: cleaned.clone(),
+        timeout_fired: timeout_fired.clone(),
+        interval_fired: interval_fired.clone(),
+        reseeds: reseeds.clone(),
+    };
+    host.mount(
+        "RetireToggle",
+        RetireToggleProps {
+            show: show.clone(),
+            branch,
+        },
+        retire_toggle_comp,
+    );
+    host.run_until_idle();
+    assert_eq!(reseeds.get(), 0, "fresh branch seeds zero");
+    assert!(
+        host.next_timer_due_ms(host.now_ms()).is_some(),
+        "branch timers armed while shown"
+    );
+    // Prove the timers are alive before hiding (both fire while shown).
+    clock.advance(0.2);
+    assert!(
+        host.tick_timers(host.now_ms()) >= 1,
+        "timers fire while shown"
+    );
+    assert_eq!(timeout_fired.get(), 1, "timeout fired once while shown");
+    assert!(interval_fired.get() >= 1, "interval fired while shown");
+    let interval_at_hide = interval_fired.get();
+    // Hide: the whole branch subtree unmounts.
+    show.set(false);
+    host.run_until_idle();
+    assert!(cleaned.get(), "subtree removal runs branch cleanups");
+    assert_eq!(
+        host.next_timer_due_ms(host.now_ms()),
+        None,
+        "dead timers leave no wake horizon"
+    );
+    clock.advance(10.0);
+    assert_eq!(host.tick_timers(host.now_ms()), 0, "dead timers never fire");
+    assert_eq!(timeout_fired.get(), 1, "timeout never refires");
+    assert_eq!(
+        interval_fired.get(),
+        interval_at_hide,
+        "interval silenced by removal"
+    );
+    assert!(!host.has_demand(), "removal leaves zero scheduled work");
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "no tracks survive removal");
+    });
+    // Re-show: the branch owns a fresh instance (stale state gone).
+    show.set(true);
+    host.run_until_idle();
+    assert_eq!(
+        reseeds.get(),
+        0,
+        "re-shown branch re-seeds — the old instance was evicted"
+    );
+    assert!(
+        host.next_timer_due_ms(host.now_ms()).is_some(),
+        "re-shown branch re-arms its timers"
+    );
+}
+
+#[derive(Clone)]
+struct RetireMotionProps {
+    show: Signal<bool>,
+    lit: Signal<bool>,
+}
+impl Props for RetireMotionProps {}
+
+fn retire_motion_branch(_ctx: &Ctx, props: &RetireMotionProps) -> VNode {
+    // Non-black endpoints (pure 0x000000 reads TRANSPARENT and skips
+    // paint — never a tween endpoint, by doctrine).
+    let bg = if props.lit.get() {
+        crate::style::Color(0x22_66_CC)
+    } else {
+        crate::style::Color(0x22_22_22)
+    };
+    crate::vnode::Div("retire-card")
+        .style(
+            Style::new()
+                .size(100, 40)
+                .bg(bg)
+                .transition(Transition::new(400, Ease::Linear)),
+        )
+        .build()
+}
+
+fn retire_motion_root(ctx: &Ctx, props: &RetireMotionProps) -> VNode {
+    let mut kids = Vec::new();
+    if props.show.get() {
+        kids.push(ctx.child("RetireCard", 7, props, retire_motion_branch));
+    }
+    crate::vnode::Div("retire-motion-root").children(kids)
+}
+
+/// Removing a subtree mid-flight retires its live track: the evaluator
+/// drains to zero scheduled work and nothing restarts once time flows
+/// past the tween (the round-1 retirement the exit-deferral round
+/// builds on — proven here so a leak cannot hide behind it).
+#[test]
+fn subtree_unmount_retires_midflight_track() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let show = host.runtime().signal(true);
+    let lit = host.runtime().signal(false);
+    host.mount(
+        "RetireMotion",
+        RetireMotionProps {
+            show: show.clone(),
+            lit: lit.clone(),
+        },
+        retire_motion_root,
+    );
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "retire-card")
+        .into_iter()
+        .next()
+        .expect("card retained while shown");
+    // Start a tween, then hide on the next commit with the clock frozen
+    // (mid-flight — never tap/run_until_idle near live tracks).
+    lit.set(true);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert!(!ev.is_settled(card), "tween live mid-flight");
+    });
+    show.set(false);
+    host.run_until_idle();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "removal retires the mid-flight track");
+    });
+    assert!(!host.has_demand(), "removal leaves zero scheduled work");
+    assert!(
+        crate::find_retained_by_debug(&host, "retire-card").is_empty(),
+        "card node retired"
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "nothing restarts past the tween");
+    });
+    assert!(!host.has_demand(), "still quiet past the tween");
+}
+
+#[derive(Clone)]
+struct SwapBranchProps {
+    cleaned: Rc<Cell<bool>>,
+    fired: Rc<Cell<usize>>,
+    debug: &'static str,
+}
+impl Props for SwapBranchProps {}
+
+fn swap_branch_comp(ctx: &Ctx, props: &SwapBranchProps) -> VNode {
+    let c = props.cleaned.clone();
+    ctx.on_cleanup(move || {
+        c.set(true);
+    });
+    let f = props.fired.clone();
+    ctx.use_timeout(100.0, move || {
+        f.set(f.get() + 1);
+    });
+    // Same tag, no slot key on either side: the flip recycles this
+    // node in place (no Remove op — ownership transfers instead).
+    crate::vnode::Div(props.debug).build()
+}
+
+#[derive(Clone)]
+struct SwapToggleProps {
+    flipped: Signal<bool>,
+    a: SwapBranchProps,
+    b: SwapBranchProps,
+}
+impl Props for SwapToggleProps {}
+
+fn swap_toggle_comp(ctx: &Ctx, props: &SwapToggleProps) -> VNode {
+    let branch = if props.flipped.get() {
+        ctx.child("SwapB", 2, &props.b, swap_branch_comp)
+    } else {
+        ctx.child("SwapA", 1, &props.a, swap_branch_comp)
+    };
+    crate::vnode::Div("swap-root").child(branch)
+}
+
+/// Slot-keyed recycling that re-homes a survivor under a new owner
+/// (no `Remove` op) still retires the displaced instance: same node
+/// id across the flip, old cleanups run, the old timer never fires
+/// while the new owner's timer does.
+#[test]
+fn recycled_slot_retires_displaced_instance() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let flipped = host.runtime().signal(false);
+    let a_cleaned = Rc::new(Cell::new(false));
+    let a_fired = Rc::new(Cell::new(0));
+    let b_cleaned = Rc::new(Cell::new(false));
+    let b_fired = Rc::new(Cell::new(0));
+    host.mount(
+        "SwapToggle",
+        SwapToggleProps {
+            flipped: flipped.clone(),
+            a: SwapBranchProps {
+                cleaned: a_cleaned.clone(),
+                fired: a_fired.clone(),
+                debug: "swap-a",
+            },
+            b: SwapBranchProps {
+                cleaned: b_cleaned.clone(),
+                fired: b_fired.clone(),
+                debug: "swap-b",
+            },
+        },
+        swap_toggle_comp,
+    );
+    host.run_until_idle();
+    let before = crate::find_retained_by_debug(&host, "swap-a")
+        .into_iter()
+        .next()
+        .expect("side A retained");
+    flipped.set(true);
+    host.run_until_idle();
+    let after = crate::find_retained_by_debug(&host, "swap-b")
+        .into_iter()
+        .next()
+        .expect("side B retained");
+    assert_eq!(
+        before, after,
+        "slot recycled in place — no remove/add across the flip"
+    );
+    assert!(a_cleaned.get(), "displaced instance cleanups run");
+    assert!(!b_cleaned.get(), "surviving instance untouched");
+    clock.advance(10.0);
+    host.tick_timers(host.now_ms());
+    assert_eq!(a_fired.get(), 0, "displaced timer never fires");
+    assert_eq!(b_fired.get(), 1, "surviving timer fires exactly once");
+    assert!(!host.has_demand(), "flip leaves zero scheduled work");
+}
