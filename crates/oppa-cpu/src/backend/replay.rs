@@ -9,8 +9,9 @@ use tiny_skia::{FillRule, Pixmap, PixmapPaint, Transform};
 use crate::path::build_path;
 
 use super::raster::{
-    clip_mask, fill_disc, fill_rounded, fill_rounded_corners, intersect_rect,
-    paint_box_blurred_shadow, paint_of, rasterize_glyphs, rect_of, surface_bg,
+    clip_mask, effective_alpha, fill_disc, fill_rounded, fill_rounded_corners, fill_rrect,
+    intersect_rect, opaque_rgb, paint_box_blurred_shadow, paint_of, rasterize_glyphs, rect_of,
+    surface_bg,
 };
 use super::{FaceTable, Surface};
 
@@ -100,6 +101,10 @@ fn paint_rotated(
     // Shift the op to the temp origin (glyph cells stay relative —
     // only the op origin moves, like the ST bake).
     let shift = |v: f32, o: f32| v - o;
+    // Layer-blit opacity (decision 518): 1.0 except when the layer
+    // content paints opaque for single-blend translucency (rounded
+    // bands+discs below) — then the blit carries the alpha once.
+    let mut blit_alpha = 1.0f32;
     match op {
         DrawOp::RRect {
             x,
@@ -116,11 +121,24 @@ fn paint_rotated(
             if a <= 0.0 {
                 return false;
             }
-            let paint = paint_of(*color, a);
-            let r = (shift(*x, ox), shift(*y, oy), *w, *h);
-            match radii {
-                Some(rs) => fill_rounded_corners(&mut layer, r, *rs, &paint, None),
-                None => fill_rounded(&mut layer, r, *radius, &paint, None),
+            // Translucent bands+discs would double-blend overlaps
+            // in-layer (the pane-grid artifact) — paint opaque and
+            // let the blit below apply the alpha once.
+            if effective_alpha(*color, a) >= 1.0 {
+                let paint = paint_of(*color, a);
+                let r = (shift(*x, ox), shift(*y, oy), *w, *h);
+                match radii {
+                    Some(rs) => fill_rounded_corners(&mut layer, r, *rs, &paint, None),
+                    None => fill_rounded(&mut layer, r, *radius, &paint, None),
+                }
+            } else {
+                let paint = paint_of(opaque_rgb(*color), 1.0);
+                let r = (shift(*x, ox), shift(*y, oy), *w, *h);
+                match radii {
+                    Some(rs) => fill_rounded_corners(&mut layer, r, *rs, &paint, None),
+                    None => fill_rounded(&mut layer, r, *radius, &paint, None),
+                }
+                blit_alpha = effective_alpha(*color, a);
             }
         }
         DrawOp::Circle {
@@ -262,7 +280,7 @@ fn paint_rotated(
         0,
         layer.as_ref(),
         &PixmapPaint {
-            opacity: 1.0,
+            opacity: blit_alpha,
             ..PixmapPaint::default()
         },
         blit,
@@ -368,27 +386,18 @@ pub(super) fn replay(
                 if a > 0.0 {
                     let xf = op.xf();
                     if xf.is_identity() {
-                        // Round 11.1: per-corner radii generalize the
-                        // bands-and-discs rule (each corner disc takes its
-                        // own radius; bands span the edge maxima — the
-                        // uniform shape is the all-equal special case,
-                        // pixel-identical to before).
-                        match radii {
-                            Some(rs) => fill_rounded_corners(
-                                &mut surface.pixmap,
-                                (*x, *y, *w, *h),
-                                *rs,
-                                &paint_of(*color, a),
-                                mask_ref,
-                            ),
-                            None => fill_rounded(
-                                &mut surface.pixmap,
-                                (*x, *y, *w, *h),
-                                *radius,
-                                &paint_of(*color, a),
-                                mask_ref,
-                            ),
-                        }
+                        // Decision 518 routes translucency through a
+                        // single-blend scratch (opaque keeps the legacy
+                        // bands+discs path byte-identically).
+                        fill_rrect(
+                            &mut surface.pixmap,
+                            (*x, *y, *w, *h),
+                            *radius,
+                            *radii,
+                            *color,
+                            a,
+                            mask_ref,
+                        );
                         executed += 1;
                     } else if paint_rotated(
                         &mut surface.pixmap,
