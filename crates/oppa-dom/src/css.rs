@@ -80,24 +80,36 @@ pub fn ease_name(ease: oppa::Ease) -> &'static str {
 }
 
 /// CSS `transform:` value for a framework [`Transform`](oppa::Transform)
-/// (decision 511): `translate(dx,dy)` outer with `scale(sx,sy)` inner,
-/// both about the default center origin — exactly the canonical
-/// `p' = c + S·(p − c) + t` the pixel backends bake, so DOM and pixels
-/// agree structurally (raster interpolation stays browser-owned,
-/// stated tolerance). Style translate rides authoring px, which ARE
-/// CSS px (device scaling cancels out — see [`fmt_px`]). Empty for
-/// identity (identity declares nothing — untransformed rules stay
-/// byte-identical). Refuses loudly on unsupported values (the T1b
-/// rotate rule — same gate as the builder bake).
+/// (decisions 511 + 517): `translate(dx,dy)` outer, `rotate(deg)`
+/// middle, `scale(sx,sy)` inner — all about the default center origin,
+/// exactly the canonical `p' = c + R·S·(p − c) + t` the pixel backends
+/// bake (CSS applies the rightmost first, so this spelling scales,
+/// then rotates, then translates — the same product; raster
+/// interpolation stays browser-owned, stated tolerance). Style
+/// translate rides authoring px, which ARE CSS px (device scaling
+/// cancels out — see [`fmt_px`]). Empty for identity (identity
+/// declares nothing — untransformed rules stay byte-identical).
 pub fn transform_value(t: oppa::Transform) -> String {
     if t.is_identity() {
         return String::new();
     }
     t.require_supported();
-    let (dx, dy, sx, sy) = (t.dx.get(), t.dy.get(), t.sx.get(), t.sy.get());
+    let (dx, dy, sx, sy, deg) = (
+        t.dx.get(),
+        t.dy.get(),
+        t.sx.get(),
+        t.sy.get(),
+        t.rotate_deg.get(),
+    );
     let mut out = String::new();
     if dx != 0.0 || dy != 0.0 {
         out.push_str(&format!("translate({}px,{}px)", fmt_num(dx), fmt_num(dy)));
+    }
+    if deg != 0.0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("rotate({}deg)", fmt_num(deg)));
     }
     if sx != 1.0 || sy != 1.0 {
         if !out.is_empty() {
@@ -149,8 +161,8 @@ pub fn transition_decls(style: &Style, _dpr: f32) -> String {
         ));
     }
     if let Some(t) = style.transform {
-        // Loud here too (same gate as the value): a rotated style
-        // could never paint its target on any backend.
+        // Same gate as the value (finite components, positive scale —
+        // decision 517 paints rotation, so this only rejects garbage).
         t.require_supported();
         items.push(format!(
             "transform {}ms {}{}",
@@ -672,13 +684,37 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "rotate")]
-    fn transform_rotate_refuses_in_css() {
+    fn transform_rotate_declares_css() {
+        // Decision 517: rotation spells `rotate()` between translate
+        // and scale (the canonical order — rightmost applies first).
         let r: Style = Style::new()
             .size(10, 10)
             .transform(oppa::Transform::rotate(30))
             .build();
-        let _ = declarations(&r, 1.0);
+        assert!(
+            declarations(&r, 1.0).contains("transform:rotate(30deg);"),
+            "{r:?}"
+        );
+        let full: Style = Style::new()
+            .size(10, 10)
+            .transform(oppa::Transform {
+                dx: oppa::Px::of(4.0),
+                dy: oppa::Px::of(0.0),
+                sx: oppa::Px::of(1.5),
+                sy: oppa::Px::of(1.5),
+                rotate_deg: oppa::Px::of(45.0),
+            })
+            .transition(oppa::Transition::new(120, oppa::Ease::Out))
+            .build();
+        let decls = declarations(&full, 1.0);
+        assert!(
+            decls.contains("transform:translate(4px,0px) rotate(45deg) scale(1.5,1.5);"),
+            "{decls}"
+        );
+        assert!(
+            transition_decls(&full, 1.0).contains("transform 120ms ease-out"),
+            "rotated styles join the transition set"
+        );
     }
 
     #[test]

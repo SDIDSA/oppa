@@ -17,6 +17,7 @@ fn mount_motion() -> (Harness, MotionState) {
         ease_idx: app.host().runtime().signal(0usize),
         spin: app.host().runtime().signal(false),
         zoom: app.host().runtime().signal(false),
+        twist: app.host().runtime().signal(false),
     };
     app.mount("Motion", state.clone(), MotionApp);
     (app, state)
@@ -91,6 +92,7 @@ fn motion_idle_tree_holds_no_live_tracks() {
         ease_idx: app.host().runtime().signal(0usize),
         spin: app.host().runtime().signal(false),
         zoom: app.host().runtime().signal(false),
+        twist: app.host().runtime().signal(false),
     };
     app.mount("Motion", state, MotionApp);
     // Bounded presses (taps would idle-pump under the hover tweens
@@ -148,6 +150,7 @@ fn mount_clocked() -> (Harness, MotionState) {
         ease_idx: app.host().runtime().signal(0usize),
         spin: app.host().runtime().signal(false),
         zoom: app.host().runtime().signal(false),
+        twist: app.host().runtime().signal(false),
     };
     app.mount("Motion", state.clone(), MotionApp);
     (app, state)
@@ -239,6 +242,8 @@ fn motion_loop_play_runs_and_boxes_hold() {
         "motion-xf-text",
         "motion-xf-vector",
         "motion-xf-zoom-rect",
+        "motion-xf-spin-rect",
+        "motion-xf-twist-rect",
     ] {
         let id = app.node(label);
         app.host().with_evaluator(|ev| {
@@ -326,6 +331,101 @@ fn motion_zoom_one_shot_settles_exact() {
         assert_eq!(
             (xf.sx.get(), xf.sy.get()),
             (1.6, 1.6),
+            "settles exact on target"
+        );
+    });
+}
+
+/// Decision 517: the rotation loop runs while playing (sampled
+/// rotation leaves zero and boxes hold), and stopping settles it back
+/// to identity with zero scheduled work.
+#[test]
+fn motion_rotate_loop_runs_and_boxes_hold() {
+    let (app, _) = mount_clocked();
+    press(&app, "motion-tab-transforms");
+    app.advance_frames(2.0 / 60.0);
+    let id = app.node("motion-xf-spin-rect");
+    let before = committed(&app, "motion-xf-spin-rect");
+    press(&app, "motion-xf-play");
+    // One frame dispatches the press and commits the delta.
+    app.advance_frames(1.0 / 60.0);
+    // Default 150ms legs: sweep the flight for nonzero rotation (the
+    // ±45° oscillation crosses zero twice per cycle — one instant
+    // would be phase luck).
+    let mut deg_max = 0.0f32;
+    for _ in 0..10 {
+        app.advance_frames(0.03);
+        let now = app.host().now_ms() / 1000.0;
+        let deg = app
+            .host()
+            .with_evaluator(|ev| ev.resolve_transform(id, None, now).rotate_deg.get());
+        deg_max = deg_max.max(deg.abs());
+    }
+    app.host().with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "rotation loop stays live");
+    });
+    assert!(
+        deg_max > 20.0,
+        "rotation loop travels toward ±45°, got max {deg_max}"
+    );
+    assert!(
+        app.host().has_demand(),
+        "live loops keep frame demand flowing"
+    );
+    assert_eq!(
+        committed(&app, "motion-xf-spin-rect"),
+        before,
+        "layout never moves under rotation"
+    );
+    // Stop: the closing tween settles back to zero scheduled work.
+    press(&app, "motion-xf-play");
+    app.advance_frames(5.0);
+    app.host().with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "stopped loops settle");
+        assert!(
+            ev.resolve_transform(id, None, 10.0).is_identity(),
+            "rotation closes exact on identity"
+        );
+    });
+    assert!(
+        !app.host().has_demand(),
+        "settled room leaves zero scheduled work"
+    );
+}
+
+/// Decision 517: the twist one-shot tweens to 90° and settles exact,
+/// boxes unmoved throughout.
+#[test]
+fn motion_twist_one_shot_settles_exact() {
+    let (app, _) = mount_clocked();
+    press(&app, "motion-tab-transforms");
+    app.advance_frames(2.0 / 60.0);
+    let id = app.node("motion-xf-twist-rect");
+    let before = app.host().committed_box(id).expect("twist box laid out");
+    press(&app, "motion-xf-twist");
+    app.advance_frames(DUR_DEFAULT_MS as f64 / 2000.0);
+    app.host().with_evaluator(|ev| {
+        assert!(!ev.is_settled(id), "one-shot tween in flight");
+    });
+    let now = app.host().now_ms() / 1000.0;
+    let mid = app
+        .host()
+        .with_evaluator(|ev| ev.resolve_transform(id, None, now).rotate_deg.get());
+    assert!(
+        mid > 0.0 && mid < 90.0,
+        "twist travels 0→90 strictly interior, got {mid}"
+    );
+    assert_eq!(
+        app.host().committed_box(id).expect("twist box laid out"),
+        before,
+        "layout never moves under rotation"
+    );
+    app.advance_frames(5.0);
+    app.host().with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "one-shot settles");
+        assert_eq!(
+            ev.resolve_transform(id, None, 10.0).rotate_deg.get(),
+            90.0,
             "settles exact on target"
         );
     });

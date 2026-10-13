@@ -11,8 +11,8 @@
 #![allow(non_snake_case)]
 
 use oppa::{
-    find_retained_by_debug, AffineST, Color, ComponentHost, Ctx, Div, Ease, Event, EventKind,
-    HandlerId, InputEvent, KeyState, MsExt, Portal, Props, Semantics, SharedString, Signal, Style,
+    find_retained_by_debug, Color, ComponentHost, Ctx, Div, Ease, Event, EventKind, HandlerId,
+    InputEvent, KeyState, MsExt, PaintXf, Portal, Props, Semantics, SharedString, Signal, Style,
     Transform, Transition, VNode,
 };
 use oppa_macros::{component, Props};
@@ -1035,31 +1035,37 @@ fn transform_accumulation_and_local_points() {
     let btn_c = find_retained_by_debug(&host, "btn-c")[0];
     assert_eq!(
         host.accumulated_transform(btn_a),
-        AffineST {
-            sx: 1.0,
-            sy: 1.0,
+        PaintXf {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
             tx: 200.0,
             ty: 0.0
         }
     );
     assert_eq!(
         host.accumulated_transform(btn_c),
-        AffineST {
-            sx: 1.0,
-            sy: 1.0,
+        PaintXf {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
             tx: 0.0,
             ty: 300.0
         }
     );
-    assert_eq!(host.accumulated_transform(root), AffineST::identity());
+    assert_eq!(host.accumulated_transform(root), PaintXf::identity());
     assert_eq!(host.local_point(btn_a, 250.0, 20.0), (50.0, 20.0));
     // Identity chains pass points through bit-exactly.
     assert_eq!(host.local_point(root, 11.0, 22.0), (11.0, 22.0));
 }
 
+/// Decision 517: hit follows rotation — a 90°-turned 100×40 box
+/// answers at its visual (vertical) footprint and misses its layout
+/// ghost.
 #[test]
-#[should_panic(expected = "T1b scope")]
-fn transform_hit_rotate_refuses_loudly() {
+fn transform_hit_follows_rotation() {
     let host = ComponentHost::new();
     host.set_viewport(800.0, 600.0);
     host.mount(
@@ -1072,13 +1078,26 @@ fn transform_hit_rotate_refuses_loudly() {
         |_ctx: &Ctx, _: &XfHitProps| {
             Div("rot-root").style(Style::new().size(800, 600)).child(
                 Div("rot-box")
-                    .style(Style::new().size(100, 40).transform(Transform::rotate(30)))
+                    .style(Style::new().size(100, 40).transform(Transform::rotate(90)))
                     .build(),
             )
         },
     );
     host.run_until_idle();
-    let _ = host.hit_test(50.0, 20.0);
+    let bx = host
+        .committed_box(find_retained_by_debug(&host, "rot-box")[0])
+        .expect("box laid out");
+    // Layout box is 100×40 at origin; the quarter turn stands it
+    // upright about its center (40×100 AABB: x 30..70, y −30..70).
+    assert_eq!((bx.x, bx.y, bx.w, bx.h), (0.0, 0.0, 100.0, 40.0));
+    let hit = find_retained_by_debug(&host, "rot-box")[0];
+    let root = find_retained_by_debug(&host, "rot-root")[0];
+    // (50, -20) sits inside the upright visual but outside every
+    // layout box (rot-box layout spans y 0..40, root claims misses).
+    assert_eq!(host.hit_test(50.0, -20.0), Some(hit));
+    // (90, 20) sits inside the layout box but outside the upright
+    // visual (x 30..70) — the ghost misses to the root.
+    assert_eq!(host.hit_test(90.0, 20.0), Some(root));
 }
 
 #[test]

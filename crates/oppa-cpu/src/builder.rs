@@ -27,8 +27,8 @@ pub use xform::{bake_ops, scale_path_data};
 use std::collections::HashSet;
 
 use oppa::{
-    AffineST, CaretPaint, DamageRect, DrawOp, FramePlan, Interner, NodeId, PassMask, Reconciler,
-    Style, Tag, ThemeMode,
+    AffineST, CaretPaint, DamageRect, DrawOp, FramePlan, Interner, NodeId, PaintXf, PassMask,
+    Reconciler, Style, Tag, ThemeMode,
 };
 
 /// Mask bits the builder consumes (LAYOUT stays with M3, SEMANTICS with A11Y).
@@ -258,7 +258,7 @@ impl FramePlanBuilder {
             portal_phase: false,
             plan: &mut plan,
         };
-        walker.walk(root, AffineST::identity());
+        walker.walk(root, AffineST::identity(), PaintXf::identity());
         // Overlay layers paint last (Round 1.4, decision 255 — the top
         // z-layer): phase 1 skips portal subtrees without accounting
         // them; phase 2 walks outermost portals in tree order (later
@@ -273,7 +273,7 @@ impl FramePlanBuilder {
                 // accumulation (ancestors above a portal never move
                 // its content — the DOM rule, where portal content
                 // lives outside transformed ancestors' elements).
-                walker.walk(portal, AffineST::identity());
+                walker.walk(portal, AffineST::identity(), PaintXf::identity());
             }
         }
         plan.stats.ops_emitted = plan.ops.len();
@@ -317,7 +317,7 @@ impl<'a> Walker<'a> {
         self.full || self.open.contains(&id)
     }
 
-    fn walk(&mut self, id: NodeId, acc: AffineST) {
+    fn walk(&mut self, id: NodeId, acc: AffineST, acc_full: PaintXf) {
         let Some(node) = self.rec.get(id) else { return };
         // Overlay gate (Round 1.4): phase 1 skips portal subtrees whole
         // with no accounting (phase 2 accounts them exactly once, and
@@ -350,19 +350,33 @@ impl<'a> Walker<'a> {
                     // Decision 511: this node's paint transform
                     // (evaluator-live else retained) composes with the
                     // ancestry — damage covers the transformed AABB,
-                    // ops bake the full accumulated affine.
+                    // ops bake the full accumulated affine. Decision
+                    // 517: the ST bake stays byte-identical AND a full
+                    // affine accumulates beside it; the per-op residual
+                    // (`full ∘ st⁻¹`, identity for ST-only chains)
+                    // rides each op to the backends at paint time.
                     let own = match self.eval {
                         Some((e, now)) => e.resolve_transform(id, style.transform, now),
                         None => style.transform.unwrap_or(oppa::Transform::identity()),
                     };
-                    let node_acc = if own.is_identity() {
-                        acc
+                    let (node_acc, node_full) = if own.is_identity() {
+                        (acc, acc_full)
                     } else {
                         own.require_supported();
-                        let local = own.to_local_affine(b.x + b.w * 0.5, b.y + b.h * 0.5);
-                        AffineST::compose(acc, local)
+                        let cx = b.x + b.w * 0.5;
+                        let cy = b.y + b.h * 0.5;
+                        (
+                            AffineST::compose(acc, own.to_local_affine(cx, cy)),
+                            PaintXf::compose(acc_full, own.to_full_affine(cx, cy)),
+                        )
                     };
-                    let (dx, dy, dw, dh) = node_acc.map_rect(b.x, b.y, b.w, b.h);
+                    let residual = PaintXf::residual(node_full, node_acc);
+                    let (dx, dy, dw, dh) = if residual.is_identity() {
+                        let (x0, y0) = node_acc.map_point(b.x, b.y);
+                        (x0, y0, node_acc.sx * b.w, node_acc.sy * b.h)
+                    } else {
+                        node_full.map_rect_aabb(b.x, b.y, b.w, b.h)
+                    };
                     self.plan.damage.push(DamageRect {
                         x: dx,
                         y: dy,
@@ -397,9 +411,9 @@ impl<'a> Walker<'a> {
                         self.handles,
                         self.tokens,
                     );
-                    xform::bake_ops(&mut self.plan.ops[start..], node_acc);
+                    xform::bake_ops(&mut self.plan.ops[start..], node_acc, residual);
                     for child in &children {
-                        self.walk(*child, node_acc);
+                        self.walk(*child, node_acc, node_full);
                     }
                     if clips {
                         self.plan.ops.push(DrawOp::Pop);
@@ -408,7 +422,7 @@ impl<'a> Walker<'a> {
                 None => {
                     self.plan.stats.nodes_unboxed += 1;
                     for child in &children {
-                        self.walk(*child, acc);
+                        self.walk(*child, acc, acc_full);
                     }
                 }
             }
@@ -416,7 +430,7 @@ impl<'a> Walker<'a> {
             // Open but clean: emits nothing itself, still walks children
             // (a dirty descendant may hide below).
             for child in &children {
-                self.walk(*child, acc);
+                self.walk(*child, acc, acc_full);
             }
         }
     }

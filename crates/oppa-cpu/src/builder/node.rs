@@ -1,7 +1,7 @@
 //! Node dispatch: [`FramePlan`] ops for one dirty retained node (M4 damage discipline).
 
 use oppa::{
-    CaretPaint, DrawOp, FramePlan, HandlePaint, Interner, LayoutBox, NodeId, PlacedGlyph,
+    CaretPaint, DrawOp, FramePlan, HandlePaint, Interner, LayoutBox, NodeId, PaintXf, PlacedGlyph,
     Reconciler, SelectionPaint, Style, Tag, CARET_WIDTH_PX, HANDLE_KNOB_R_PX, HANDLE_WIDTH_PX,
 };
 
@@ -65,6 +65,7 @@ pub(super) fn emit_node_ops(
             w: b.w,
             h: b.h,
             image: image.unwrap_or(oppa::ImageId(0)),
+            xf: PaintXf::identity(),
         });
         return;
     }
@@ -240,6 +241,7 @@ pub(super) fn emit_node_ops(
                     r: b.w.min(b.h) * 0.5,
                     color: bg,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             } else if let Some(radii) = resolve_radii(style_ref, b.w, b.h, dpr) {
                 // Round 11.1: per-corner radii ride `RRect.radii`
@@ -255,6 +257,7 @@ pub(super) fn emit_node_ops(
                     radii: Some(radii),
                     color: bg,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             } else if let Some(r) = style_ref.radius {
                 let radius = r.get() * dpr;
@@ -269,6 +272,7 @@ pub(super) fn emit_node_ops(
                         radii: None,
                         color: bg,
                         opacity,
+                        xf: PaintXf::identity(),
                     });
                 } else {
                     plan.ops.push(DrawOp::Rect {
@@ -279,6 +283,7 @@ pub(super) fn emit_node_ops(
                         h: b.h,
                         color: bg,
                         opacity,
+                        xf: PaintXf::identity(),
                     });
                 }
             } else {
@@ -290,6 +295,7 @@ pub(super) fn emit_node_ops(
                     h: b.h,
                     color: bg,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             }
         }
@@ -323,6 +329,7 @@ pub(super) fn emit_node_ops(
                             h: y1 - y0,
                             color: oppa::SELECTION_FILL,
                             opacity,
+                            xf: PaintXf::identity(),
                         });
                     }
                 }
@@ -383,6 +390,7 @@ pub(super) fn emit_node_ops(
                         .take()
                         .unwrap_or_else(|| resolve_ink(rec, styles, id, style, &tokens)),
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             };
             for run in &line.runs {
@@ -444,6 +452,7 @@ pub(super) fn emit_node_ops(
                 h: c.h,
                 color: c.color,
                 opacity,
+                xf: PaintXf::identity(),
             });
         }
     }
@@ -465,6 +474,7 @@ pub(super) fn emit_node_ops(
                     h: h.h,
                     color: h.color,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
                 plan.ops.push(DrawOp::Circle {
                     node: id,
@@ -473,6 +483,7 @@ pub(super) fn emit_node_ops(
                     r: HANDLE_KNOB_R_PX,
                     color: h.color,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             }
         }

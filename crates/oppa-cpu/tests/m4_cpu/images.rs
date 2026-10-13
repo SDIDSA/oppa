@@ -60,6 +60,7 @@ fn rimg_plan(x: f32, y: f32, w: f32, h: f32, image: oppa::ImageId) -> FramePlan 
             w,
             h,
             image,
+            xf: PaintXf::identity(),
         }],
         damage: vec![],
         stats: oppa::PlanStats::default(),

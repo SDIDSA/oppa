@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use oppa::{
-    Color, DiffOp, DrawOp, FramePlan, NodeId, PresenterKind, RendererBackend, SurfaceDesc, TreeDiff,
+    Color, DiffOp, DrawOp, FramePlan, NodeId, PaintXf, PresenterKind, RendererBackend, SurfaceDesc,
+    TreeDiff,
 };
 use oppa_cpu::CpuBackend;
 use oppa_gpu::{diff_count_tol, gpu_caps, GpuBackend, RgbaImage};
@@ -84,6 +85,7 @@ fn test_refuse_unregistered_image() {
             w: 50.0,
             h: 50.0,
             image: oppa::ImageId(999),
+            xf: PaintXf::identity(),
         }],
         full_repaint: true,
         ..Default::default()
@@ -115,6 +117,7 @@ fn test_refuse_invalid_svg_path() {
             fill: Some(Color(0xFF_00_00)),
             stroke: None,
             opacity: 1.0,
+            xf: PaintXf::identity(),
         }],
         full_repaint: true,
         ..Default::default()
@@ -149,6 +152,7 @@ fn test_retained_splice_and_commit() {
                 h: 20.0,
                 color: Color(0xFF_00_00),
                 opacity: 1.0,
+                xf: PaintXf::identity(),
             },
             DrawOp::Rect {
                 node: n2,
@@ -158,6 +162,7 @@ fn test_retained_splice_and_commit() {
                 h: 20.0,
                 color: Color(0x00_FF_00),
                 opacity: 1.0,
+                xf: PaintXf::identity(),
             },
         ],
         full_repaint: true,
@@ -203,6 +208,7 @@ fn test_oracle_compare_geometry() {
                 h: 25.0,
                 color: Color(0x33_66_99),
                 opacity: 1.0,
+                xf: PaintXf::identity(),
             },
             DrawOp::RRect {
                 node: n,
@@ -214,6 +220,7 @@ fn test_oracle_compare_geometry() {
                 radii: None,
                 color: Color(0x99_33_66),
                 opacity: 1.0,
+                xf: PaintXf::identity(),
             },
             DrawOp::Circle {
                 node: n,
@@ -222,6 +229,7 @@ fn test_oracle_compare_geometry() {
                 r: 12.0,
                 color: Color(0x33_99_33),
                 opacity: 1.0,
+                xf: PaintXf::identity(),
             },
             DrawOp::Shadow {
                 node: n,
@@ -233,6 +241,7 @@ fn test_oracle_compare_geometry() {
                 dy: 2.0,
                 blur_radius: 0.0, // solid offset shadow
                 color: Color(0x55_55_55),
+                xf: PaintXf::identity(),
             },
             DrawOp::Path {
                 node: n,
@@ -244,6 +253,7 @@ fn test_oracle_compare_geometry() {
                 fill: Some(Color(0xCC_66_00)),
                 stroke: None,
                 opacity: 1.0,
+                xf: PaintXf::identity(),
             },
         ],
         full_repaint: true,
@@ -323,6 +333,7 @@ fn test_oracle_image_rendering() {
             w: 20.0,
             h: 20.0,
             image: img_id,
+            xf: PaintXf::identity(),
         }],
         full_repaint: true,
         ..Default::default()
@@ -379,6 +390,7 @@ fn test_oracle_blurred_shadow() {
             dy: 5.0,
             blur_radius: 6.0,
             color: Color(0x22_22_22),
+            xf: PaintXf::identity(),
         }],
         full_repaint: true,
         ..Default::default()
@@ -468,6 +480,7 @@ fn test_oracle_text_rendering() {
             fonts: font_runs,
             ink: Color(0x00_00_00),
             opacity: 1.0,
+            xf: PaintXf::identity(),
         }],
         full_repaint: true,
         ..Default::default()
@@ -528,6 +541,89 @@ fn msaa_caps_agrees_with_probed_count() {
     );
 }
 
+/// Decision 517: CPU-vs-GPU agreement for rotation — a quarter-turned
+/// rect rides the CPU temp-layer detour on one side and the instance
+/// affine on the other (different AA rasterizers, so interiors must
+/// match exactly while fringes stay in the tol-16 < 5% band). Skips
+/// loudly without hardware.
+#[test]
+fn test_oracle_rotate_agreement() {
+    use oppa::{ComponentHost, Div, Style, Transform};
+    use oppa_cpu::FramePlanBuilder;
+    #[derive(Clone)]
+    struct RotProps;
+    impl oppa::Props for RotProps {}
+    fn scene(_ctx: &oppa::Ctx, _: &RotProps) -> oppa::VNode {
+        Div("stage").style(Style::new().size(120, 80)).child(
+            Div("turned")
+                .style(
+                    Style::new()
+                        .size(40, 20)
+                        .bg(Color(0x33_CC_33))
+                        .transform(Transform::rotate(90)),
+                )
+                .build(),
+        )
+    }
+    let host = ComponentHost::new();
+    host.set_viewport(120.0, 80.0);
+    host.mount("rot", RotProps, scene);
+    host.run_until_idle();
+    let builder = FramePlanBuilder::new(1.0);
+    let plan = host.with_retained_mut(|rec, styles| builder.build_full(rec, styles));
+
+    let mut cpu = CpuBackend::new();
+    let mut gpu = GpuBackend::new();
+    let desc = SurfaceDesc {
+        width_px: 120,
+        height_px: 80,
+        background: Color(0xFF_FF_FF),
+    };
+    let s_cpu = cpu.create_surface(desc).unwrap();
+    let s_gpu = gpu.create_surface(desc).unwrap();
+    cpu.paint(s_cpu, &plan).unwrap();
+    gpu.paint(s_gpu, &plan).unwrap();
+
+    let cpu_pixmap = cpu.pixmap(s_cpu).unwrap();
+    let cpu_img = RgbaImage::from_cpu_pixmap(cpu_pixmap).unwrap();
+    match gpu.render_pixels(s_gpu) {
+        Ok(gpu_img) => {
+            // 40×20 at origin turns about (20, 10) into the
+            // 10..30 × −10..30 visual (clipped top): deep interior
+            // (20, 10) is full coverage on both rasterizers.
+            let (r_cpu, g_cpu, b_cpu, a_cpu) = cpu_img.pixel(20, 10).unwrap();
+            let (r_gpu, g_gpu, b_gpu, a_gpu) = gpu_img.pixel(20, 10).unwrap();
+            assert_eq!(
+                (r_cpu, g_cpu, b_cpu, a_cpu),
+                (r_gpu, g_gpu, b_gpu, a_gpu),
+                "rotated interior agrees exactly"
+            );
+            // The layout ghost row (x 32..40, y 5) stays background on
+            // both (rotation is paint-only — nothing leaks at the old
+            // footprint).
+            assert_eq!(
+                cpu_img.pixel(35, 5).unwrap(),
+                (255, 255, 255, 255),
+                "cpu ghost stays background"
+            );
+            assert_eq!(
+                gpu_img.pixel(35, 5).unwrap(),
+                (255, 255, 255, 255),
+                "gpu ghost stays background"
+            );
+            let total = (desc.width_px * desc.height_px) as usize;
+            let diff = diff_count_tol(&cpu_img, &gpu_img, 15);
+            let ratio = diff as f64 / total as f64;
+            assert!(
+                ratio < 0.05,
+                "rotated scene within tol-16 < 5%: {diff}/{total}"
+            );
+        }
+        Err(e) => {
+            eprintln!("SKIP test_oracle_rotate_agreement: {e}");
+        }
+    }
+}
 /// Decision 511: CPU-vs-GPU in-flight agreement for baked
 /// transforms — the shared builder folds the same affine into both
 /// backends' plan, so the oracle compares one translated + one

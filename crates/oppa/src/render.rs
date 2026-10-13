@@ -58,6 +58,7 @@ use crate::arena::NodeId;
 use crate::reconciler::{Reconciler, TreeDiff};
 use crate::semantics::Semantics;
 use crate::style::Color;
+use crate::style::PaintXf;
 use crate::text::FontId;
 use crate::vnode::{ImageId, StrokeDesc};
 
@@ -239,6 +240,14 @@ pub struct FontRun {
 
 /// Display-list op (display-list spec: the "immediate" half; damage lives
 /// on the [`FramePlan`], not per-op).
+///
+/// Rotation rides per-op (decision 517): every paint variant carries
+/// the node's residual paint affine `xf` (`full ∘ st⁻¹` — identity for
+/// ST-only chains, so unrotated plans stay byte-identical). Geometry
+/// fields stay ST-baked exactly as before; backends apply `xf` at
+/// paint time (CPU temp-layer detour for the manual helpers, GPU
+/// instance rotation, DOM `rotate()`). Clips stay axis-aligned AABBs
+/// (the rotated damage box, conservatively).
 #[derive(Clone, PartialEq, Debug)]
 pub enum DrawOp {
     Rect {
@@ -249,6 +258,7 @@ pub enum DrawOp {
         h: f32,
         color: Color,
         opacity: f32,
+        xf: PaintXf,
     },
     RRect {
         node: NodeId,
@@ -266,6 +276,7 @@ pub enum DrawOp {
         radii: Option<[f32; 4]>,
         color: Color,
         opacity: f32,
+        xf: PaintXf,
     },
     Circle {
         node: NodeId,
@@ -274,6 +285,7 @@ pub enum DrawOp {
         r: f32,
         color: Color,
         opacity: f32,
+        xf: PaintXf,
     },
     /// Offset shadow with a native blur radius (Phase 36 PR4, decision
     /// 356 — supersedes the Round-1.3 quantized stepped expansion for
@@ -292,6 +304,7 @@ pub enum DrawOp {
         dy: f32,
         blur_radius: f32,
         color: Color,
+        xf: PaintXf,
     },
     /// Pre-shaped text: one op per laid line — box origin + glyph cells
     /// (never re-shaped, never re-laid-out by the backend). `y` is the
@@ -323,6 +336,7 @@ pub enum DrawOp {
         fonts: Vec<FontRun>,
         ink: Color,
         opacity: f32,
+        xf: PaintXf,
     },
     /// Static pre-decoded image (pixels arrive with async decode, M8+).
     /// Backends refuse this loudly until then — never a placeholder.
@@ -333,6 +347,7 @@ pub enum DrawOp {
         w: f32,
         h: f32,
         image: ImageId,
+        xf: PaintXf,
     },
     /// Vector shape (decision 291): `data` is SVG path data in the
     /// node's local space — the backend translates it by `(x, y)`
@@ -352,6 +367,7 @@ pub enum DrawOp {
         fill: Option<Color>,
         stroke: Option<StrokeDesc>,
         opacity: f32,
+        xf: PaintXf,
     },
     PushClip {
         x: f32,
@@ -377,6 +393,37 @@ impl DrawOp {
             | DrawOp::RImg { node, .. }
             | DrawOp::Path { node, .. } => Some(*node),
             DrawOp::PushClip { .. } | DrawOp::PushLayer { .. } | DrawOp::Pop => None,
+        }
+    }
+
+    /// The residual paint affine for this op (identity for stack ops
+    /// and ST-only chains — backends skip it without touching a
+    /// number there).
+    pub fn xf(&self) -> PaintXf {
+        match self {
+            DrawOp::Rect { xf, .. }
+            | DrawOp::RRect { xf, .. }
+            | DrawOp::Circle { xf, .. }
+            | DrawOp::Shadow { xf, .. }
+            | DrawOp::Text { xf, .. }
+            | DrawOp::RImg { xf, .. }
+            | DrawOp::Path { xf, .. } => *xf,
+            DrawOp::PushClip { .. } | DrawOp::PushLayer { .. } | DrawOp::Pop => PaintXf::identity(),
+        }
+    }
+
+    /// Stamp the residual paint affine (the builder bake owns this —
+    /// emitters leave identity, the per-node bake overwrites).
+    pub fn set_xf(&mut self, xf: PaintXf) {
+        match self {
+            DrawOp::Rect { xf: slot, .. }
+            | DrawOp::RRect { xf: slot, .. }
+            | DrawOp::Circle { xf: slot, .. }
+            | DrawOp::Shadow { xf: slot, .. }
+            | DrawOp::Text { xf: slot, .. }
+            | DrawOp::RImg { xf: slot, .. }
+            | DrawOp::Path { xf: slot, .. } => *slot = xf,
+            DrawOp::PushClip { .. } | DrawOp::PushLayer { .. } | DrawOp::Pop => {}
         }
     }
 }

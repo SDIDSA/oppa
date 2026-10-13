@@ -258,8 +258,8 @@ fn transform_identity_default_and_structural() {
     assert_eq!(stop.transform.unwrap().dx.get(), 4.0);
 }
 
-/// Decision 511: supported today = finite translate + positive
-/// finite scale with zero rotate; everything else refuses loudly.
+/// Decisions 511 + 517: supported = finite translate + positive
+/// finite scale + finite rotate; everything else refuses loudly.
 #[test]
 fn transform_supported_gate_accepts_translate_scale() {
     Transform::translate(10, -3).require_supported();
@@ -267,10 +267,81 @@ fn transform_supported_gate_accepts_translate_scale() {
     Transform::identity().require_supported();
 }
 
+/// Decision 517: rotation applies everywhere — finite rotate passes
+/// the gate like translate/scale.
 #[test]
-#[should_panic(expected = "rotate")]
-fn transform_rotate_refuses_loudly_until_t1b() {
+fn transform_rotate_applies_since_t1b() {
     Transform::rotate(45).require_supported();
+    Transform::rotate(-90).require_supported();
+    assert!(!Transform::rotate(30).is_identity());
+}
+
+/// Decision 517: the full affine degrades exactly to the ST form for
+/// zero rotation (same floats, same order — the bake fast path stays
+/// bit-exact).
+#[test]
+fn full_affine_degrades_to_st_without_rotation() {
+    for t in [
+        Transform::identity(),
+        Transform::translate(10, -3),
+        Transform::scale(0.5, 2.0),
+    ] {
+        let (cx, cy) = (50.0, 25.0);
+        let full = t.to_full_affine(cx, cy);
+        let st = t.to_local_affine(cx, cy);
+        assert_eq!(
+            full,
+            PaintXf {
+                a: st.sx,
+                b: 0.0,
+                c: 0.0,
+                d: st.sy,
+                tx: st.tx,
+                ty: st.ty,
+            },
+            "zero-rotation full affine is exactly the ST affine"
+        );
+    }
+}
+
+/// Decision 517: a quarter turn about the box center swaps the box
+/// onto itself (100×50 at origin → the AABB is 50×100 centered).
+#[test]
+fn full_affine_quarter_turn_aabb() {
+    let t = Transform::rotate(90);
+    let full = t.to_full_affine(50.0, 25.0);
+    let (x, y, w, h) = full.map_rect_aabb(0.0, 0.0, 100.0, 50.0);
+    assert!((x - 25.0).abs() < 1e-3, "aabb x, got {x}");
+    assert!((y + 25.0).abs() < 1e-3, "aabb y, got {y}");
+    assert!((w - 50.0).abs() < 1e-3, "aabb w, got {w}");
+    assert!((h - 100.0).abs() < 1e-3, "aabb h, got {h}");
+    // The center pins through the turn.
+    assert_eq!(full.map_point(50.0, 25.0), (50.0, 25.0));
+    // Inverse restores (hit direction).
+    let (lx, ly) = full.unmap_point(50.0, 25.0);
+    assert!((lx - 50.0).abs() < 1e-4 && (ly - 25.0).abs() < 1e-4);
+}
+
+/// Decision 517: ST-only residuals are exactly identity (backends
+/// skip them without touching a number).
+#[test]
+fn residual_identity_without_rotation() {
+    let st = AffineST {
+        sx: 2.0,
+        sy: 0.5,
+        tx: 10.0,
+        ty: -4.0,
+    };
+    let full = PaintXf {
+        a: 2.0,
+        b: 0.0,
+        c: 0.0,
+        d: 0.5,
+        tx: 10.0,
+        ty: -4.0,
+    };
+    assert!(PaintXf::residual(full, st).is_identity());
+    assert!(PaintXf::residual(PaintXf::identity(), AffineST::identity()).is_identity());
 }
 
 #[test]

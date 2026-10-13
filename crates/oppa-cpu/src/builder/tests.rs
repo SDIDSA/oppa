@@ -532,13 +532,37 @@ fn evaluated_mid_flight_transform_bakes_live_geometry() {
     );
 }
 
-/// Decision 511: rotate and degenerate scales refuse at build (the
-/// T1b line — never a silent snap).
+/// Decision 517: rotation stamps a per-op residual while ST geometry
+/// stays baked (a 90° turn keeps the axis-aligned rect numbers and
+/// carries the turn to the backends; damage covers the rotated AABB).
 #[test]
-#[should_panic(expected = "T1b scope")]
-fn rotate_refuses_loudly_at_build() {
-    let (_, plan, _) = box_plan(Some(Transform::rotate(30)));
-    let _ = plan;
+fn rotate_stamps_residual_and_bloats_damage() {
+    let (_, plan, id) = box_plan(Some(Transform::rotate(90)));
+    // ST geometry untouched (the 100×50 rect still bakes axis-aligned).
+    assert_eq!(rect_of(&plan, id), (0.0, 0.0, 100.0, 50.0));
+    let xf = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            DrawOp::Rect { node, xf, .. } if *node == id => Some(*xf),
+            _ => None,
+        })
+        .expect("box rect op");
+    assert!(!xf.is_identity(), "rotated op carries a residual");
+    // The residual turns the box onto its quarter-turn AABB.
+    let (x, y, w, h) = xf.map_rect_aabb(0.0, 0.0, 100.0, 50.0);
+    assert!(
+        (w - 50.0).abs() < 1e-3 && (h - 100.0).abs() < 1e-3,
+        "residual swaps extents"
+    );
+    let _ = (x, y);
+    assert!(
+        plan.damage
+            .iter()
+            .any(|d| { (d.w - 50.0).abs() < 1e-3 && (d.h - 100.0).abs() < 1e-3 }),
+        "damage covers the rotated AABB, got {:?}",
+        plan.damage
+    );
 }
 
 #[test]

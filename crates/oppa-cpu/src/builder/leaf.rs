@@ -1,6 +1,6 @@
 //! Payload-leaf emitters: vector paths and retained canvas specs (paint rides the payload).
 
-use oppa::{DrawOp, FramePlan, LayoutBox, NodeId, Reconciler, Style};
+use oppa::{DrawOp, FramePlan, LayoutBox, NodeId, PaintXf, Reconciler, Style};
 
 /// Vector emission (decision 291): one [`DrawOp::Path`] per path
 /// node — the committed box origin/size plus the retained
@@ -78,6 +78,7 @@ pub(super) fn emit_path_op(
         fill: spec.fill,
         stroke: spec.stroke,
         opacity,
+        xf: PaintXf::identity(),
     });
 }
 
@@ -136,6 +137,7 @@ pub(super) fn emit_canvas_ops(
                     h: h.get(),
                     color: *color,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             }
             oppa::CanvasOp::RRect {
@@ -156,6 +158,7 @@ pub(super) fn emit_canvas_ops(
                     radii: None,
                     color: *color,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             }
             oppa::CanvasOp::Path { data, fill, stroke } => {
@@ -183,6 +186,7 @@ pub(super) fn emit_canvas_ops(
                     fill: *fill,
                     stroke: *stroke,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             }
             oppa::CanvasOp::Text { .. } => {

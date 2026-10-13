@@ -1,6 +1,6 @@
 //! Shape emitters: fills, rings, bands, gradients, shadows (M4/M5 paint vocabulary).
 
-use oppa::{DrawOp, FramePlan, LayoutBox, NodeId, Style, Tag};
+use oppa::{DrawOp, FramePlan, LayoutBox, NodeId, PaintXf, Style, Tag};
 
 use super::resolve::{lerp_color, resolve_radii};
 
@@ -36,6 +36,7 @@ pub(super) fn emit_shape(
             r: w.min(h) * 0.5,
             color,
             opacity,
+            xf: PaintXf::identity(),
         });
     } else if let Some(radii) = resolve_radii(style, w, h, dpr) {
         // Round 11.1: the inset ring keeps per-corner shapes (each
@@ -53,6 +54,7 @@ pub(super) fn emit_shape(
                 radii: Some(radii),
                 color,
                 opacity,
+                xf: PaintXf::identity(),
             });
         } else {
             plan.ops.push(DrawOp::Rect {
@@ -63,6 +65,7 @@ pub(super) fn emit_shape(
                 h,
                 color,
                 opacity,
+                xf: PaintXf::identity(),
             });
         }
     } else if let Some(r) = style.radius {
@@ -78,6 +81,7 @@ pub(super) fn emit_shape(
                 radii: None,
                 color,
                 opacity,
+                xf: PaintXf::identity(),
             });
         } else {
             plan.ops.push(DrawOp::Rect {
@@ -88,6 +92,7 @@ pub(super) fn emit_shape(
                 h,
                 color,
                 opacity,
+                xf: PaintXf::identity(),
             });
         }
     } else {
@@ -99,6 +104,7 @@ pub(super) fn emit_shape(
             h,
             color,
             opacity,
+            xf: PaintXf::identity(),
         });
     }
 }
@@ -141,6 +147,7 @@ pub(super) fn emit_radial(
             r: rad,
             color,
             opacity,
+            xf: PaintXf::identity(),
         });
     }
 }
@@ -189,6 +196,7 @@ pub(super) fn emit_gradient(
                 h: sh,
                 color,
                 opacity,
+                xf: PaintXf::identity(),
             });
         }
         prev = edge;
@@ -221,6 +229,7 @@ pub(super) fn emit_edge_bands(
             h: top,
             color,
             opacity,
+            xf: PaintXf::identity(),
         });
     }
     if bottom > 0.0 {
@@ -232,6 +241,7 @@ pub(super) fn emit_edge_bands(
             h: bottom,
             color,
             opacity,
+            xf: PaintXf::identity(),
         });
     }
     let mid_h = (b.h - top - bottom).max(0.0);
@@ -245,6 +255,7 @@ pub(super) fn emit_edge_bands(
                 h: mid_h,
                 color,
                 opacity,
+                xf: PaintXf::identity(),
             });
         }
         if right > 0.0 {
@@ -256,6 +267,7 @@ pub(super) fn emit_edge_bands(
                 h: mid_h,
                 color,
                 opacity,
+                xf: PaintXf::identity(),
             });
         }
     }
@@ -294,5 +306,6 @@ pub(super) fn emit_shadow(
         dy: shadow.y.get() * dpr,
         blur_radius: blur_dev,
         color: shadow.color,
+        xf: PaintXf::identity(),
     });
 }

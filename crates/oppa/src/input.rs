@@ -51,7 +51,7 @@ use crate::arena::NodeId;
 use crate::interner::Interner;
 use crate::reconciler::Reconciler;
 use crate::shell::EventKind;
-use crate::style::{AffineST, Style, Transform};
+use crate::style::{PaintXf, Style, Transform};
 use crate::vnode::Tag;
 
 pub mod actions;
@@ -579,7 +579,9 @@ fn contains(b: &crate::layout::LayoutBox, x: f32, y: f32) -> bool {
 /// coordinates). Each outermost portal entry starts from identity
 /// (portals reset accumulation, the builder rule — ancestors above a
 /// portal never move its content). `live` returning `None` reads the
-/// retained style (settled trees).
+/// retained style (settled trees). Decision 517 extends the
+/// accumulation to the full affine (rotation included — the inverse
+/// maps visual points back into layout space exactly).
 pub fn hit_test(
     rec: &Reconciler,
     styles: &Interner<Style>,
@@ -589,11 +591,11 @@ pub fn hit_test(
 ) -> Option<NodeId> {
     let root = rec.root()?;
     for portal in rec.outermost_portals().iter().rev() {
-        if let Some(deep) = hit_subtree(rec, styles, *portal, x, y, AffineST::identity(), live) {
+        if let Some(deep) = hit_subtree(rec, styles, *portal, x, y, PaintXf::identity(), live) {
             return Some(deep);
         }
     }
-    hit_subtree(rec, styles, root, x, y, AffineST::identity(), live)
+    hit_subtree(rec, styles, root, x, y, PaintXf::identity(), live)
 }
 
 fn hit_subtree(
@@ -602,7 +604,7 @@ fn hit_subtree(
     id: NodeId,
     x: f32,
     y: f32,
-    acc: AffineST,
+    acc: PaintXf,
     live: &dyn Fn(NodeId) -> Option<Transform>,
 ) -> Option<NodeId> {
     let node = rec.get(id)?;
@@ -613,8 +615,8 @@ fn hit_subtree(
     let acc = match (owned, &node.layout) {
         (Some(t), Some(b)) => {
             t.require_supported();
-            let local = t.to_local_affine(b.x + b.w * 0.5, b.y + b.h * 0.5);
-            AffineST::compose(acc, local)
+            let local = t.to_full_affine(b.x + b.w * 0.5, b.y + b.h * 0.5);
+            PaintXf::compose(acc, local)
         }
         // Boxless nodes never claim (the `match` below) but their
         // children still hit — a transform without a box has no

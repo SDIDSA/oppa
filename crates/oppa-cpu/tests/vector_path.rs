@@ -6,8 +6,8 @@
 //! gaps refuse loudly.
 
 use oppa::{
-    Color, ComponentHost, Ctx, DrawOp, FramePlan, NodeId, Path, PlanStats, Props, RendererBackend,
-    VNode,
+    Color, ComponentHost, Ctx, DrawOp, FramePlan, NodeId, PaintXf, Path, PlanStats, Props,
+    RendererBackend, VNode,
 };
 use oppa_cpu::{CpuBackend, FramePlanBuilder};
 
@@ -140,6 +140,7 @@ fn check_stroke_paints_centerline_and_spares_corners() {
                 h: 20.0,
                 color: Color(0x22_66_CC),
                 opacity: 1.0,
+                xf: PaintXf::identity(),
             },
             DrawOp::Path {
                 node: NodeId::new(1, 1),
@@ -154,6 +155,7 @@ fn check_stroke_paints_centerline_and_spares_corners() {
                     width: 2.5,
                 }),
                 opacity: 1.0,
+                xf: PaintXf::identity(),
             },
         ],
         damage: vec![],
@@ -206,6 +208,7 @@ fn invalid_path_data_fails_loudly() {
             fill: Some(Color(0xFF_00_00)),
             stroke: None,
             opacity: 1.0,
+            xf: PaintXf::identity(),
         }],
         damage: vec![],
         stats: PlanStats::default(),

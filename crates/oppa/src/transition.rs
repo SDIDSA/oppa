@@ -118,9 +118,9 @@ struct Interp {
     /// still ease through the color ramp, the M8 rule).
     bg_legs: Vec<(Option<Color>, Option<Color>, f64, Ease)>,
     op_legs: Vec<(f32, f32, f64, Ease)>,
-    /// Transform legs (decision 511): component-wise lerp of each
-    /// waypoint pair (translate, scale, and — once T1b applies it —
-    /// raw rotate; no shortest-arc, stated).
+    /// Transform legs (decisions 511 + 517): component-wise lerp of
+    /// each waypoint pair (translate, scale, and raw rotate — no
+    /// shortest-arc, stated).
     xf_legs: Vec<(Transform, Transform, f64, Ease)>,
     /// Cumulative leg end times (seconds from `start`); `total` is
     /// the last one (always > 0: zero-duration stops refuse loudly

@@ -214,10 +214,9 @@ pub enum GridTrack {
 /// origin): scale about the center, then rotate about the center,
 /// then translate — `p' = c + R·S·(p − c) + t`.
 /// Bit-exact [`Px`] payloads so styles stay `Eq + Hash` (the opacity
-/// precedent). T1a applies translate + scale; `rotate_deg ≠ 0`
-/// refuses loudly at every application point through
-/// [`Transform::require_supported`] (the T1b rotate round owns
-/// shaders + raster plumbing — stated, never a silent snap).
+/// precedent). Decision 517 (T1b) applies rotation everywhere —
+/// [`Transform::require_supported`] keeps only the finite/positive
+/// gate (mirrors/degenerate flats stay loud).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Transform {
     pub dx: Px,
@@ -258,9 +257,9 @@ impl Transform {
         }
     }
 
-    /// Pure rotation about the box center (T1b-authorable: values
-    /// store fine, every application point refuses loudly until T1b
-    /// lands — never a silent snap).
+    /// Pure rotation about the box center (decision 517: applies
+    /// everywhere through the per-op residual — raw-lerped, no
+    /// shortest-arc).
     pub fn rotate(deg: impl IntoPx) -> Self {
         Self {
             rotate_deg: deg.into_px(),
@@ -281,9 +280,11 @@ impl Transform {
 
     /// Loud gate for every application point (builder bake, DOM CSS,
     /// hit-test resolver — one helper, one message): finite
-    /// translate, positive finite scale, and the T1b rotate rule.
-    /// Non-positive scale (mirror/degenerate paint) and non-finite
-    /// components are authoring bugs, never silent clamps.
+    /// components and positive finite scale. Non-positive scale
+    /// (mirror/degenerate paint) and non-finite components are
+    /// authoring bugs, never silent clamps. Rotation applies
+    /// everywhere since decision 517 (T1b) — the old nonzero-rotate
+    /// refusal is gone.
     pub fn require_supported(self) {
         let (dx, dy, sx, sy, r) = (
             self.dx.get(),
@@ -307,17 +308,13 @@ impl Transform {
                 "transform: non-finite rotate ({r}) — finite degrees only, never silent NaN paint"
             );
         }
-        if r != 0.0 {
-            panic!(
-                "transform: rotate ({r}°) is T1b scope — translate/scale paint today, rotation refuses loudly until the rotate round lands"
-            );
-        }
     }
 
     /// This transform as a device-space affine about `(cx, cy)` (the
     /// committed-box center): `p' = S·p + (c − S·c + t)`. Callers
     /// compose these with [`AffineST::compose`]; application points
-    /// call [`Transform::require_supported`] first.
+    /// call [`Transform::require_supported`] first. Scale/translate
+    /// only — rotation rides [`Transform::to_full_affine`].
     pub fn to_local_affine(self, cx: f32, cy: f32) -> AffineST {
         let (dx, dy, sx, sy) = (self.dx.get(), self.dy.get(), self.sx.get(), self.sy.get());
         AffineST {
@@ -327,13 +324,55 @@ impl Transform {
             ty: cy * (1.0 - sy) + dy,
         }
     }
+
+    /// This transform as a full device-space affine about `(cx, cy)`
+    /// (decision 517): `p' = c + R·S·(p − c) + t` — scale about the
+    /// center, then rotate about the center, then translate. The
+    /// canonical order every backend paints (SPEC §Transitions).
+    /// Identity rotation degrades exactly to [`Transform::to_local_affine`]
+    /// (same floats, same order — the ST fast path stays bit-exact).
+    pub fn to_full_affine(self, cx: f32, cy: f32) -> PaintXf {
+        use std::f32::consts::PI;
+        let (dx, dy, sx, sy, deg) = (
+            self.dx.get(),
+            self.dy.get(),
+            self.sx.get(),
+            self.sy.get(),
+            self.rotate_deg.get(),
+        );
+        if deg == 0.0 {
+            let st = self.to_local_affine(cx, cy);
+            return PaintXf {
+                a: st.sx,
+                b: 0.0,
+                c: 0.0,
+                d: st.sy,
+                tx: st.tx,
+                ty: st.ty,
+            };
+        }
+        let rad = deg * PI / 180.0;
+        let (cos, sin) = (rad.cos(), rad.sin());
+        // Linear part R·S (rotation rows times per-axis scale).
+        let (a, b, c, d) = (cos * sx, -sin * sy, sin * sx, cos * sy);
+        // Translation pins the center: t' = c − M·c + t.
+        PaintXf {
+            a,
+            b,
+            c,
+            d,
+            tx: cx - (a * cx + b * cy) + dx,
+            ty: cy - (c * cx + d * cy) + dy,
+        }
+    }
 }
 
 /// Accumulated scale+translate affine in device px (decision 511):
-/// `x' = sx·x + tx` (same on y). The T1a transform closure — every
-/// node-local affine folds into this form, so ancestor accumulation,
-/// point mapping, and op baking share one exact math. Closed under
-/// compose (rotation would break the closure — hence T1b).
+/// `x' = sx·x + tx` (same on y). The ST transform closure — every
+/// node-local scale+translate folds into this form, so ancestor
+/// accumulation, point mapping, and op baking share one exact math.
+/// Closed under compose (rotation breaks the closure — hence the
+/// [`PaintXf`] full affine beside it since decision 517).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct AffineST {
     pub sx: f32,
@@ -385,6 +424,125 @@ impl AffineST {
     pub fn map_rect(self, x: f32, y: f32, w: f32, h: f32) -> (f32, f32, f32, f32) {
         let (x0, y0) = self.map_point(x, y);
         (x0, y0, self.sx * w, self.sy * h)
+    }
+}
+
+/// Full 2D paint affine in device px (decision 517, T1b): the
+/// rotation-carrying closure — `x' = a·x + b·y + tx`,
+/// `y' = c·x + d·y + ty`. Every node-local
+/// [`Transform::to_full_affine`] folds into this form, so ancestor
+/// accumulation, point mapping, damage AABBs, and the per-op residual
+/// share one exact math. ST-only chains degrade to the diagonal
+/// (`b = c = 0`, same floats as [`AffineST`] — the byte-identical
+/// fast path). Closed under compose; invertible (positive scales ×
+/// rotation keep the determinant nonzero — the inverse never divides
+/// by zero on gated values).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PaintXf {
+    pub a: f32,
+    pub b: f32,
+    pub c: f32,
+    pub d: f32,
+    pub tx: f32,
+    pub ty: f32,
+}
+
+impl PaintXf {
+    /// Identity (touches no numbers anywhere downstream).
+    pub fn identity() -> Self {
+        Self {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx: 0.0,
+            ty: 0.0,
+        }
+    }
+
+    pub fn is_identity(self) -> bool {
+        self.a == 1.0
+            && self.b == 0.0
+            && self.c == 0.0
+            && self.d == 1.0
+            && self.tx == 0.0
+            && self.ty == 0.0
+    }
+
+    /// `outer ∘ inner` (apply `inner` first — child inside parent).
+    pub fn compose(outer: PaintXf, inner: PaintXf) -> PaintXf {
+        PaintXf {
+            a: outer.a * inner.a + outer.b * inner.c,
+            b: outer.a * inner.b + outer.b * inner.d,
+            c: outer.c * inner.a + outer.d * inner.c,
+            d: outer.c * inner.b + outer.d * inner.d,
+            tx: outer.a * inner.tx + outer.b * inner.ty + outer.tx,
+            ty: outer.c * inner.tx + outer.d * inner.ty + outer.ty,
+        }
+    }
+
+    /// Map a point (paint direction: layout → visual).
+    pub fn map_point(self, x: f32, y: f32) -> (f32, f32) {
+        (
+            self.a * x + self.b * y + self.tx,
+            self.c * x + self.d * y + self.ty,
+        )
+    }
+
+    /// Map a point backwards (hit direction: visual → layout).
+    /// Loud on a singular matrix (gated values never are — positive
+    /// scales × rotation keep `det ≠ 0`, so this is belt-and-braces).
+    pub fn unmap_point(self, x: f32, y: f32) -> (f32, f32) {
+        let det = self.a * self.d - self.b * self.c;
+        if det == 0.0 || !det.is_finite() {
+            panic!("paint: singular paint affine (det {det}) — gated transforms never produce one");
+        }
+        let dx = x - self.tx;
+        let dy = y - self.ty;
+        (
+            (self.d * dx - self.b * dy) / det,
+            (-self.c * dx + self.a * dy) / det,
+        )
+    }
+
+    /// Map an axis-aligned box to its damage AABB (exact for
+    /// scale+translate — the four corners coincide there, so this
+    /// agrees with [`AffineST::map_rect`] to the float; rotated boxes
+    /// bloat to cover every corner, conservatively).
+    pub fn map_rect_aabb(self, x: f32, y: f32, w: f32, h: f32) -> (f32, f32, f32, f32) {
+        let (x0, y0) = self.map_point(x, y);
+        let (x1, y1) = self.map_point(x + w, y);
+        let (x2, y2) = self.map_point(x, y + h);
+        let (x3, y3) = self.map_point(x + w, y + h);
+        let (minx, maxx) = (x0.min(x1).min(x2).min(x3), x0.max(x1).max(x2).max(x3));
+        let (miny, maxy) = (y0.min(y1).min(y2).min(y3), y0.max(y1).max(y2).max(y3));
+        (minx, miny, maxx - minx, maxy - miny)
+    }
+
+    /// Residual paint transform for one node's freshly baked ops:
+    /// `full ∘ st⁻¹` — maps ST-baked geometry to fully transformed
+    /// pixels. ST-only chains yield exactly identity (the fast path —
+    /// backends skip it without touching a number).
+    pub fn residual(full: PaintXf, st: AffineST) -> PaintXf {
+        if full.a == st.sx
+            && full.b == 0.0
+            && full.c == 0.0
+            && full.d == st.sy
+            && full.tx == st.tx
+            && full.ty == st.ty
+        {
+            return PaintXf::identity();
+        }
+        // ST inverse is exact (positive scales by gate).
+        let inv = PaintXf {
+            a: 1.0 / st.sx,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0 / st.sy,
+            tx: -st.tx / st.sx,
+            ty: -st.ty / st.sy,
+        };
+        PaintXf::compose(full, inv)
     }
 }
 
@@ -1335,8 +1493,8 @@ impl StyleBuilder {
         self
     }
 
-    /// Paint-only node transform (decision 511 — translate/scale
-    /// paint today, rotate refuses loudly until T1b).
+    /// Paint-only node transform (decisions 511 + 517 — translate,
+    /// scale, and rotate all paint; layout never moves).
     pub fn transform(mut self, t: impl Into<Option<Transform>>) -> Self {
         self.inner.transform = t.into();
         self

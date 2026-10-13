@@ -46,6 +46,13 @@ pub struct QuadInstance {
     /// `params[2]`: offset dx (for Shadow)
     /// `params[3]`: offset dy (for Shadow)
     pub params: [f32; 4],
+    /// Residual paint affine, row-major linear part `[a, b, c, d]`
+    /// (decision 517): rotates the baked quad at paint time; identity
+    /// for ST-only chains (the vertex shader multiplies through, so
+    /// identity lands on the exact old pixels).
+    pub xf_abcd: [f32; 4],
+    /// Residual translation `[tx, ty]` (same).
+    pub xf_t: [f32; 2],
 }
 
 impl QuadInstance {
@@ -74,6 +81,16 @@ impl QuadInstance {
                     shader_location: 4,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
             ],
         }
     }
@@ -89,6 +106,11 @@ pub struct TexturedInstance {
     pub uv: [f32; 4],
     /// Color multiplier: `[r, g, b, a]`.
     pub color: [f32; 4],
+    /// Residual paint affine linear part `[a, b, c, d]` (decision
+    /// 517 — same rule as [`QuadInstance`]).
+    pub xf_abcd: [f32; 4],
+    /// Residual translation `[tx, ty]` (same).
+    pub xf_t: [f32; 2],
 }
 
 impl TexturedInstance {
@@ -111,6 +133,16 @@ impl TexturedInstance {
                     offset: 32,
                     shader_location: 3,
                     format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x2,
                 },
             ],
         }

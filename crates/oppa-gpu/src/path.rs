@@ -63,6 +63,7 @@ pub fn to_lyon_path(skia_path: &tiny_skia::Path) -> lyon_tessellation::path::Pat
 pub fn tessellate_svg_path(
     data: &str,
     offset: (f32, f32),
+    xf: oppa::PaintXf,
     fill_color: Option<[f32; 4]>,
     stroke: Option<([f32; 4], f32)>,
     out_vertices: &mut Vec<PathVertex>,
@@ -74,6 +75,18 @@ pub fn tessellate_svg_path(
 
     let base_vertex_idx = out_vertices.len() as u32;
     let mut buffers: VertexBuffers<PathVertex, u32> = VertexBuffers::new();
+    // Residual rotation applies on the CPU (decision 517): offset
+    // first (the committed box origin, like the unrotated path),
+    // then the residual — identity skips the multiply exactly.
+    let place = |px: f32, py: f32| -> [f32; 2] {
+        let (qx, qy) = (px + offset.0, py + offset.1);
+        if xf.is_identity() {
+            [qx, qy]
+        } else {
+            let (rx, ry) = xf.map_point(qx, qy);
+            [rx, ry]
+        }
+    };
 
     if let Some(col) = fill_color {
         let mut tessellator = FillTessellator::new();
@@ -85,7 +98,7 @@ pub fn tessellate_svg_path(
                 &mut BuffersBuilder::new(&mut buffers, |vertex: FillVertex| {
                     let pos = vertex.position();
                     PathVertex {
-                        pos: [pos.x + offset.0, pos.y + offset.1],
+                        pos: place(pos.x, pos.y),
                         color: col,
                     }
                 }),
@@ -108,7 +121,7 @@ pub fn tessellate_svg_path(
                     &mut BuffersBuilder::new(&mut buffers, |vertex: StrokeVertex| {
                         let pos = vertex.position();
                         PathVertex {
-                            pos: [pos.x + offset.0, pos.y + offset.1],
+                            pos: place(pos.x, pos.y),
                             color: col,
                         }
                     }),

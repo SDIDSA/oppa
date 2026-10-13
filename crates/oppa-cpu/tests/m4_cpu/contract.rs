@@ -40,6 +40,7 @@ fn contract_surface_kind_caps_surfaces_and_refusals() {
                 h: 40.0,
                 color: CARD_BG,
                 opacity: 1.0,
+                xf: PaintXf::identity(),
             },
             DrawOp::Pop,
             DrawOp::Pop,

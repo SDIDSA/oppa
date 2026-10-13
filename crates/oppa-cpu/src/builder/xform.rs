@@ -1,13 +1,20 @@
-//! Transform bake (decision 511): node paint transforms folded into
-//! op geometry at plan-build time.
+//! Transform bake (decisions 511 + 517): node paint transforms folded into
+//! op geometry at plan-build time, with rotation riding per-op.
 //!
 //! The shared builder emits each node's own ops contiguously, so
 //! folding the node's accumulated scale+translate affine into those
 //! ops is splice-safe (per-node runs carry their baked numbers — no
 //! stack pairing to break across incremental rebuilds) and agrees by
 //! construction on CPU and GPU (both consume the same plan — zero
-//! raster changes on either backend). Identity is a strict no-op, so
+//! raster changes on either backend for ST). Identity is a strict no-op, so
 //! untransformed plans stay byte-identical.
+//!
+//! Rotation (decision 517) does NOT bake into geometry — the
+//! [`PaintXf`] residual (`full ∘ st⁻¹`, identity for ST-only chains)
+//! stamps onto each op in the same per-node range (same splice
+//! safety) and backends apply it at paint time (CPU temp-layer
+//! detour for the manual helpers, GPU instance rotation, DOM
+//! `rotate()`).
 //!
 //! Canonical semantics (SPEC §Transitions): scale about the
 //! committed-box center, then translate — baked here as a concrete
@@ -22,12 +29,19 @@
 //! [`scale_path_data`] (translation cancels out of the data — only
 //! the op origin moves).
 
-use oppa::{AffineST, DrawOp};
+use oppa::{AffineST, DrawOp, PaintXf};
 
 /// Fold `acc` into a node's freshly emitted ops (the
-/// `plan.ops[start..]` range of one `emit_node_ops` call). Identity
-/// returns without touching a number.
-pub fn bake_ops(ops: &mut [DrawOp], acc: AffineST) {
+/// `plan.ops[start..]` range of one `emit_node_ops` call) and stamp
+/// the rotation residual (decision 517). Identity ST returns without
+/// touching geometry; identity residual stamps nothing (unrotated
+/// plans stay byte-identical — the stamp is a no-op there).
+pub fn bake_ops(ops: &mut [DrawOp], acc: AffineST, residual: PaintXf) {
+    if !residual.is_identity() {
+        for op in ops.iter_mut() {
+            op.set_xf(residual);
+        }
+    }
     if acc.is_identity() {
         return;
     }

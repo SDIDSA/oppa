@@ -78,6 +78,8 @@ pub struct MotionState {
     pub spin: Signal<bool>,
     /// Scale one-shot switch (transforms room).
     pub zoom: Signal<bool>,
+    /// Rotate one-shot switch (transforms room, decision 517).
+    pub twist: Signal<bool>,
 }
 
 impl Props for MotionState {}
@@ -89,7 +91,7 @@ pub fn room_need(key: &str) -> &'static str {
             "Staggered card entrances — live since decision 512 (fade + rise, per-card delay)."
         }
         "transforms" => {
-            "Translate/scale loops + one-shots — live since decision 511 (rotate is T1b)."
+            "Translate/scale/rotate loops + one-shots — live since decisions 511 + 517."
         }
         "springs" => "Spring overshoot + settle — live since decision 513 (canonical underdamped curve).",
         "micro" => "Press/hover tweens — live since decision 514 (Button, Checkbox, menu rows, tooltip fade).",
@@ -140,11 +142,12 @@ fn with_keyframes(base: StyleBuilder, kf: &Option<Keyframes>) -> StyleBuilder {
     }
 }
 
-/// Live transforms room (decision 511): looping translate tracks on
-/// a rect leaf plus text + vector leaves (wrappers carry the shared
-/// track — proving accumulation), and a scale one-shot on a second
-/// rect. All durations/easings ride the shared params; committed
-/// boxes never move (paint-only — the headless suite pins it).
+/// Live transforms room (decisions 511 + 517): looping translate
+/// tracks on a rect leaf plus text + vector leaves (wrappers carry
+/// the shared track — proving accumulation), a rotation loop on a
+/// third rect, and scale + rotate one-shots. All durations/easings
+/// ride the shared params; committed boxes never move (paint-only —
+/// the headless suite pins it).
 fn TransformsRoom(ctx: &Ctx, state: &MotionState) -> VNode {
     let dur = state.duration_ms.get().max(0.0) as u32;
     let ease = ease_of(state.ease_idx.get() % EASE_NAMES.len());
@@ -192,6 +195,37 @@ fn TransformsRoom(ctx: &Ctx, state: &MotionState) -> VNode {
     .debug("motion-xf-zoom");
     let zoom_xf = if zoomed {
         Transform::scale(1.6, 1.6)
+    } else {
+        Transform::identity()
+    };
+    // Rotation loop (decision 517): oscillates ±45° while the loops
+    // play (same play switch, same legs — rotation is a first-class
+    // track now, raw-lerped with no shortest-arc).
+    let rot_kf = || {
+        Keyframes::new(vec![
+            KeyframeStop::new(leg, ease).transform(Transform::rotate(-45)),
+            KeyframeStop::new(leg, ease).transform(Transform::rotate(45)),
+        ])
+        .mode(KeyframeMode::Loop)
+    };
+    let rot_target = if spinning {
+        Transform::rotate(45)
+    } else {
+        Transform::identity()
+    };
+    let rot_kfs = if spinning { Some(rot_kf()) } else { None };
+    let twist_sig = state.twist.clone();
+    let twisted = state.twist.get();
+    let twist_btn = ButtonProps::new(
+        if twisted { "Twist 0°" } else { "Twist 90°" },
+        move || {
+            twist_sig.set(!twist_sig.get());
+        },
+    )
+    .size(120.0, 40.0)
+    .debug("motion-xf-twist");
+    let twist_xf = if twisted {
+        Transform::rotate(90)
     } else {
         Transform::identity()
     };
@@ -245,12 +279,34 @@ fn TransformsRoom(ctx: &Ctx, state: &MotionState) -> VNode {
                                 .transition(Transition::new(dur, ease)),
                         )
                         .build(),
+                    Div("motion-xf-spin-rect")
+                        .style(with_keyframes(
+                            Style::new()
+                                .square(60)
+                                .bg(t.primary)
+                                .radius(12)
+                                .transform(rot_target)
+                                .transition(Transition::new(dur, ease)),
+                            &rot_kfs,
+                        ))
+                        .build(),
+                    Div("motion-xf-twist-rect")
+                        .style(
+                            Style::new()
+                                .square(60)
+                                .bg(t.primary_pressed)
+                                .radius(12)
+                                .transform(twist_xf)
+                                .transition(Transition::new(dur, ease)),
+                        )
+                        .build(),
                 ]),
             Row("motion-xf-controls")
                 .style(Style::new().gap(8))
                 .children([
                     ctx.child_auto(&play, Button),
                     ctx.child_auto(&zoom_btn, Button),
+                    ctx.child_auto(&twist_btn, Button),
                 ]),
         ])
 }
@@ -712,6 +768,7 @@ pub fn motion_root(ctx: &Ctx, _props: &()) -> VNode {
         ease_idx: ctx.signal(0usize),
         spin: ctx.signal(false),
         zoom: ctx.signal(false),
+        twist: ctx.signal(false),
     };
     ctx.child_auto(&state, MotionApp)
 }

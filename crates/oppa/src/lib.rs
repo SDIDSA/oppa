@@ -107,8 +107,8 @@ pub use store::{
 };
 pub use style::{
     AffineST, AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack,
-    IntoPx, JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, Px,
-    RadialGradient, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens, Transform, Transition,
+    IntoPx, JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, PaintXf,
+    Px, RadialGradient, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens, Transform, Transition,
 };
 pub use system_theme::{ScriptedThemeSource, SystemThemeSource};
 pub use text::{
