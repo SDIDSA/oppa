@@ -82,7 +82,9 @@ impl Default for BatchCollector {
 }
 
 fn to_rgba_f32(c: Color, opacity: f32) -> [f32; 4] {
-    let a = opacity.clamp(0.0, 1.0);
+    // Style opacity multiplies the color's own alpha (24-bit colors
+    // ride full opacity — see `Color::alpha_u8`).
+    let a = opacity.clamp(0.0, 1.0) * f32::from(c.alpha_u8()) / 255.0;
     let r = ((c.0 >> 16) & 0xFF) as f32 / 255.0;
     let g = ((c.0 >> 8) & 0xFF) as f32 / 255.0;
     let b = (c.0 & 0xFF) as f32 / 255.0;
@@ -480,4 +482,28 @@ fn push_image(
         instances: idx..idx + 1,
         image_id,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgba_multiplies_opacity_by_color_alpha() {
+        // Opaque colors ride opacity alone (every pre-alpha scene).
+        let solid = to_rgba_f32(Color(0xFF_6E_A0_FF), 1.0);
+        assert_eq!(solid, [110.0 / 255.0, 160.0 / 255.0, 1.0, 1.0]);
+        // 24-bit literals stay fully opaque (the codebase-wide shape).
+        let short = to_rgba_f32(Color(0x22_66_CC), 0.5);
+        assert_eq!(short[3], 0.5);
+        // Translucent colors multiply through (the placeholder path).
+        let dim = to_rgba_f32(Color(0x59_FF_FF_FF), 1.0);
+        assert!((dim[3] - 0x59 as f32 / 255.0).abs() < 1e-6, "{dim:?}");
+        assert_eq!(&dim[0..3], &[1.0, 1.0, 1.0]);
+        let dimmed = to_rgba_f32(Color(0x59_FF_FF_FF), 0.5);
+        assert!(
+            (dimmed[3] - 0.5 * 0x59 as f32 / 255.0).abs() < 1e-6,
+            "{dimmed:?}"
+        );
+    }
 }

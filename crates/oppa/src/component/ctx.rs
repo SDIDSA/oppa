@@ -290,6 +290,14 @@ impl Ctx {
         self.host.caption_hover()
     }
 
+    /// Maximized window state (decision 495): tracked, default
+    /// `false` (desktop runners publish the live OS state;
+    /// headless loops never maximize). `CaptionButtons` reads it to
+    /// swap the maximize glyph for the restore glyph.
+    pub fn maximized(&self) -> Signal<bool> {
+        self.host.maximized()
+    }
+
     /// Product editing session over an author-owned content signal (G1,
     /// decision 205): `let field = ctx.edit_session(ctx.signal("".into()))`.
     /// Per-instance, keyed by call-site (same re-seed rule as

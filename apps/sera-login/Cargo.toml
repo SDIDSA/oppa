@@ -16,6 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 oppa = { path = "../../crates/oppa" }
 oppa-controls = { path = "../../crates/oppa-controls" }
+oppa-fonts = { path = "../../crates/oppa-fonts" }
 oppa-image = { path = "../../crates/oppa-image" }
 
 # Browser binding only (wasm-bindgen emits JS imports that cannot

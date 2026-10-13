@@ -1,40 +1,58 @@
 //! Sera-style dental sign-in page — the app, written once.
 //!
-//! A two-pane sign-in card over a dark page: saved-login shortcuts on
-//! the left, the email/password form on the right. Only `oppa` +
-//! `oppa-controls` vocabulary (signals, `Row`/`Column`/`Div`/`Text`,
-//! `TextInput` with validation marks, `Checkbox`, `Button`). No `cfg`,
+//! A centered two-pane sign-in card over a dark page: saved-login
+//! shortcuts on the left, the email/password form on the right, a
+//! copyright line under the card. Only `oppa` + `oppa-controls`
+//! vocabulary (signals, `Row`/`Column`/`Div`/`Text`, `ScrollArea`,
+//! `TextInput` in shared [`FieldChrome`](oppa_controls::FieldChrome),
+//! `Checkbox`, branded [`Button`](oppa_controls::Button)), no `cfg`,
 //! no shell/renderer/file/clipboard imports, so this file compiles
 //! unchanged into every runner:
 //!
-//! - Desktop (Windows + Linux): `src/main.rs` mounts `sera_root`
-//!   via `run_desktop` — run with `cargo run`.
+//! - Desktop (Windows + Linux): `src/main.rs` mounts
+//!   `sera_extended_root` via `run_desktop_with` under the
+//!   `Extended` window style (bare native frame — no in-app bar, so
+//!   the page is flexible space, card, and footer) — run with
+//!   `cargo run`.
 //! - Web: `src/lib.rs` exports `sera_root` via `export_app!` — run
 //!   with `cargo oppa serve`.
 //! - Android: mount `sera_root` through the shared runner (see the
 //!   `login` app README for the recipe; needs a device).
 //!
-//! Fidelity notes (deliberate approximations, never silent): all
-//! eight icons are Remix Icon v4.9.1 `line` glyphs (© Remix Design,
-//! Apache-2.0 — see the Icons section below for the file list) as
-//! filled `Path` leaves. Note the GPU backend tessellates paths at
-//! `sample_count: 1` (no MSAA), so filled 18–20px glyphs read clean
-//! while hairline strokes would crunch — the pack's filled outlines
-//! are exactly the right shape for it. The sign-in button is a
-//! hand-rolled press `Row` (dark ink on blue needs app colors the
-//! themed `Button` cannot take). The `Checkbox` keeps themed fills (a
-//! half shade off the reference — accepted).
+//! Copy keys (`login_*`) resolve to inline English — no i18n infra
+//! exists yet: `login_saved_logins` / `login_saved_logins_extended`
+//! (left head), `login_sign_in` / `login_sign_in_extended` (right
+//! head), `login_save_login` (remember-me), `login_signup_link`
+//! ("New clinic? …"), `login_delete` ("Delete" trash tooltip),
+//! `login_copyright` + `APP_NAME` (footer).
+//!
+//! Fidelity notes (deliberate approximations, never silent): the
+//! four Remix Icon v4.9.1 `line` glyphs (© Remix Design, Apache-2.0)
+//! plus the vendored dentacore tooth mark render as filled `Path`
+//! leaves through the shared [`VectorIcon`](oppa_controls::VectorIcon)
+//! helper (parsed + scaled by [`Path::from_svg`](oppa::Path::from_svg)).
+//! Note the GPU backend tessellates paths with 4x MSAA, so the filled
+//! outlines read clean. The sign-in button is the themed `Button`
+//! control with brand overrides (periwinkle fill, dark-navy ink,
+//! 12px radius, full-width label centering). The `Checkbox` keeps
+//! themed fills (a half shade off the reference — accepted, stated
+//! here). The trash tooltip is the `Tooltip` control (`Above`,
+//! `instant`, error-red card).
 
 // Control components are `CamelCase` functions by framework convention
 // (`#[component] fn Name` — M2 authoring surface).
 #![allow(non_snake_case)]
 
 use oppa::{
-    AlignItems, Color, Column, Ctx, CursorIcon, Div, ImageCache, JustifyContent, Path, Portal,
-    Props, Row, Semantics, SharedString, Signal, Style, Text, ThemeMode, VNode,
+    AlignItems, Color, Column, Ctx, CursorIcon, Div, FontWeight, ImageCache, JustifyContent, Path,
+    Portal, Props, Row, ScrollArea, Semantics, SharedString, Signal, Style, Text, TextClass,
+    ThemeMode, VNode,
 };
 
-use oppa_controls::{with_ink, Checkbox, CheckboxProps, TextInput, TextInputProps};
+use oppa_controls::{
+    Button, ButtonProps, CaptionOutbox, Checkbox, CheckboxProps, FieldChrome, HeaderBar,
+    HeaderBarProps, Link, LinkProps, TextInput, TextInputProps, Tooltip, TooltipProps, VectorIcon,
+};
 
 // ---------------------------------------------------------------------------
 // Palette — every literal sampled off the reference screenshot (median
@@ -45,27 +63,52 @@ use oppa_controls::{with_ink, Checkbox, CheckboxProps, TextInput, TextInputProps
 // shade deeper than the reference — accepted, stated here).
 // ---------------------------------------------------------------------------
 
-const PAGE: Color = Color(0xFF_191D23);
-const CARD: Color = Color(0xFF_25272C);
-const EDGE: Color = Color(0xFF_34383E);
-const DIVIDER: Color = Color(0xFF_34383E);
-const ROW_BG: Color = Color(0xFF_171A1E);
-const ROW_EDGE: Color = Color(0xFF_3C3F44);
+/// Base sheet, opaque: #0d0d0d blended 8% toward #8FB0E6. This is
+/// what you mostly see — and both gradient rims dissolve into it.
+const PAGE: Color = Color(0xFF_171A1E);
+/// Card fill (the layering reads window < card < rows/fields).
+const CARD: Color = Color(0xFF_26272C);
+/// Default border color: every outline (card, rows, fields, divider)
+/// rides 1.3px of this.
+const EDGE: Color = Color(0xFF_3A3B42);
+/// Saved-row + input fill (one token for both — rows and fields
+/// share the primary surface).
+const ROW_BG: Color = Color(0xFF_17181C);
+/// Saved-row hover: `ROW_BG` tinted 5% toward the primary accent.
+const ROW_HOVER: Color = Color(0xFF_1B1F27);
 const AVATAR_BLUE: Color = Color(0xFF_6BA3FF);
 const AVATAR_PINK: Color = Color(0xFF_FF7F7F);
 const AVATAR_INK: Color = Color(0xFF_171A1E);
-const LINK: Color = Color(0xFF_6BA3FF);
 const WHITE: Color = Color(0xFF_FF_FF);
-/// Subtitles, field labels, checkbox-adjacent copy.
-const TEXT_DIM: Color = Color(0xFF_D7D7D7);
-/// Roles, footer, trash mark.
+/// Secondary text: subtitles, field labels, footer.
+const TEXT_DIM: Color = Color(0xFF_D0D0D0);
+/// Muted text: roles, trash mark.
+const ROLE_TEXT: Color = Color(0xFF_B8B8B8);
+/// Tertiary text + icons: the top-bar wordmark and cluster.
+const TERTIARY: Color = Color(0xFF_9AA0A8);
+/// Synced-state network mark (soft teal-green).
+const CLOUD_GREEN: Color = Color(0xFF_5AC8A0);
+/// Trash idle mark.
 const TEXT_FAINT: Color = Color(0xFF_919191);
-const INPUT_BG: Color = Color(0xFF_171A1E);
-const INPUT_EDGE: Color = Color(0xFF_2E3238);
+const INPUT_BG: Color = Color(0xFF_17181C);
 const INPUT_FOCUS: Color = Color(0xFF_548DEB);
-const BUTTON_BG: Color = Color(0xFF_6BA3FF);
+/// Leading field icons (envelope / lock).
+const FIELD_ICON: Color = Color(0xFF_B0B6BE);
+/// Placeholder ink: primary white dimmed to 30% — faint hint
+/// text, clearly below every other ink on the form.
+const PLACEHOLDER: Color = Color(0x4D_FF_FF_FF);
+const BUTTON_BG: Color = Color(0xFF_6EA0FF);
 const BUTTON_PRESS: Color = Color(0xFF_548DEB);
-const BUTTON_INK: Color = Color(0xFF_171A1E);
+const BUTTON_INK: Color = Color(0xFF_182338);
+/// Bottom-left glow, opaque center: normalized primary #6BA3FF
+/// (#2974EE after dark-mode normalization) washed 93% toward the
+/// base. Painted with the base as its rim stop — over the flat base
+/// that composites exactly like a feather into transparency.
+const CLOUD_PRIMARY: Color = Color(0xFF_1D242E);
+/// Top-right glow, opaque center: derived accent #FDC76F (the
+/// complement #FFB133 of the primary, normalized again) washed 93%
+/// toward the base. Same base-rim treatment as above.
+const CLOUD_ACCENT: Color = Color(0xFF_272624);
 
 // ---------------------------------------------------------------------------
 // Pure validation (host-testable, no UI dependency)
@@ -155,207 +198,127 @@ pub fn default_logins() -> Vec<SavedLogin> {
     ]
 }
 
+/// App name (`APP_NAME` in the copy keys — the footer composes
+/// `login_copyright` around it).
+pub const APP_NAME: &str = "Sera";
+
+/// App typography scale (one-liners over the `Text` builder — size +
+/// weight + ink chain inline, no wrapper helper needed).
 fn label(text: &str, size: u16, color: Color) -> VNode {
-    with_ink(VNode::from(Text::new(text).size(size).bold()), color)
+    Text::new(text).size(size).bold().ink(color).into()
+}
+
+/// Medium label (row names, roles, field labels —
+/// `FontWeight::MEDIUM`, the spec weight between regular and bold).
+fn label_med(text: &str, size: u16, color: Color) -> VNode {
+    Text::new(text)
+        .size(size)
+        .weight(FontWeight::MEDIUM)
+        .ink(color)
+        .into()
+}
+
+/// Semi-bold label (field labels, saved-row names, button text —
+/// `FontWeight::SEMI_BOLD`; the framework has no fractional sizes,
+/// so 13.5px specs land on 14px).
+fn label_sb(text: &str, size: u16, color: Color) -> VNode {
+    Text::new(text)
+        .size(size)
+        .weight(FontWeight::SEMI_BOLD)
+        .ink(color)
+        .into()
 }
 
 fn caption(text: &str) -> VNode {
-    with_ink(VNode::from(Text::new(text).size(13)), TEXT_DIM)
+    Text::new(text).size(14).ink(TEXT_DIM).into()
 }
 
 // ---------------------------------------------------------------------------
 // Icons — Remix Icon v4.9.1 (© Remix Design, Apache-2.0;
 // https://github.com/Remix-Design/remixicon/blob/master/LICENSE).
-// Rendered as native `Path` leaves (decision 291) at exact 1× target sizes
-// (20px top-bar/inputs, 18px submit/trash). Vector paths are rendered
-// directly by each backend without minification aliasing: inline <svg>
-// on Web, tiny-skia on CPU, and Lyon tessellation on GPU.
+// Rendered as native `Path` leaves through the shared `VectorIcon`
+// helper (single-path SVG parsed + scaled by `Path::from_svg`).
 // ---------------------------------------------------------------------------
-
-/// Specification for a single native vector icon.
-#[derive(Clone, Debug, PartialEq)]
-pub struct IconSpec {
-    pub debug: &'static str,
-    pub data: SharedString,
-    pub color: Color,
-    pub size: f32,
-}
-
-impl IconSpec {
-    /// Constructs an `IconSpec` by parsing SVG markup (e.g. from `include_str!("../icons/foo.svg")`),
-    /// extracting its `<path d="...">` and `viewBox`, and scaling the vector coordinates
-    /// to the requested `target_size`.
-    pub fn from_svg(debug: &'static str, svg: &str, target_size: f32, color: Color) -> Self {
-        let (view_w, path_d) = extract_svg_path(svg)
-            .unwrap_or_else(|| panic!("failed to extract path from SVG for {debug}"));
-        let scale = if view_w > 0.0 {
-            target_size / view_w
-        } else {
-            1.0
-        };
-        let scaled = scale_svg_path(&path_d, scale);
-        Self {
-            debug,
-            data: SharedString::from(scaled),
-            color,
-            size: target_size,
-        }
-    }
-
-    /// Constructs an `IconSpec` from an SVG file path on disk (native desktop/test targets).
-    #[allow(dead_code)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_file(debug: &'static str, file_path: &str, target_size: f32, color: Color) -> Self {
-        let content = std::fs::read_to_string(file_path)
-            .unwrap_or_else(|e| panic!("failed to read SVG file at {file_path} for {debug}: {e}"));
-        Self::from_svg(debug, &content, target_size, color)
-    }
-}
-
-/// Helper to extract viewBox width and path data `d` from single-path SVG markup.
-fn extract_svg_path(svg: &str) -> Option<(f32, String)> {
-    let view_w = if let Some(vb_start) = svg.find("viewBox=\"") {
-        let vb_val = &svg[vb_start + 9..];
-        if let Some(vb_end) = vb_val.find('"') {
-            let parts: Vec<&str> = vb_val[..vb_end].split_whitespace().collect();
-            if parts.len() == 4 {
-                parts[2].parse::<f32>().ok().unwrap_or(24.0)
-            } else {
-                24.0
-            }
-        } else {
-            24.0
-        }
-    } else {
-        24.0
-    };
-
-    let d_start = svg.find(" d=\"")?;
-    let d_val = &svg[d_start + 4..];
-    let d_end = d_val.find('"')?;
-    let path_d = d_val[..d_end].to_string();
-
-    Some((view_w, path_d))
-}
-
-/// Scales SVG path coordinates by `scale`.
-fn scale_svg_path(d: &str, scale: f32) -> String {
-    let bytes = d.as_bytes();
-    let mut out = String::with_capacity(d.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b.is_ascii_whitespace() || b == b',' {
-            if !out.is_empty() && !out.ends_with(' ') {
-                out.push(' ');
-            }
-            i += 1;
-            while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b',') {
-                i += 1;
-            }
-        } else if b.is_ascii_alphabetic() {
-            if !out.is_empty() && !out.ends_with(' ') {
-                out.push(' ');
-            }
-            out.push(b as char);
-            out.push(' ');
-            i += 1;
-        } else if b.is_ascii_digit() || b == b'.' || b == b'-' || b == b'+' {
-            let start = i;
-            if b == b'-' || b == b'+' {
-                i += 1;
-            }
-            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
-                i += 1;
-            }
-            if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
-                i += 1;
-                if i < bytes.len() && (bytes[i] == b'-' || bytes[i] == b'+') {
-                    i += 1;
-                }
-                while i < bytes.len() && bytes[i].is_ascii_digit() {
-                    i += 1;
-                }
-            }
-            let s = std::str::from_utf8(&bytes[start..i]).unwrap_or("0");
-            let val: f32 = s.parse().unwrap_or(0.0);
-            let scaled = val * scale;
-            let formatted = format!("{scaled:.4}");
-            let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
-            if !out.is_empty() && !out.ends_with(' ') {
-                out.push(' ');
-            }
-            out.push_str(trimmed);
-        } else {
-            i += 1;
-        }
-    }
-    out.trim().to_string()
-}
 
 /// Native vector icon set.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Icons {
-    pub mail: IconSpec,
-    pub lock: IconSpec,
-    pub trash: IconSpec,
-    pub login: IconSpec,
-    pub bell: IconSpec,
-    pub info: IconSpec,
-    pub cloud: IconSpec,
-    pub more: IconSpec,
+    pub mail: VectorIcon,
+    pub lock: VectorIcon,
+    pub trash: VectorIcon,
+    pub login: VectorIcon,
+    pub bell: VectorIcon,
+    pub info: VectorIcon,
+    pub cloud: VectorIcon,
+    pub more: VectorIcon,
+    pub logo: VectorIcon,
 }
 
 /// Returns the native vector icons parsed and scaled from the vendored SVG files.
+/// Field glyphs ride 18px boxes (~15px ink); trash and the button
+/// glyph ride 20px (~17px ink); the top-bar cluster rides 16px boxes
+/// (~14px ink) in tertiary, except the network mark which keeps its
+/// synced-state green; the dentacore tooth rides 20px in tertiary. (Remix glyph ink fills ~5/6 of the 24px
+/// viewBox, so ink reads ~3px smaller than the box — boxes are sized
+/// up to compensate.)
 pub fn default_icons() -> Icons {
     Icons {
-        mail: IconSpec::from_svg(
+        mail: VectorIcon::from_svg(
             "sera-icon-mail",
             include_str!("../icons/mail.svg"),
-            20.0,
-            TEXT_FAINT,
+            18.0,
+            FIELD_ICON,
         ),
-        lock: IconSpec::from_svg(
+        lock: VectorIcon::from_svg(
             "sera-icon-lock",
             include_str!("../icons/lock.svg"),
-            20.0,
-            TEXT_FAINT,
+            18.0,
+            FIELD_ICON,
         ),
-        trash: IconSpec::from_svg(
+        trash: VectorIcon::from_svg(
             "sera-icon-trash",
             include_str!("../icons/trash.svg"),
-            18.0,
+            20.0,
             TEXT_FAINT,
         ),
-        login: IconSpec::from_svg(
+        login: VectorIcon::from_svg(
             "sera-icon-login",
             include_str!("../icons/login.svg"),
-            18.0,
+            20.0,
             BUTTON_INK,
         ),
-        bell: IconSpec::from_svg(
+        bell: VectorIcon::from_svg(
             "sera-icon-bell",
             include_str!("../icons/bell.svg"),
-            20.0,
-            TEXT_DIM,
+            16.0,
+            TERTIARY,
         ),
-        info: IconSpec::from_svg(
+        info: VectorIcon::from_svg(
             "sera-icon-info",
             include_str!("../icons/info.svg"),
-            20.0,
-            TEXT_DIM,
+            16.0,
+            TERTIARY,
         ),
-        cloud: IconSpec::from_svg(
+        cloud: VectorIcon::from_svg(
             "sera-icon-cloud",
             include_str!("../icons/cloud.svg"),
-            20.0,
-            TEXT_DIM,
+            16.0,
+            CLOUD_GREEN,
         ),
-        more: IconSpec::from_svg(
+        more: VectorIcon::from_svg(
             "sera-icon-more",
             include_str!("../icons/more.svg"),
+            16.0,
+            TERTIARY,
+        ),
+        // Dentacore tooth mark (vendored from the dentacore app —
+        // group/path transforms flattened into the coordinates, so
+        // the loader's viewBox scaling lands it exactly).
+        logo: VectorIcon::from_svg(
+            "sera-icon-logo",
+            include_str!("../icons/logo.svg"),
             20.0,
-            TEXT_DIM,
+            TERTIARY,
         ),
     }
 }
@@ -366,159 +329,143 @@ pub fn deposit_icons(_images: &ImageCache) -> Icons {
     default_icons()
 }
 
-/// One vector icon as a native `Path` leaf (decision 291).
-fn icon(_ctx: &Ctx, spec: &IconSpec, alt: &str, size: f32) -> VNode {
-    let mut vnode = Path::new(spec.debug)
-        .data(&spec.data)
-        .fill(spec.color)
-        .size(size, size)
-        .build();
-    if let VNode::Element(ref mut el) = vnode {
-        if !alt.is_empty() {
-            el.semantics = Some(Semantics::default().label(alt));
-        }
-    }
-    vnode
+/// The dentacore tooth mark in the bar: the vendored `icons/logo.svg`
+/// (transforms flattened into the path at vendor time) rendered as a
+/// native 20px `Path` leaf in the tertiary bar ink.
+fn logo_mark(icons: &Icons) -> VNode {
+    Row("sera-bar-mark")
+        .style(Style::new().square(20).center())
+        .child(icons.logo.leaf("Sera logo"))
 }
 
-/// Top-bar icon box: 30px bordered square centering one baked glyph.
-fn sys_box(debug: &str, glyph: VNode) -> VNode {
-    Row(debug)
-        .style(
-            Style::new()
-                .size(30, 30)
-                .radius(8)
-                .border(1, EDGE)
-                .align_items(AlignItems::Center)
-                .justify_content(JustifyContent::Center),
-        )
-        .child(glyph)
-}
-
-/// Exact sign-in button: blue fill, radius 10, dark label + exit icon.
-/// A hand-rolled press `Row` (not the themed `Button` control) because
-/// the reference ink is near-black on blue while the control paints
-/// themed secondary. Measured layout: the icon sits at 17px left
-/// padding while the label centers on the FULL button width — built
-/// with symmetric 35px insets (17 pad + 18 icon left, 18 spacer + 17
-/// pad right) so the middle column lands exactly on center. Press
-/// ownership still yields the Tab stop and Enter/Space activation with
-/// `button` semantics; the fill deepens while held.
-fn signin_button(ctx: &Ctx, glyph: VNode, on_press: impl Fn() + 'static) -> VNode {
-    let pressed = ctx.pressed().get();
-    Row("sera-submit")
+/// Top header bar (shared by both window frames): a thin transparent
+/// strip pinned to the very top, full window width — the blurred page
+/// background shows through it. Left group (7 top / 8 right / 6
+/// bottom / 8 left pads, 5px gap): the 20px dentacore tooth mark
+/// plus the 16px SemiBold tertiary app name (capitalized `Sera`);
+/// right group pinned top-right (2px top/right pads, 10px gaps):
+/// bell, info, network status, overflow, plus a 0-wide end spacer.
+/// Everything handlerless (click-through), so the whole strip drags
+/// the OS window under the `Extended` frame; native buttons stay
+/// collapsed (height 0 — this strip alone is the chrome).
+fn sera_bar(icons: &Icons) -> VNode {
+    Row("sera-bar")
         .style(
             Style::new()
                 .fill_width()
-                .h(44)
-                .bg(if pressed { BUTTON_PRESS } else { BUTTON_BG })
-                .radius(10)
-                .cursor(CursorIcon::Pointer)
-                .pad_x(17)
-                .align_items(AlignItems::Center),
+                .align_items(AlignItems::Center)
+                .justify_content(JustifyContent::SpaceBetween),
         )
-        .semantics(Semantics::button().label("Sign in"))
-        .on_press(on_press)
         .children([
-            glyph,
-            Column::new()
-                .style(Style::new().flex_grow(1.0).align_items(AlignItems::Center))
-                .children([with_ink(
-                    VNode::from(Text::new("Sign in").size(15).bold()),
-                    BUTTON_INK,
-                )]),
-            Div("sera-submit-pad")
-                .style(Style::new().size(18, 18))
-                .build(),
+            Row("sera-bar-brand")
+                .style(
+                    Style::new()
+                        .pad_trbl(7, 8, 6, 8)
+                        .gap(5)
+                        .align_items(AlignItems::Center),
+                )
+                .children([logo_mark(icons), label_sb("Sera", 16, TERTIARY)]),
+            Row("sera-bar-sys")
+                .style(
+                    Style::new()
+                        .pad_top(2)
+                        .pad_right(2)
+                        .gap(10)
+                        .align_items(AlignItems::Center),
+                )
+                .children([
+                    Row("sys-bell").child(icons.bell.leaf("Notifications")),
+                    Row("sys-info").child(icons.info.leaf("About")),
+                    Row("sys-cloud").child(icons.cloud.leaf("Sync status")),
+                    Row("sys-more").child(icons.more.leaf("More options")),
+                    Div("sera-sys-end").style(Style::new().size(0, 16)).build(),
+                ]),
         ])
 }
 
-/// Exact input chrome: a near-black 48px rounded box holding the icon
-/// slot and a borderless editing field (the `DatePicker` composite
-/// precedent — the field renders seamlessly, the container owns the
-/// box). The chrome owns the invalid edge (error-red while an error
-/// shows, hairline blue-gray otherwise); the message renders under the
-/// box, never inside it — a footer inside the horizontal chrome would
-/// flex-squeeze beside the field. So `TextInputProps.error_message`
-/// stays `None` while `invalid`/`required` still announce through the
-/// field's own semantics.
-#[allow(clippy::too_many_arguments)]
-fn credential_field(
-    ctx: &Ctx,
-    debug: &str,
-    label_text: &str,
-    icon: VNode,
-    field: VNode,
-    error: Option<SharedString>,
-    margin_top: u16,
-    is_focused: bool,
-) -> VNode {
-    let t = ctx.theme().tokens();
-    // Fixed 22px icon slot so both fields' text starts at the same x.
-    let slot = Row(format!("{debug}-slot").as_str())
-        .style(
-            Style::new()
-                .size(22, 30)
-                .align_items(AlignItems::Center)
-                .justify_content(JustifyContent::Center),
-        )
-        .child(icon);
-    let edge_color = if is_focused {
-        INPUT_FOCUS
-    } else if error.is_some() {
-        t.error
-    } else {
-        INPUT_EDGE
-    };
-    let chrome = Row(debug)
-        .style(
-            Style::new()
-                .fill_width()
-                .h(48)
-                .bg(INPUT_BG)
-                .radius(12)
-                .border(if is_focused { 1.5 } else { 1.0 }, edge_color)
-                .pad_x(12)
-                .gap(10)
-                .align_items(AlignItems::Center),
-        )
-        .children([slot, field]);
-    Column::new()
-        .style(Style::new().fill_width().gap(14).margin_top(margin_top))
-        .children(
-            [label(label_text, 13, TEXT_DIM), chrome]
-                .into_iter()
-                .chain(error.map(|msg| with_ink(VNode::from(Text::new(msg).size(12)), t.error))),
-        )
+/// Extended-mode props: the caption outbox plus whether native
+/// buttons exist (desktop `main` drains the outbox through
+/// `run_desktop_with`; web/Android mount `sera_root` with
+/// `Decorated` chrome and never see this).
+#[derive(Clone)]
+pub struct SeraExtendedProps {
+    pub hooks: CaptionOutbox,
+    /// Native caption buttons declared (default true — the OS
+    /// answers first on Windows, the same buttons bridge on Linux;
+    /// false draws no buttons at all).
+    pub native: bool,
 }
 
-/// One saved-login row: avatar monogram + name/role + delete mark. The
-/// row selects (fills the form email); the mark deletes the row. Both
-/// are plain press handlers — no component state, so rows compose
-/// inline and need no `ctx.child` identity. The row root and every
-/// centering box are `Row`s, never `Div`s: `Div` is block-lite
-/// (children stack vertically and flex centering does not apply), so a
-/// `Div` root renders this row as a vertical stack with overflowing
-/// glyphs instead of the horizontal reference row.
-fn saved_row(ctx: &Ctx, state: &SeraState, login: &SavedLogin) -> VNode {
-    let email = state.email.clone();
-    let status = state.status.clone();
+impl Props for SeraExtendedProps {}
+
+/// Exact sign-in button: periwinkle-blue fill, radius 12, dark-navy
+/// label + enter icon. The themed `Button` control with brand
+/// overrides (the reference ink is dark on blue while the default
+/// control paints themed secondary): full-width 44px box, 12px
+/// content pads, label centered on the FULL width (icon left, equal
+/// spacer right), fill deepening while held. Press ownership still
+/// yields the Tab stop and Enter/Space activation.
+fn signin_button(ctx: &Ctx, icons: &Icons, on_press: impl Fn() + 'static) -> VNode {
+    ctx.child_auto(
+        &ButtonProps::new("Sign in", on_press)
+            .debug("sera-submit")
+            .full_width()
+            .height(44.0)
+            .content_pad(12.0)
+            .fill(BUTTON_BG)
+            .pressed_fill(BUTTON_PRESS)
+            .ink(BUTTON_INK)
+            .radius(12.0)
+            .text_style(TextClass::Custom {
+                size_px: 15,
+                weight: FontWeight::SEMI_BOLD,
+            })
+            .vector_icon(&icons.login.data, BUTTON_INK, 20.0)
+            .full_width_label(),
+        Button,
+    )
+}
+
+/// One saved-login row: avatar monogram + name/role + delete mark.
+/// A real component (not inline) so `ctx.hovered()` is per-row:
+/// hovering tints the fill 5% toward the primary accent and swaps
+/// the outline to primary. The row selects (fills the form email);
+/// the mark deletes the row (its own component, so its hover stays
+/// its own, wrapped in an immediate above-placed error-red
+/// `Tooltip`). Roots are `Row`s, never `Div`s: `Div`
+/// is block-lite (children stack vertically and flex centering does
+/// not apply), so a `Div` root renders this row as a vertical stack
+/// with overflowing glyphs instead of the horizontal reference row.
+#[derive(Clone)]
+pub struct SavedRowProps {
+    pub login: SavedLogin,
+    pub state: SeraState,
+}
+
+impl Props for SavedRowProps {}
+
+fn saved_row_view(ctx: &Ctx, props: &SavedRowProps) -> VNode {
+    let login = &props.login;
+    let email = props.state.email.clone();
+    let status = props.state.status.clone();
     let fill = login.email.clone();
     let id = login.id;
     let avatar_bg = if login.blue { AVATAR_BLUE } else { AVATAR_PINK };
     let initials = login.initials.clone();
-    let delete_logins = state.logins.clone();
+    let hovered = ctx.hovered().get();
+    let t = ctx.theme().tokens();
     Row(format!("saved-{id}").as_str())
         .style(
             Style::new()
-                .bg(ROW_BG)
+                .bg(if hovered { ROW_HOVER } else { ROW_BG })
                 .radius(12)
-                .border(1, ROW_EDGE)
-                .pad_x(14)
+                .border(1.3, if hovered { BUTTON_BG } else { EDGE })
+                .pad_x(15)
                 .pad_y(15)
-                .gap(12)
+                .gap(15)
                 .fill_width()
-                .align_items(AlignItems::Center),
+                .align_items(AlignItems::Center)
+                .cursor(CursorIcon::Pointer),
         )
         .on_press(move || {
             email.set(SharedString::from(fill.clone()));
@@ -526,52 +473,94 @@ fn saved_row(ctx: &Ctx, state: &SeraState, login: &SavedLogin) -> VNode {
         })
         .children([
             Row(format!("avatar-{id}").as_str())
-                .style(
-                    Style::new()
-                        .size(42, 42)
-                        .bg(avatar_bg)
-                        .radius(10)
-                        .align_items(AlignItems::Center)
-                        .justify_content(JustifyContent::Center),
-                )
-                .child(with_ink(
-                    VNode::from(Text::new(initials).size(14).bold()),
-                    AVATAR_INK,
-                )),
+                .style(Style::new().square(42).bg(avatar_bg).radius(10).center())
+                .child(Text::new(initials).size(15).bold().ink(AVATAR_INK).into()),
             Column::new()
-                .style(Style::new().flex_grow(1.0).gap(2))
+                .style(Style::new().flex_grow(1.0).gap(3))
                 .children([
-                    with_ink(
-                        VNode::from(Text::new(login.name.as_str()).size(14).bold()),
-                        WHITE,
-                    ),
-                    with_ink(
-                        VNode::from(Text::new(login.role.as_str()).size(12)),
-                        TEXT_FAINT,
-                    ),
+                    label_med(login.name.as_str(), 16, WHITE),
+                    Text::new(login.role.as_str())
+                        .size(12)
+                        .weight(FontWeight::MEDIUM)
+                        .ink(ROLE_TEXT)
+                        .into(),
                 ]),
-            Row(format!("delete-{id}").as_str())
-                .style(
-                    Style::new()
-                        .size(30, 30)
-                        .radius(8)
-                        .align_items(AlignItems::Center)
-                        .justify_content(JustifyContent::Center),
+            ctx.child_auto(
+                &TooltipProps::new(
+                    "Delete",
+                    trash_button,
+                    TrashButtonProps {
+                        icons: props.state.icons.clone(),
+                        id,
+                        logins: props.state.logins.clone(),
+                    },
                 )
-                .on_press(move || {
-                    let kept: Vec<SavedLogin> = delete_logins
-                        .get()
-                        .into_iter()
-                        .filter(|l| l.id != id)
-                        .collect();
-                    delete_logins.set(kept);
-                })
-                .child(icon(ctx, &state.icons.trash, "Remove saved login", 18.0)),
+                .above()
+                .instant()
+                .fill(t.error)
+                .ink(WHITE)
+                .debug(format!("trash-tip-{id}")),
+                Tooltip,
+            ),
         ])
 }
 
-/// The two-pane page over the dark background.
-pub fn SeraApp(ctx: &Ctx, state: &SeraState) -> VNode {
+/// The delete mark: its own component so its hover stays its own —
+/// hovering the 20px trash turns it error-red (the row tint is the
+/// row's business). Wrapped by the row in an immediate above-placed
+/// `Tooltip`, so no per-row tip signals travel the page.
+#[derive(Clone)]
+struct TrashButtonProps {
+    icons: Icons,
+    id: u64,
+    logins: Signal<Vec<SavedLogin>>,
+}
+
+impl Props for TrashButtonProps {}
+
+fn trash_button(ctx: &Ctx, props: &TrashButtonProps) -> VNode {
+    let t = ctx.theme().tokens();
+    let hovered = ctx.hovered().get();
+    let id = props.id;
+    let delete_logins = props.logins.clone();
+    let mut glyph = Path::new("sera-icon-trash")
+        .data(&props.icons.trash.data)
+        .fill(if hovered { t.error } else { TEXT_FAINT })
+        .size(20.0, 20.0)
+        .build();
+    if let VNode::Element(ref mut el) = glyph {
+        el.semantics = Some(Semantics::default().label("Remove saved login"));
+    }
+    Row(format!("delete-{id}").as_str())
+        .style(
+            Style::new()
+                .square(30)
+                .radius(8)
+                .center()
+                .cursor(CursorIcon::Pointer),
+        )
+        .on_press(move || {
+            let kept: Vec<SavedLogin> = delete_logins
+                .get()
+                .into_iter()
+                .filter(|l| l.id != id)
+                .collect();
+            delete_logins.set(kept);
+        })
+        .child(glyph)
+}
+
+/// Split card (shared by the portable `SeraApp` page and the
+/// `Extended` root — one card definition, two window frames).
+/// Split card: saved logins | divider | sign-in form. One
+/// horizontal row, centered content: two fixed 450px panels with
+/// 25px inner padding, 12px between stacked elements, top-aligned;
+/// the 1.3px divider runs full height between them. The left list
+/// scrolls internally (236px viewport = exactly three rows) so the
+/// card follows the right side. Right rhythm: head, 3px, zero-gap
+/// input stack, flexible spacer, button, link. (Submit feedback
+/// lives in the per-field error slots — no bottom status line.)
+fn sera_card(ctx: &Ctx, state: &SeraState) -> VNode {
     let email_err = email_error(&state.email.get());
     let pass_err = password_error(&state.password.get());
     let tried = state.tried.get();
@@ -594,202 +583,213 @@ pub fn SeraApp(ctx: &Ctx, state: &SeraState) -> VNode {
         }
     };
 
-    let mut email_props = TextInputProps::new("Email address", state.email.clone())
+    let email_props = TextInputProps::new("Email address", state.email.clone())
         .placeholder("you@clinic.com")
+        .placeholder_ink(PLACEHOLDER)
         .borderless(true)
-        .focused(state.email_focused.clone());
-    email_props.width = 344.0;
-    email_props.height = 30.0;
-    email_props.debug = SharedString::from("sera-email");
-    email_props.required = true;
-    email_props.invalid = show_email_err.is_some();
-    let mut pass_props = TextInputProps::new("Password", state.password.clone())
+        .style(TextClass::Custom {
+            size_px: 16,
+            weight: FontWeight::NORMAL,
+        })
+        .focused(state.email_focused.clone())
+        .size(344.0, 20.0)
+        .debug("sera-email")
+        .required(true)
+        .invalid(show_email_err.is_some());
+    let pass_props = TextInputProps::new("Password", state.password.clone())
         .placeholder("Enter your password")
+        .placeholder_ink(PLACEHOLDER)
         .masked(true)
         .borderless(true)
-        .focused(state.password_focused.clone());
-    pass_props.width = 344.0;
-    pass_props.height = 30.0;
-    pass_props.debug = SharedString::from("sera-password");
-    pass_props.required = true;
-    pass_props.invalid = show_pass_err.is_some();
+        .style(TextClass::Custom {
+            size_px: 16,
+            weight: FontWeight::NORMAL,
+        })
+        .focused(state.password_focused.clone())
+        .size(344.0, 20.0)
+        .debug("sera-password")
+        .required(true)
+        .invalid(show_pass_err.is_some());
 
-    let status_text = state.status.get();
-    let status_clone = status_text.clone();
     let new_clinic = state.status.clone();
     let logins = state.logins.get();
 
-    let mut rows: Vec<VNode> = Vec::with_capacity(logins.len());
-    for login in &logins {
-        rows.push(saved_row(ctx, state, login));
-    }
+    let rows: Vec<VNode> = logins
+        .iter()
+        .map(|login| {
+            ctx.child_auto(
+                &SavedRowProps {
+                    login: login.clone(),
+                    state: state.clone(),
+                },
+                saved_row_view,
+            )
+        })
+        .collect();
 
-    // Top bar: wordmark left, Remix icon cluster right.
-    let top = Row("sera-top")
+    let list = ScrollArea("sera-saved-list")
+        .style(Style::new().fill_width().h(236).gap(10))
+        .on_scroll(|| {})
+        .children(rows);
+    Row("sera-card")
         .style(
             Style::new()
-                .fill_width()
-                .pad_x(20)
-                .pad_y(14)
-                .justify_content(JustifyContent::SpaceBetween)
-                .align_items(AlignItems::Center),
+                .bg(CARD)
+                .radius(20)
+                .border(1.3, EDGE)
+                .align_items(AlignItems::Start)
+                .justify_content(JustifyContent::Center),
         )
         .children([
-            Row("sera-brand")
-                .style(Style::new().gap(10).align_items(AlignItems::Center))
-                .children([
-                    Row("sera-mark")
-                        .style(
-                            Style::new()
-                                .size(26, 26)
-                                .circle()
-                                .bg(WHITE)
-                                .align_items(AlignItems::Center)
-                                .justify_content(JustifyContent::Center),
-                        )
-                        .child(with_ink(VNode::from(Text::new("S").size(13).bold()), PAGE)),
-                    label("Sera", 16, WHITE),
-                ]),
-            Row("sera-sys")
-                .style(Style::new().gap(8).align_items(AlignItems::Center))
-                .children([
-                    sys_box(
-                        "sys-bell",
-                        icon(ctx, &state.icons.bell, "Notifications", 20.0),
-                    ),
-                    sys_box("sys-info", icon(ctx, &state.icons.info, "About", 20.0)),
-                    sys_box(
-                        "sys-cloud",
-                        icon(ctx, &state.icons.cloud, "Sync status", 20.0),
-                    ),
-                    sys_box(
-                        "sys-more",
-                        icon(ctx, &state.icons.more, "More options", 20.0),
-                    ),
-                ]),
-        ]);
-
-    // Split card: saved logins | divider | sign-in form. Vertical
-    // rhythm is measured off the reference (title→subtitle 18,
-    // subtitle→rows 27 with 10px row gaps; head 0, email 28, password
-    // 21, checkbox 30, button 21, link 22, status 10).
-    let card = Row("sera-card")
-        .style(Style::new().bg(CARD).radius(16).border(1, EDGE))
-        .children([
             Column::new()
-                .style(Style::new().w(460).pad_x(30).pad_y(32).gap(27))
+                .style(
+                    Style::new()
+                        .w(450)
+                        .pad_x(25)
+                        .pad_top(25)
+                        .pad_bottom(25)
+                        .gap(12),
+                )
                 .children([
                     Column::new()
-                        .style(Style::new().fill_width().gap(18))
+                        .style(Style::new().fill_width().gap(12))
                         .children([
                             label("Saved Logins", 18, WHITE),
                             caption("Choose from your previously saved login credentials"),
                         ]),
-                    Column::new()
-                        .style(Style::new().fill_width().gap(10))
-                        .children(rows),
+                    Div("sera-list-fill")
+                        .style(Style::new().fill_width().flex_grow(1.0))
+                        .build(),
+                    list,
                 ]),
             Div("sera-divider")
-                .style(Style::new().w(1).fill_height().bg(DIVIDER).margin_y(30))
+                .style(Style::new().w(1.3).fill_height().bg(EDGE))
                 .build(),
             Column::new()
-                .style(Style::new().w(460).pad_x(30).pad_y(32).gap(0))
+                .style(
+                    Style::new()
+                        .w(450)
+                        .pad_x(25)
+                        .pad_top(25)
+                        .pad_bottom(25)
+                        .gap(12),
+                )
                 .children([
                     Column::new()
-                        .style(Style::new().fill_width().gap(18))
+                        .style(Style::new().fill_width().gap(12))
                         .children([
                             label("Sign in", 18, WHITE),
                             caption("Enter your credentials"),
                         ]),
-                    credential_field(
-                        ctx,
-                        "sera-email-chrome",
-                        "Email address",
-                        icon(ctx, &state.icons.mail, "Email", 20.0),
-                        ctx.child_auto(&email_props, TextInput),
-                        show_email_err,
-                        28,
-                        state.email_focused.get(),
-                    ),
-                    credential_field(
-                        ctx,
-                        "sera-password-chrome",
-                        "Password",
-                        icon(ctx, &state.icons.lock, "Password", 20.0),
-                        ctx.child_auto(&pass_props, TextInput),
-                        show_pass_err,
-                        21,
-                        state.password_focused.get(),
-                    ),
-                    Div("sera-save-wrap")
-                        .style(Style::new().fill_width().margin_top(30))
-                        .child(ctx.child_auto(
-                            &CheckboxProps {
-                                label: SharedString::from("Save login for future use"),
-                                checked: state.save.clone(),
-                                enabled: true,
-                                on_change: None,
-                                invalid: false,
-                                required: false,
-                                error_message: None,
-                                helper_text: None,
-                            },
-                            Checkbox,
-                        )),
-                    Div("sera-submit-wrap")
-                        .style(Style::new().fill_width().margin_top(21))
-                        .child(signin_button(
-                            ctx,
-                            icon(ctx, &state.icons.login, "Sign in", 18.0),
-                            on_sign_in,
-                        )),
-                    Div("sera-new")
-                        .style(Style::new().fill_width().margin_top(22))
-                        .on_press(move || {
-                            new_clinic.set(SharedString::from(
-                                "Clinic creation is not part of this demo",
-                            ));
-                        })
-                        .child(with_ink(
-                            VNode::from(Text::new("New clinic? Create one here").size(13)),
-                            LINK,
-                        )),
-                    Div("sera-status-wrap")
-                        .style(Style::new().fill_width().margin_top(10))
-                        .child(with_ink(
-                            VNode::from(Text::new(status_clone).size(13)),
-                            TEXT_DIM,
-                        )),
+                    // The 3px strip proper: with the panel's
+                    // 12px rhythm above and below, the
+                    // subtitle floats exactly 27px over the
+                    // email label on bare secondary.
+                    Div("sera-head-strip")
+                        .style(Style::new().fill_width().h(3))
+                        .build(),
+                    Column::new()
+                        .style(Style::new().fill_width().gap(0))
+                        .children([
+                            FieldChrome::new("sera-email-chrome", "Email address")
+                                .label_ink(TEXT_DIM)
+                                .chrome_bg(INPUT_BG)
+                                .edge(EDGE)
+                                .edge_focused(INPUT_FOCUS)
+                                .build(
+                                    ctx,
+                                    state.icons.mail.leaf("Email"),
+                                    ctx.child_auto(&email_props, TextInput),
+                                    show_email_err,
+                                    state.email_focused.get(),
+                                ),
+                            FieldChrome::new("sera-password-chrome", "Password")
+                                .label_ink(TEXT_DIM)
+                                .chrome_bg(INPUT_BG)
+                                .edge(EDGE)
+                                .edge_focused(INPUT_FOCUS)
+                                .build(
+                                    ctx,
+                                    state.icons.lock.leaf("Password"),
+                                    ctx.child_auto(&pass_props, TextInput),
+                                    show_pass_err,
+                                    state.password_focused.get(),
+                                ),
+                            ctx.child_auto(
+                                &CheckboxProps {
+                                    label: SharedString::from("Save login for future use"),
+                                    checked: state.save.clone(),
+                                    enabled: true,
+                                    on_change: None,
+                                    invalid: false,
+                                    required: false,
+                                    error_message: None,
+                                    helper_text: None,
+                                    box_px: 18.0,
+                                    box_radius: 5.0,
+                                    label_style: TextClass::Custom {
+                                        size_px: 14,
+                                        weight: FontWeight::NORMAL,
+                                    },
+                                    label_ink: Some(TEXT_DIM),
+                                    check_ink: Some(PAGE),
+                                    check_scale: 0.85,
+                                },
+                                Checkbox,
+                            ),
+                        ]),
+                    Div("sera-form-fill")
+                        .style(Style::new().fill_width().flex_grow(1.0))
+                        .build(),
+                    signin_button(ctx, &state.icons, on_sign_in),
+                    // Indented 5px like the field labels, with a little
+                    // extra air below the button (12 rhythm + 6).
+                    Row("sera-new-row")
+                        .style(Style::new().fill_width().pad_left(5).margin_top(6))
+                        .child(
+                            ctx.child_auto(
+                                &LinkProps::new("New clinic? Create one here", move || {
+                                    new_clinic.set(SharedString::from(
+                                        "Clinic creation is not part of this demo",
+                                    ));
+                                })
+                                .style(TextClass::Custom {
+                                    size_px: 13,
+                                    weight: FontWeight::NORMAL,
+                                })
+                                // Dark-mode normalized primary — vivid on
+                                // dark, exactly as specified.
+                                .ink(Color(0xFF_6BA3FF))
+                                .debug("sera-new"),
+                                Link,
+                            ),
+                        ),
                 ]),
-        ]);
+        ])
+}
 
-    let foot_row = Row("sera-foot")
-        .style(
-            Style::new()
-                .fill_width()
-                .pad_y(22)
-                .justify_content(JustifyContent::Center),
-        )
-        .children([with_ink(
-            VNode::from(
-                Text::new("© 2025 Sera. Professional dental practice management.").size(12),
-            ),
-            TEXT_FAINT,
-        )]);
-
-    // Page chrome: the top bar (14px pads + 30px boxes = 58px) and
-    // the footer (22px pads + 14px caption = 58px) are equal height
-    // by construction, and the whole page rides ONE viewport-tall
-    // column inside a `Portal`: portal children lay out against the
-    // live viewport height (decision 296), so `SpaceBetween` pins the
-    // bar top, the caption bottom, and the card on the TRUE viewport
-    // center at any window size — plain flow cannot do this (flex
-    // shares and justification only engage under an explicit height,
-    // and the engine hands the root a `None` height hint, so a flow
-    // middle never grows and the card packs under the bar). The
-    // reference holds its card within 1px of center with the caption
-    // ~27px above the bottom edge, which equal chrome reproduces.
-    // Overflow packs top (negative leftover clamps to zero gaps).
+/// The centered page (shared by the portable `SeraApp` and the
+/// `Extended` root — one layout, two chromes). One viewport-tall
+/// column inside a `Portal` (portal children lay out against the
+/// live viewport height, decision 296): equal flex fillers above and
+/// below push the card to the middle at any window size, the footer
+/// rides under the card with 20px to the bottom edge. Plain flow
+/// cannot do this (flex shares only engage under an explicit height,
+/// and the engine hands the root a `None` height hint). Overflow
+/// packs top.
+fn sera_page(ctx: &Ctx, header: VNode, card: VNode) -> VNode {
+    let mut children = sera_hazes(ctx);
+    children.extend([
+        header,
+        Div("sera-fill-top")
+            .style(Style::new().fill_width().flex_grow(1.0))
+            .build(),
+        card,
+        Div("sera-fill-bottom")
+            .style(Style::new().fill_width().flex_grow(1.0))
+            .build(),
+        sera_foot(),
+    ]);
     Portal("sera-page").child(
         Column::new()
             .style(
@@ -797,17 +797,126 @@ pub fn SeraApp(ctx: &Ctx, state: &SeraState) -> VNode {
                     .bg(PAGE)
                     .fill_width()
                     .fill_height()
-                    .align_items(AlignItems::Center)
-                    .justify_content(JustifyContent::SpaceBetween)
-                    .pad_x(24),
+                    .align_items(AlignItems::Center),
             )
-            .children([top, card, foot_row]),
+            .children(children),
     )
 }
 
-/// Self-owned root for real runners (`()` props): desktop
-/// `run_desktop`, web `export_app!`, Android `mount_app` all mount
-/// exactly this. Pins the dark palette (the reference is one fixed
+/// Portable page (system window chrome outside, no in-app bar — web,
+/// Android, and headless all mount exactly this).
+pub fn SeraApp(ctx: &Ctx, state: &SeraState) -> VNode {
+    sera_page(ctx, sera_bar(&state.icons), sera_card(ctx, state))
+}
+
+/// Full-window backdrop clouds: one viewport-sized radial fill per
+/// corner, sized from the live viewport (radius = 0.7 × shortest
+/// side, so ~539px on the 1400×770 window) — a true gradient from
+/// the washed center out to the base, expanded by the shared builder
+/// into solid-circle steps (native `radial-gradient` on DOM). Both
+/// boxes are handlerless out-of-flow (`x`/`absolute_y` directly under
+/// the page column, whose content origin is the viewport origin), so
+/// they never disturb layout and every click falls through to the
+/// app. They paint first (below the bar, the card, and any toast).
+/// The falloff completes far past every window edge (centers sit
+/// 30px in with r ≈ 539), so the surface edge never cuts it.
+fn sera_hazes(ctx: &Ctx) -> Vec<VNode> {
+    let (vw, vh) = ctx.host().viewport_size();
+    let r = 0.7 * vw.min(vh);
+    vec![
+        Div("sera-haze-blue")
+            .style(Style::new().size(vw, vh).x(0.0).absolute_y(0.0).bg_radial(
+                30.0,
+                vh - 30.0,
+                r,
+                CLOUD_PRIMARY,
+                PAGE,
+            ))
+            .build(),
+        Div("sera-haze-olive")
+            .style(Style::new().size(vw, vh).x(0.0).absolute_y(0.0).bg_radial(
+                vw - 30.0,
+                30.0,
+                r,
+                CLOUD_ACCENT,
+                PAGE,
+            ))
+            .build(),
+    ]
+}
+
+/// Page footer caption (shared by both window frames):
+/// `login_copyright` + `APP_NAME` in small secondary text, centred,
+/// riding 12px under the card with 20px to the window bottom.
+fn sera_foot() -> VNode {
+    Row("sera-foot")
+        .style(
+            Style::new()
+                .fill_width()
+                .margin_top(12)
+                .pad_bottom(20)
+                .justify_content(JustifyContent::Center),
+        )
+        .child(
+            Text::new(format!(
+                "© 2025 {APP_NAME}. Professional dental practice management."
+            ))
+            .size(13)
+            .ink(TEXT_DIM)
+            .into(),
+        )
+}
+
+/// The `Extended` desktop root (`SeraExtendedProps` props): the bare
+/// native frame with the custom top strip as its only chrome — the
+/// strip identifies as the `HeaderBar` drag trait (transparent,
+/// click-through, full window width) with no native buttons declared
+/// (height 0). The page below is flexible space, the centered card,
+/// and the footer (see `sera_page` for the layout contract). The
+/// caption outbox is still published (the desktop poll hook in
+/// `main.rs` drains it), but with no buttons declared the signals
+/// never arm. Web/Android keep mounting `sera_root` (`Decorated`,
+/// browser/OS chrome, no in-app header).
+pub fn sera_extended_root(ctx: &Ctx, props: &SeraExtendedProps) -> VNode {
+    if ctx.host().theme().mode() != ThemeMode::Dark {
+        ctx.host().set_theme(ThemeMode::Dark);
+    }
+    let state = SeraState {
+        email: ctx.signal(SharedString::from("")),
+        password: ctx.signal(SharedString::from("")),
+        save: ctx.signal(true),
+        tried: ctx.signal(false),
+        status: ctx.signal(SharedString::from("")),
+        logins: ctx.signal(default_logins()),
+        icons: deposit_icons(&ctx.images()),
+        email_focused: ctx.signal(false),
+        password_focused: ctx.signal(false),
+    };
+    // Level-triggered caption requests (drained exactly once by the
+    // desktop poll hook in `main.rs` — the shared `CaptionOutbox`
+    // shape). Retained for the bridge shape, though nothing arms them
+    // on this barless design.
+    let minimize = ctx.signal(false);
+    let maximize = ctx.signal(false);
+    let close = ctx.signal(false);
+    props
+        .hooks
+        .publish(minimize.clone(), maximize.clone(), close.clone());
+    let bar_icons = state.icons.clone();
+    let header_props = HeaderBarProps::new().content(move |_ctx| sera_bar(&bar_icons));
+    // Same centered layout as the portable page (see `sera_page`).
+    sera_page(
+        ctx,
+        ctx.child_auto(&header_props, HeaderBar),
+        sera_card(ctx, &state),
+    )
+}
+
+/// Self-owned portable root (`()` props): web `export_app!`,
+/// Android `mount_app`, and headless all mount exactly this
+/// (`Decorated` frame — system chrome outside, `sera_top_bar` app
+/// bar inside). The desktop binary mounts `sera_extended_root`
+/// instead. Pins the dark palette (the reference is one fixed
 /// dark design): the conditional set converges after one re-render —
 /// a tracked read with no write once dark.
 pub fn sera_root(ctx: &Ctx, _props: &()) -> VNode {

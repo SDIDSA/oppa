@@ -103,6 +103,47 @@ pub(super) fn emit_shape(
     }
 }
 
+/// Two-stop radial gradient as 1-device-px concentric solid-circle
+/// steps (Round 27.2, decision 507): `n = round(r)` discs, largest
+/// first in the rim color down to a ~1px center disc — the linear
+/// strip doctrine applied radially (shared builder code over the
+/// same solid-circle path the oracles prove exact, so all backends
+/// agree by construction; native interpolation stays a follow-up).
+/// Colors lerp in sRGB rounded to the nearest step; the rim lands
+/// exactly on `r` and the center exactly on `from` (no drift).
+#[allow(clippy::too_many_arguments)] // one call site; a params struct buys nothing
+pub(super) fn emit_radial(
+    plan: &mut FramePlan,
+    id: NodeId,
+    x: f32,
+    y: f32,
+    g: oppa::RadialGradient,
+    opacity: f32,
+) {
+    let r = g.r.get();
+    if r <= 0.0 {
+        return;
+    }
+    let (cx, cy) = (x + g.cx.get(), y + g.cy.get());
+    let n = r.round().max(1.0) as usize;
+    for k in 0..n {
+        // Descending radii: the k-th disc covers everything inside
+        // `rad`, painted over the larger (rim-closer) ones.
+        let rad = r * (n - k) as f32 / n as f32;
+        if rad <= 0.0 {
+            continue;
+        }
+        let color = lerp_color(g.from, g.to, rad / r);
+        plan.ops.push(DrawOp::Circle {
+            node: id,
+            cx,
+            cy,
+            r: rad,
+            color,
+            opacity,
+        });
+    }
+}
 /// Two-stop linear gradient as 1-device-px solid strips (Round 1.3,
 /// decision 254): `n = round(span)` strips along the axis, strip colors
 /// lerped in sRGB and rounded to the nearest step. Shared builder code

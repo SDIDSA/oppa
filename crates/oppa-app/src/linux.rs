@@ -875,6 +875,14 @@ impl winit::application::ApplicationHandler for LinuxRunner {
         if self.loop_.host().take_close_request() && self.loop_.close_requested() {
             event_loop.exit();
         }
+        // Decision 495: the maximized state follows the live window
+        // (the caption glyph swaps on it — change-gated inside, so
+        // steady state never re-renders).
+        if let Some(window) = self.window.as_ref() {
+            self.loop_
+                .host()
+                .set_maximized(window.window().is_maximized());
+        }
         // X11 selection serving (Round 2.2, OQ-G3-1): answer peer
         // requests without blocking; while our clipboard owns a
         // servable selection, wake periodically so another app's
@@ -950,30 +958,63 @@ pub fn run_linux<P: Props>(
         std::env::set_var("DISPLAY", ":0");
     }
 
-    // System text service first (loud when the system has no fonts —
-    // the demo's policy, kept: a window without text is a lie).
-    let (texts, skipped) =
-        LinuxTextService::system().map_err(|e| format!("oppa-app: linux fonts: {e}"))?;
-    if !skipped.is_empty() {
-        eprintln!("oppa-app: skipped font files: {skipped:?}");
-    }
-    let families = texts.families().to_vec();
-    let family = ["DejaVu Sans", "Ubuntu", "Noto Sans"]
-        .into_iter()
-        .find(|f| families.iter().any(|g| g == f))
-        .ok_or_else(|| "oppa-app: no latin family on system".to_string())?
-        .to_string();
-
-    let all_font_ids = texts.all_font_ids();
-    let mut font_pairs = Vec::with_capacity(all_font_ids.len());
-    for id in all_font_ids {
-        if let Some((bytes, index)) = texts.face_bytes(id) {
-            font_pairs.push((id, bytes.into(), index));
+    // Text service (Round 27.1): app-bundled fonts replace the
+    // system service — the app shapes, measures, and rasterizes
+    // from its own bytes on every OS, so outlines agree everywhere.
+    // Every bundled face injects into both raster backends before
+    // first paint (same rule as the system set below). Without
+    // `app_fonts` this stays the shipped system path.
+    let (service, family, mut app_font_pairs): (
+        Box<dyn oppa::text::TextService>,
+        String,
+        Vec<(oppa::text::FontId, std::sync::Arc<[u8]>, u32)>,
+    ) = match &options.app_fonts {
+        Some(app_fonts) => {
+            let svc =
+                oppa_text_rustybuzz::RustybuzzService::from_bytes_with_chain(app_fonts.faces, &[])
+                    .map_err(|e| format!("oppa-app: app fonts: {e}"))?
+                    .0;
+            let mut pairs = Vec::new();
+            for id in svc.all_font_ids() {
+                if let Some((bytes, index)) = svc.face_bytes(id) {
+                    pairs.push((id, bytes, index));
+                }
+            }
+            if pairs.is_empty() {
+                return Err(
+                    "oppa-app: app fonts produced no faces — refused, never silent".to_string(),
+                );
+            }
+            (Box::new(svc), app_fonts.family.to_string(), pairs)
         }
-    }
+        None => {
+            // System text service first (loud when the system has no fonts —
+            // the demo's policy, kept: a window without text is a lie).
+            let (texts, skipped) =
+                LinuxTextService::system().map_err(|e| format!("oppa-app: linux fonts: {e}"))?;
+            if !skipped.is_empty() {
+                eprintln!("oppa-app: skipped font files: {skipped:?}");
+            }
+            let families = texts.families().to_vec();
+            let family = ["DejaVu Sans", "Ubuntu", "Noto Sans"]
+                .into_iter()
+                .find(|f| families.iter().any(|g| g == f))
+                .ok_or_else(|| "oppa-app: no latin family on system".to_string())?
+                .to_string();
+
+            let all_font_ids = texts.all_font_ids();
+            let mut font_pairs = Vec::with_capacity(all_font_ids.len());
+            for id in all_font_ids {
+                if let Some((bytes, index)) = texts.face_bytes(id) {
+                    font_pairs.push((id, bytes.into(), index));
+                }
+            }
+            (Box::new(texts), family, font_pairs)
+        }
+    };
 
     let mut runner = LinuxRunner {
-        loop_: DesktopLoop::new(options.width, options.height, Box::new(texts), &family)?,
+        loop_: DesktopLoop::new(options.width, options.height, service, &family)?,
         shell: LinuxShell::new(ShellConfig {
             title: options.title.clone(),
             density: 1.0,
@@ -988,12 +1029,12 @@ pub fn run_linux<P: Props>(
         window_control: LinuxWindowControl::new(),
     };
 
-    // Inject raster faces for all system font ids (decision 278 —
+    // Inject raster faces for every service face (decision 278 —
     // both backends via `DesktopLoop::set_font_for`): bold text and
     // chevrons rasterize real glyph outlines on the CPU pixmap and
     // on the GPU twin instead of advance-cell bars /
     // loud-no-face refusals.
-    for (id, bytes, index) in font_pairs {
+    for (id, bytes, index) in std::mem::take(&mut app_font_pairs) {
         runner.loop_.set_font_for(id, bytes, index);
     }
 

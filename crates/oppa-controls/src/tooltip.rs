@@ -9,6 +9,13 @@ use oppa_macros::Props;
 /// Tooltip props (Round 17.3, decision 319): wraps author content,
 /// opens an anchored portal tooltip card after `delay_ms` dwell
 /// (default 500ms), and dismisses on hover-leave or press.
+///
+/// Placement + tint overrides (decision 510 — the sera-login
+/// hand-rolled delete tip, now expressible): `Above` pins the card
+/// over the anchor (trash tooltips float 6px above the mark),
+/// `fill`/`ink` recolor the card (error-red deletes), and
+/// [`instant`](TooltipProps::instant) skips the dwell. All three
+/// default off — unset tooltips keep the exact pre-510 tree.
 #[derive(Clone, Props)]
 pub struct TooltipProps<C> {
     pub tip: SharedString,
@@ -16,6 +23,20 @@ pub struct TooltipProps<C> {
     pub content_props: C,
     pub delay_ms: u64,
     pub debug: SharedString,
+    pub placement: TooltipPlacement,
+    pub fill: Option<Color>,
+    pub ink: Option<Color>,
+}
+
+/// Tip card placement relative to its anchor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TooltipPlacement {
+    /// Below the anchor, 4px under its bottom edge (default — the
+    /// shipped placement).
+    #[default]
+    Below,
+    /// Above the anchor, 6px over its top edge (delete-mark tips).
+    Above,
 }
 
 impl<C> TooltipProps<C> {
@@ -30,6 +51,9 @@ impl<C> TooltipProps<C> {
             content_props,
             delay_ms: 500,
             debug: SharedString::from("tooltip"),
+            placement: TooltipPlacement::Below,
+            fill: None,
+            ink: None,
         }
     }
 
@@ -40,6 +64,39 @@ impl<C> TooltipProps<C> {
 
     pub fn debug(mut self, debug: impl Into<SharedString>) -> Self {
         self.debug = debug.into();
+        self
+    }
+
+    /// Pins the card above the anchor (see
+    /// [`Above`](TooltipPlacement::Above)).
+    pub fn above(mut self) -> Self {
+        self.placement = TooltipPlacement::Above;
+        self
+    }
+
+    /// Pins the card below the anchor (the default).
+    pub fn below(mut self) -> Self {
+        self.placement = TooltipPlacement::Below;
+        self
+    }
+
+    /// Skips the hover dwell (the tip opens on the first hovered
+    /// frame — immediate affordances like delete marks).
+    pub fn instant(mut self) -> Self {
+        self.delay_ms = 0;
+        self
+    }
+
+    /// Card fill override (default `None` — the theme `surface`).
+    pub fn fill(mut self, fill: Color) -> Self {
+        self.fill = Some(fill);
+        self
+    }
+
+    /// Card text-ink override (default `None` — the theme
+    /// `text_primary`).
+    pub fn ink(mut self, ink: Color) -> Self {
+        self.ink = Some(ink);
         self
     }
 }
@@ -123,13 +180,16 @@ pub fn Tooltip<C: Props>(ctx: &Ctx, props: &TooltipProps<C>) -> VNode {
     }
 
     let anchor_box = host.committed_box_by_debug(&anchor_label);
-    let ay_off = anchor_box.as_ref().map(|b| b.h + 4.0).unwrap_or(28.0);
+    let ay_off = match props.placement {
+        TooltipPlacement::Below => anchor_box.as_ref().map(|b| b.h + 4.0).unwrap_or(28.0),
+        TooltipPlacement::Above => anchor_box.as_ref().map(|_| -6.0).unwrap_or(-34.0),
+    };
 
     let popup = if open.get() {
         let card = Div("tooltip-card")
             .style(
                 Style::new()
-                    .bg(t.surface)
+                    .bg(props.fill.unwrap_or(t.surface))
                     .border(1, t.border)
                     .radius(4)
                     .pad_x(8)
@@ -141,7 +201,7 @@ pub fn Tooltip<C: Props>(ctx: &Ctx, props: &TooltipProps<C>) -> VNode {
                     text: props.tip.clone(),
                     style: Text::body_secondary,
                 }),
-                t.text_primary,
+                props.ink.unwrap_or(t.text_primary),
             ));
         // Viewport-edge clamping (Round 21.3, decision 330): flip
         // above/left when the settled card would overflow the
@@ -150,7 +210,9 @@ pub fn Tooltip<C: Props>(ctx: &Ctx, props: &TooltipProps<C>) -> VNode {
         // unplaced; the placed pass commits and never reads settled
         // again — a persistent generation subscription here spins
         // exactly like Menu's did (re-render re-dirties layout
-        // through the content child).
+        // through the content child). `Above` anchors 6px over the
+        // anchor top instead of 4px under its bottom (same clamp —
+        // the card never leaves the viewport either way).
         let (vw, vh) = host.viewport_size();
         let (wx, wy) = anchor_box
             .as_ref()
@@ -158,6 +220,7 @@ pub fn Tooltip<C: Props>(ctx: &Ctx, props: &TooltipProps<C>) -> VNode {
             .unwrap_or((0.0, 0.0));
         let tplaced = ctx.signal(None::<((f32, f32), SharedString, (f32, f32))>);
         let tip_key = props.tip.clone();
+        let placement = props.placement;
         let origin = match tplaced.get() {
             Some((w0, t0, o)) if w0 == (wx, wy) && t0 == tip_key => o,
             _ => match host
@@ -166,7 +229,11 @@ pub fn Tooltip<C: Props>(ctx: &Ctx, props: &TooltipProps<C>) -> VNode {
             {
                 None => (0.0, ay_off),
                 Some((cw, ch)) => {
-                    let (cx, cy) = menu::clamp_popup_anchor((vw, vh), (wx, wy + ay_off), (cw, ch));
+                    let anchor_pt = match placement {
+                        TooltipPlacement::Below => (wx, wy + ay_off),
+                        TooltipPlacement::Above => (wx, wy - ch - 6.0),
+                    };
+                    let (cx, cy) = menu::clamp_popup_anchor((vw, vh), anchor_pt, (cw, ch));
                     let o = (cx - wx, cy - wy);
                     if tplaced.get() != Some(((wx, wy), tip_key.clone(), o)) {
                         tplaced.set(Some(((wx, wy), tip_key.clone(), o)));

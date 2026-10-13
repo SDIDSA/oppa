@@ -129,6 +129,31 @@ impl ComponentHost {
         }
     }
 
+    /// Maximized window state (decision 495): tracked, default
+    /// `false` (headless loops never maximize). `CaptionButtons`
+    /// reads it to swap the maximize glyph for the restore glyph.
+    /// Lazy like the hover signal above.
+    pub fn maximized(&self) -> Signal<bool> {
+        let mut slot = self.inner.maximized_sig.borrow_mut();
+        if let Some(sig) = slot.clone() {
+            return sig;
+        }
+        let sig = self.inner.rt.signal(false);
+        *slot = Some(sig.clone());
+        sig
+    }
+
+    /// Publishes the maximized state (runner-side — desktop pumps
+    /// drain the live OS state per iteration). Change-only (an
+    /// identical re-publish never re-renders — per-pump repeats stay
+    /// free).
+    pub fn set_maximized(&self, maximized: bool) {
+        let sig = self.maximized();
+        if untrack(|| sig.get()) != maximized {
+            sig.set(maximized);
+        }
+    }
+
     /// Queues one scene-toolbar tap (router-side — overlay items
     /// resolve geometrically on the loop thread; the runner drains
     /// per pump and applies through the loop clipboard).

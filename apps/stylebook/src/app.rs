@@ -9,7 +9,9 @@ use oppa::{
     AlignItems, Column, Ctx, Div, JustifyContent, Props, Row, SharedString, Signal, Style, Text,
     VNode, WindowStyle,
 };
-use oppa_controls::{Button, ButtonProps, HeaderBar, HeaderBarProps};
+use oppa_controls::{
+    Button, ButtonProps, CaptionButtons, CaptionButtonsProps, HeaderBar, HeaderBarProps,
+};
 
 /// Display name per style (the window title reuses it).
 pub fn style_title(style: WindowStyle) -> &'static str {
@@ -42,11 +44,15 @@ pub fn style_blurb(style: WindowStyle) -> &'static str {
 /// Move hint per style (decision 482 shape: only `Extended`
 /// publishes an OS drag region — every other style moves through
 /// the system menu, and the card says so instead of leaving a
-/// dead-feeling window).
+/// dead-feeling window; decision 494: `Undecorated` is a bare popup
+/// with no system menu at all, so the taskbar owns it).
 pub fn style_hint(style: WindowStyle) -> &'static str {
     match style {
         WindowStyle::Extended => {
             "drag the bar · double-click it to maximize · right-click it for the system menu"
+        }
+        WindowStyle::Undecorated => {
+            "bare rectangle, no chrome — move and close it from the taskbar"
         }
         _ => "this style never drags — Alt+Space, then M, then arrow keys moves it",
     }
@@ -83,9 +89,10 @@ pub fn parse_style_arg(arg: Option<&str>) -> Result<WindowStyle, String> {
 }
 
 /// Reads the `--native-buttons` opt-in (pure — headless-testable):
-/// present means the OS answers the caption zones first in
-/// `Extended` mode (decision 485); absent keeps the custom bridge
-/// owning every press.
+/// present declares the native caption buttons in `Extended` mode
+/// (decision 485 — the OS answers the zones first on Windows, the
+/// same buttons bridge on Linux); absent draws no buttons at all
+/// (drag-only bar — the native-off shape).
 pub fn parse_native_buttons_flag(args: &[String]) -> bool {
     args.iter().any(|a| a == "--native-buttons")
 }
@@ -121,9 +128,10 @@ impl ChromeHooks {
 }
 
 /// Stylebook props: the launch style (desktop argv selects it; web
-/// and Android mount `Decorated`), whether the OS answers the
-/// caption zones first (decision 485 `--native-buttons` demo — the
-/// card footer names the live mode), plus the caption outbox.
+/// and Android mount `Decorated`), whether the native caption
+/// buttons are declared in `Extended` mode (decision 485
+/// `--native-buttons` demo — the card footer names the live mode;
+/// off means a buttonless drag-only bar), plus the caption outbox.
 #[derive(Clone)]
 pub struct StylebookProps {
     pub style: WindowStyle,
@@ -133,12 +141,14 @@ pub struct StylebookProps {
 
 impl Props for StylebookProps {}
 
-/// One elegant root under every style: an in-app `HeaderBar` where
-/// the OS provides none (frameless modes — `Decorated` keeps the
-/// native title bar with no duplicate chrome), then a centered card
-/// with the style name, its contract, a counter, and the relaunch
-/// hint. The tree paints no page background (the surface clear owns
-/// it — opaque theme color, or the desktop itself on Transparent).
+/// One elegant root under every style: custom `HeaderBar` chrome
+/// where the OS provides none (`Extended` only — `Decorated` keeps
+/// the native title bar with no duplicate chrome, and
+/// `Undecorated`/`Transparent` stay bare rectangles), then a
+/// centered card with the style name, its contract, a counter, and
+/// the relaunch hint. The tree paints no page background (the
+/// surface clear owns it — opaque theme color, or the desktop
+/// itself on Transparent).
 pub fn StylebookRoot(ctx: &Ctx, props: &StylebookProps) -> VNode {
     let style = props.style;
     // Level-triggered caption requests (drained exactly once by the
@@ -204,20 +214,52 @@ pub fn StylebookRoot(ctx: &Ctx, props: &StylebookProps) -> VNode {
                 text: SharedString::from(if props.native {
                     "caption: native OS zones (fallback wired)"
                 } else {
-                    "caption: bridged buttons"
+                    "caption: none (drag-only bar)"
                 }),
                 style: Text::body_secondary,
             }),
         ]);
 
     // A viewport-tall root (decision 476) centers the card at any
-    // window size; the header docks above it in frameless modes.
+    // window size; the custom chrome docks above it in `Extended`
+    // mode only (decision 494 — every other style owns no in-app
+    // chrome at all).
     let mut page: Vec<VNode> = Vec::new();
-    if style.is_frameless() {
-        let header = HeaderBarProps::new(&format!("Stylebook — {}", style_title(style)))
+    if style == WindowStyle::Extended {
+        let declare_buttons = props.native;
+        let buttons = CaptionButtonsProps::new()
             .on_minimize(move || m_min.set(true))
             .on_maximize(move || m_max.set(true))
             .on_close(move || m_close.set(true));
+        let title = format!("Stylebook — {}", style_title(style));
+        let header = HeaderBarProps::new().content(move |ctx| {
+            let surface = ctx.theme().tokens().surface;
+            let title_node = VNode::from(Text::new(title.clone()).size(13));
+            if declare_buttons {
+                Row("stylebook-chrome")
+                    .style(
+                        Style::new()
+                            .fill_width()
+                            .h(40)
+                            .bg(surface)
+                            .align_items(AlignItems::Center)
+                            .justify_content(JustifyContent::SpaceBetween)
+                            .pad_left(12),
+                    )
+                    .children([title_node, ctx.child_auto(&buttons, CaptionButtons)])
+            } else {
+                Row("stylebook-chrome")
+                    .style(
+                        Style::new()
+                            .fill_width()
+                            .h(40)
+                            .bg(surface)
+                            .align_items(AlignItems::Center)
+                            .pad_left(12),
+                    )
+                    .child(title_node)
+            }
+        });
         page.push(ctx.child("stylebook::header", 1, &header, HeaderBar));
     }
     page.push(

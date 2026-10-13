@@ -1,5 +1,6 @@
 use super::*;
 use crate::style::Color;
+use crate::style::Px;
 use crate::text::FontWeight;
 
 #[test]
@@ -165,4 +166,81 @@ fn canvas_with_negative_geometry_panics_loudly() {
     let _ = Canvas::new("neg")
         .rect(0.0, 0.0, -5.0, 10.0, Color(1))
         .build();
+}
+
+/// Decision 510: `Text::new(..).ink(..)` paints through the style
+/// ink (the `with_ink` wrapper as a chain link); unset ink keeps the
+/// theme resolution exactly as before.
+#[test]
+fn text_builder_ink_paints_style_ink() {
+    let v: VNode = Text::new("Hi").size(14).ink(Color(0x11_22_33)).into();
+    match v {
+        VNode::Element(e) => assert_eq!(e.style.ink, Some(Color(0x11_22_33))),
+        _ => panic!("expected element"),
+    }
+    let v: VNode = Text::new("Hi").size(14).into();
+    match v {
+        VNode::Element(e) => assert_eq!(e.style.ink, None, "unset ink stays unset"),
+        _ => panic!("expected element"),
+    }
+}
+
+/// Decision 510: `VNode::with_ink` sets the same field — and refuses
+/// non-element shapes loudly (never an unstyled pass-through).
+#[test]
+fn vnode_with_ink_sets_element_ink() {
+    let v: VNode = Text::new("Hi").size(14).into();
+    match v.with_ink(Color(0xAA_BB_CC)) {
+        VNode::Element(e) => assert_eq!(e.style.ink, Some(Color(0xAA_BB_CC))),
+        _ => panic!("expected element"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "not an element")]
+fn vnode_with_ink_refuses_non_elements() {
+    let _ = VNode::Hole.with_ink(Color(1));
+}
+
+/// Decision 510: `Path::from_svg` extracts single-path SVG markup and
+/// scales its coordinates to the target box (the sera-login hand
+/// parser, now shared) — 24px viewBox to 18px lands every number at
+/// 0.75× with the leaf sized 18×18.
+#[test]
+fn path_from_svg_scales_viewbox_to_target() {
+    let v = Path::new("mail")
+        .from_svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M 0 0 L 24 12 Z\"/></svg>",
+            18.0,
+        )
+        .fill(Color(0xFF_00_FF_00))
+        .build();
+    match v {
+        VNode::Element(e) => {
+            assert_eq!(e.tag, Tag::Path);
+            let spec = e.path.expect("path payload");
+            assert_eq!(&*spec.data, "M 0 0 L 18 9 Z", "coordinates scale 0.75×");
+            assert_eq!(spec.fill, Some(Color(0xFF_00_FF_00)));
+            assert_eq!(
+                (e.style.w, e.style.h),
+                (Some(Px::of(18.0)), Some(Px::of(18.0)))
+            );
+        }
+        _ => panic!("expected element"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "no path data")]
+fn path_from_svg_refuses_missing_path() {
+    let _ = Path::new("empty").from_svg("<svg viewBox=\"0 0 24 24\"></svg>", 18.0);
+}
+
+#[test]
+#[should_panic(expected = "target_size")]
+fn path_from_svg_refuses_nonpositive_target() {
+    let _ = Path::new("flat").from_svg(
+        "<svg viewBox=\"0 0 24 24\"><path d=\"M 0 0 Z\"/></svg>",
+        0.0,
+    );
 }

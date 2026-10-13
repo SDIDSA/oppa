@@ -100,6 +100,29 @@ impl Path {
         self
     }
 
+    /// Single-path SVG markup scaled to a square target box (decision
+    /// 510 — the sera-login hand parser, now shared): extracts
+    /// the `<path d="...">` payload and the `viewBox` width, then
+    /// scales every coordinate by `target_size / view_w` and sizes the
+    /// leaf `target_size × target_size`. Paint still rides
+    /// [`.fill()`](Path::fill)/[`.stroke()`](Path::stroke) (a paintless
+    /// vector refuses loudly at [`.build()`](Path::build), never an
+    /// invisible leaf). Missing path data, a non-positive target, or
+    /// non-finite scaling refuses loudly — a broken vendored asset is
+    /// an authoring bug, never a blank icon.
+    pub fn from_svg(mut self, svg: &str, target_size: f32) -> Self {
+        if !target_size.is_finite() || target_size <= 0.0 {
+            panic!(
+                "oppa::Path {:?}: from_svg target_size is {target_size} — positive finite sizes only",
+                self.debug
+            );
+        }
+        self.data = Some(svg_path_data(svg, target_size, &self.debug));
+        self.style.w = Some(target_size.into_px());
+        self.style.h = Some(target_size.into_px());
+        self
+    }
+
     /// Solid fill paint.
     pub fn fill(mut self, color: Color) -> Self {
         self.fill = Some(color);
@@ -210,6 +233,107 @@ impl Path {
             children: Vec::new(),
         }))
     }
+}
+
+/// Extracts `(viewBox width, path d)` from single-path SVG markup.
+/// Returns `None` when no `d="..."` payload exists (multi-path SVGs
+/// keep only the first — compositing multi-shape icons stays app-side).
+pub fn extract_svg_path(svg: &str) -> Option<(f32, String)> {
+    let view_w = if let Some(vb_start) = svg.find("viewBox=\"") {
+        let vb_val = &svg[vb_start + 9..];
+        if let Some(vb_end) = vb_val.find('"') {
+            let parts: Vec<&str> = vb_val[..vb_end].split_whitespace().collect();
+            if parts.len() == 4 {
+                parts[2].parse::<f32>().ok().unwrap_or(24.0)
+            } else {
+                24.0
+            }
+        } else {
+            24.0
+        }
+    } else {
+        24.0
+    };
+
+    let d_start = svg.find(" d=\"")?;
+    let d_val = &svg[d_start + 4..];
+    let d_end = d_val.find('"')?;
+    let path_d = d_val[..d_end].to_string();
+
+    Some((view_w, path_d))
+}
+
+/// Scales every numeric coordinate in SVG path data by `scale`
+/// (command letters, separators, and exponents pass through —
+/// only the numbers move, so curves keep their shape exactly).
+pub fn scale_svg_path(d: &str, scale: f32) -> String {
+    let bytes = d.as_bytes();
+    let mut out = String::with_capacity(d.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_whitespace() || b == b',' {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b',') {
+                i += 1;
+            }
+        } else if b.is_ascii_alphabetic() {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            out.push(b as char);
+            out.push(' ');
+            i += 1;
+        } else if b.is_ascii_digit() || b == b'.' || b == b'-' || b == b'+' {
+            let start = i;
+            if b == b'-' || b == b'+' {
+                i += 1;
+            }
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+                i += 1;
+                if i < bytes.len() && (bytes[i] == b'-' || bytes[i] == b'+') {
+                    i += 1;
+                }
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            let s = std::str::from_utf8(&bytes[start..i]).unwrap_or("0");
+            let val: f32 = s.parse().unwrap_or(0.0);
+            let scaled = val * scale;
+            let formatted = format!("{scaled:.4}");
+            let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            out.push_str(trimmed);
+        } else {
+            i += 1;
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Parses single-path SVG markup and returns the `viewBox`-scaled
+/// path data for a `target_size` square box (the
+/// [`Path::from_svg`](Path::from_svg) engine — also usable alone when
+/// the data must ride a shared icon struct instead of a leaf).
+/// Panics loudly when no path payload exists or the viewBox width is
+/// not positive finite (never a blank icon).
+pub fn svg_path_data(svg: &str, target_size: f32, debug: &str) -> SharedString {
+    let (view_w, path_d) = extract_svg_path(svg).unwrap_or_else(|| {
+        panic!("oppa::Path {debug:?}: no path data in SVG — single-path markup only")
+    });
+    if !view_w.is_finite() || view_w <= 0.0 {
+        panic!("oppa::Path {debug:?}: SVG viewBox width is {view_w} — positive finite widths only");
+    }
+    SharedString::from(scale_svg_path(&path_d, target_size / view_w))
 }
 
 /// One retained canvas op (Phase 36 PR4, decision 358): local-space

@@ -1,7 +1,7 @@
 use super::*;
 use oppa::ime::ImeCompositionHandler;
 use oppa::input::InputEvent;
-use oppa::{ComponentHost, SharedString};
+use oppa::{ComponentHost, SharedString, Signal, Text};
 
 #[test]
 fn text_input_renders_value_and_semantics() {
@@ -335,4 +335,184 @@ fn text_input_focus_signal_updates_on_focus_and_blur() {
     host.inject_input(InputEvent::Focus { node: None });
     host.run_until_idle();
     assert!(!focused.get(), "blurring updates bound signal to false");
+}
+
+/// Decision 510: the chained `TextInputProps` builders set the same
+/// fields the old post-construction mutation did (no silent default
+/// survives the chain).
+#[test]
+fn text_input_builder_chain_sets_all_fields() {
+    let host = ComponentHost::new();
+    let value = host.runtime().signal(SharedString::from(""));
+    let focused = host.runtime().signal(false);
+    let p = TextInputProps::new("Email", value.clone())
+        .placeholder("you@clinic.com")
+        .placeholder_ink(Color(0x4D_FF_FF_FF))
+        .borderless(true)
+        .style(oppa::TextClass::Custom {
+            size_px: 16,
+            weight: oppa::FontWeight::NORMAL,
+        })
+        .focused(focused.clone())
+        .size(344.0, 20.0)
+        .debug("sera-email")
+        .required(true)
+        .invalid(true)
+        .error_message("Bad email")
+        .helper_text("Help");
+    assert_eq!((p.width, p.height), (344.0, 20.0));
+    assert_eq!(p.debug.as_ref(), "sera-email");
+    assert!(p.required && p.invalid && p.borderless);
+    assert_eq!(p.error_message.as_deref(), Some("Bad email"));
+    assert_eq!(p.helper_text.as_deref(), Some("Help"));
+    assert_eq!(p.placeholder_ink, Some(Color(0x4D_FF_FF_FF)));
+    assert!(p.focused.is_some(), "focus signal binds");
+}
+
+// ---------------------------------------------------------------------------
+// Decision 510: `FieldChrome` composite input chrome
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct ChromeCase {
+    error: Signal<SharedString>,
+    focused: bool,
+}
+impl oppa::Props for ChromeCase {}
+
+fn chrome_render(ctx: &Ctx, p: &ChromeCase) -> VNode {
+    let raw = p.error.get();
+    let error = if raw.is_empty() { None } else { Some(raw) };
+    FieldChrome::new("fc", "Email address")
+        .label_ink(Color(0xFF_D0_D0_D0))
+        .chrome_bg(Color(0xFF_17_18_1C))
+        .edge(Color(0xFF_3A_3B_42))
+        .edge_focused(Color(0xFF_54_8D_EB))
+        .build(
+            ctx,
+            Div("fc-icon").style(Style::new().square(18)).build(),
+            VNode::from(Text::new("x").size(16)),
+            error,
+            p.focused,
+        )
+}
+
+fn mount_chrome(error: &str, focused: bool) -> (ComponentHost, Signal<SharedString>) {
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    host.set_viewport(500.0, 400.0);
+    let err = host.runtime().signal(SharedString::from(error));
+    host.mount(
+        "FC",
+        ChromeCase {
+            error: err.clone(),
+            focused,
+        },
+        chrome_render,
+    );
+    host.run_until_idle();
+    (host, err)
+}
+
+fn chrome_edge(host: &ComponentHost) -> Color {
+    let id = node_by_debug(host, "fc");
+    host.with_retained_mut(|rec, styles| {
+        styles
+            .get(rec.get(id).expect("live chrome").style)
+            .cloned()
+            .unwrap_or_default()
+            .border
+            .expect("chrome edge")
+            .color
+    })
+}
+
+/// The chrome owns the measured box (18px icon slot, 20px-tall
+/// content band, 14px vertical pads): label insets 5px from the
+/// chrome's left edge, the error slot reserves space idle and shows
+/// the message on error, and the edge tracks focus/error/idle.
+#[test]
+fn field_chrome_owns_label_box_and_error_slot() {
+    let (host, _) = mount_chrome("", false);
+    // 18px icon slot, exactly one text line tall band.
+    let slot = host
+        .committed_box(node_by_debug(&host, "fc-slot"))
+        .expect("slot");
+    assert!(
+        approx(slot.w, 18.0) && approx(slot.h, 20.0),
+        "slot 18x20, got {}x{}",
+        slot.w,
+        slot.h
+    );
+    // Chrome pads the content band 14px top/bottom.
+    let chrome = host
+        .committed_box(node_by_debug(&host, "fc"))
+        .expect("chrome");
+    assert!(
+        approx(chrome.h, slot.h + 28.0),
+        "box reads content + pads, got {}",
+        chrome.h
+    );
+    // Label insets 5px from the chrome's left edge (the pad shifts
+    // the text, never the row — so the text leaf proves it).
+    let text_ids = find_retained_by_debug(&host, "text");
+    let label_id = host
+        .with_retained_mut(|rec, _| {
+            text_ids.into_iter().find(|id| {
+                rec.get(*id)
+                    .and_then(|n| n.text.clone())
+                    .is_some_and(|t| &*t == "Email address")
+            })
+        })
+        .expect("label leaf");
+    let label = host.committed_box(label_id).expect("label box");
+    assert!(
+        approx(label.x - chrome.x, 5.0),
+        "label insets 5px, got {}",
+        label.x - chrome.x
+    );
+    // Idle edge is the default border.
+    assert_eq!(chrome_edge(&host), Color(0xFF_3A_3B_42));
+    // The reserved slot renders idle (form never moves).
+    assert!(
+        !find_retained_by_debug(&host, "fc-err").is_empty(),
+        "reserved error slot renders idle"
+    );
+}
+
+/// Focus blues the edge; an error reddens it and shows the message.
+#[test]
+fn field_chrome_edge_tracks_focus_and_error() {
+    let (host, _) = mount_chrome("", true);
+    assert_eq!(
+        chrome_edge(&host),
+        Color(0xFF_54_8D_EB),
+        "focus blues the edge"
+    );
+    // Error state: message line renders under the box.
+    let (host, err) = mount_chrome("", false);
+    err.set(SharedString::from("Bad email"));
+    host.run_until_idle();
+    assert_eq!(
+        chrome_edge(&host),
+        host.theme_tokens().error,
+        "error reddens the edge"
+    );
+    let err_ids = find_retained_by_debug(&host, "fc-err");
+    assert_eq!(err_ids.len(), 1, "one error slot");
+    let shown = host.with_retained_mut(|rec, _| {
+        let mut stack = vec![err_ids[0]];
+        while let Some(cur) = stack.pop() {
+            if let Some(node) = rec.get(cur) {
+                if let Some(ref text) = node.text {
+                    if !text.trim().is_empty() {
+                        return Some(text.clone());
+                    }
+                }
+                stack.extend(node.children.iter().copied());
+            }
+        }
+        None
+    });
+    assert_eq!(shown.as_deref(), Some("Bad email"), "message shows");
 }

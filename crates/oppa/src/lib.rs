@@ -107,8 +107,8 @@ pub use store::{
 };
 pub use style::{
     AlignItems, Border, BorderEdges, Color, CursorIcon, Ease, FlexWrap, GridTrack, IntoPx,
-    JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, Px, Shadow,
-    Style, StyleBuilder, ThemeMode, ThemeTokens, Transition,
+    JustifyContent, KeyframeMode, KeyframeStop, Keyframes, LinearGradient, MsExt, Px,
+    RadialGradient, Shadow, Style, StyleBuilder, ThemeMode, ThemeTokens, Transition,
 };
 pub use system_theme::{ScriptedThemeSource, SystemThemeSource};
 pub use text::{
@@ -118,10 +118,10 @@ pub use text::{
 };
 pub use transition::{ease_at, AnimProp, TransitionEvaluator};
 pub use vnode::{
-    stamp_handler_owner, Canvas, CanvasOp, CanvasSpec, Children, Column, Custom, Div, Element,
-    ElementBuilder, Grid, ImageId, Img, Path, PathSpec, Portal, RichText, Row, ScrollArea,
-    SharedString, Stack, StrokeDesc, Tag, Text, TextArea, TextBuilder, TextClass, TextField,
-    TextSpan, VNode,
+    extract_svg_path, scale_svg_path, stamp_handler_owner, svg_path_data, Canvas, CanvasOp,
+    CanvasSpec, Children, Column, Custom, Div, Element, ElementBuilder, Grid, ImageId, Img, Path,
+    PathSpec, Portal, RichText, Row, ScrollArea, SharedString, Stack, StrokeDesc, Tag, Text,
+    TextArea, TextBuilder, TextClass, TextField, TextSpan, VNode,
 };
 pub use window::{
     drag_regions_for_style, native_caption_zones, title_bar_rect, window_drag_rects, CaptionButton,

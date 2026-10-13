@@ -1029,6 +1029,40 @@ fn resize_callback_skips_quietly_while_state_borrowed() {
     );
 }
 
+/// Decision 498: applied resize steps throttle to ~30Hz — a burst
+/// applies once (mid-frames show the last applied frame cropped,
+/// per the platform compositor, instead of trailing lagging
+/// surfaces) and the next step past the budget applies again.
+/// Margins are wide (back-to-back calls land microseconds apart
+/// against a 33ms budget; the sleeper waits 3x it), so no timing
+/// flake.
+#[test]
+fn resize_callback_throttles_to_frame_budget() {
+    let loop_ =
+        DesktopLoop::new(200, 150, Box::new(FakeText), "Test").expect("headless loop builds");
+    let state = Rc::new(RefCell::new(AppState { loop_, gpu: None }));
+    let cb = make_resize_callback(state.clone(), windows::Win32::Foundation::HWND::default());
+    cb(400, 300);
+    assert_eq!(
+        state.borrow().loop_.viewport(),
+        (400, 300),
+        "first step applies immediately"
+    );
+    cb(401, 300);
+    assert_eq!(
+        state.borrow().loop_.viewport(),
+        (400, 300),
+        "burst step throttles"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    cb(402, 300);
+    assert_eq!(
+        state.borrow().loop_.viewport(),
+        (402, 300),
+        "post-budget step applies"
+    );
+}
+
 #[derive(Clone)]
 struct HeaderCase {
     props: oppa_controls::HeaderBarProps,
@@ -1040,18 +1074,20 @@ fn header_root(ctx: &oppa::Ctx, p: &HeaderCase) -> oppa::VNode {
 }
 
 /// Shared rig for the caption-publish proofs: a headless `Extended`
-/// loop mounting a fully wired `HeaderBar`, synced once into a
-/// hidden `Extended` window (warmup repaint + publish, the runner's
-/// startup shape).
+/// loop mounting custom chrome with fully wired `CaptionButtons`,
+/// synced once into a hidden `Extended` window (warmup repaint +
+/// publish, the runner's startup shape).
 fn header_loop_and_shell() -> (DesktopLoop, Win32Shell) {
     let mut loop_ =
         DesktopLoop::new(400, 300, Box::new(FakeText), "Test").expect("headless loop builds");
     loop_.set_window_style(oppa::WindowStyle::Extended);
     loop_.set_native_caption_buttons(true);
-    let props = oppa_controls::HeaderBarProps::new("T")
+    let buttons = oppa_controls::CaptionButtonsProps::new()
         .on_minimize(|| {})
         .on_maximize(|| {})
         .on_close(|| {});
+    let props = oppa_controls::HeaderBarProps::new()
+        .content(move |ctx| ctx.child_auto(&buttons, oppa_controls::CaptionButtons));
     loop_.mount("Header", HeaderCase { props }, header_root);
     loop_.repaint().expect("warmup repaint works");
     let shell = Win32Shell::new(ShellConfig {

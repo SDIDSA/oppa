@@ -194,6 +194,9 @@ impl DomBackend {
                     if style.bg_gradient.is_some() {
                         panic!("dom sync: bg_gradient on Path node {id:?} — path paint rides data/fill/stroke, never style gradients");
                     }
+                    if style.bg_radial.is_some() {
+                        panic!("dom sync: bg_radial on Path node {id:?} — path paint rides data/fill/stroke, never style gradients");
+                    }
                     if style.shadow.is_some() {
                         panic!("dom sync: shadow on Path node {id:?} — path paint rides data/fill/stroke, never style shadows");
                     }

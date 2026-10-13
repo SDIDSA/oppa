@@ -9,7 +9,9 @@ use tiny_skia::{
 
 use super::FaceBytes;
 pub(super) fn ts_color(c: oppa::Color, opacity: f32) -> TSColor {
-    let a = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    // Style opacity multiplies the color's own alpha (24-bit colors
+    // ride full opacity — see `Color::alpha_u8`).
+    let a = (opacity.clamp(0.0, 1.0) * f32::from(c.alpha_u8())).round() as u8;
     TSColor::from_rgba8(
         ((c.0 >> 16) & 0xFF) as u8,
         ((c.0 >> 8) & 0xFF) as u8,
@@ -222,6 +224,11 @@ pub(super) fn rasterize_glyphs(
         ((ink.0 >> 8) & 0xFF) as f32,
         (ink.0 & 0xFF) as f32,
     );
+    // Ink alpha folds into the coverage product (24-bit inks ride
+    // full opacity — see `Color::alpha_u8`). The premultiplied
+    // identity below (rgb = ink * a_tot, a = 255 * a_tot) holds for
+    // any ink alpha, so translucent glyphs composite exactly.
+    let ink_a = f32::from(ink.alpha_u8()) / 255.0;
     let (w, h) = (pix.width() as i32, pix.height() as i32);
     let data = pix.data_mut();
     let mut done = 0usize;
@@ -235,7 +242,7 @@ pub(super) fn rasterize_glyphs(
         let bounds = outlined.px_bounds();
         let (ox, oy) = (bounds.min.x as i32, bounds.min.y as i32);
         outlined.draw(|dx, dy, cov| {
-            let a_tot = cov * alpha;
+            let a_tot = cov * alpha * ink_a;
             if a_tot <= 0.0 {
                 return;
             }

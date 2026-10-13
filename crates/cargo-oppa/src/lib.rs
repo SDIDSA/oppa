@@ -16,6 +16,8 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod add_font;
+
 /// One embedded template file: path inside the scaffold + contents.
 pub struct TemplateFile {
     /// Scaffold-relative path (`Cargo.toml`, `src/main.rs`, …).
@@ -833,7 +835,10 @@ pub fn parse_adb_devices(output: &str) -> Vec<String> {
 /// Parses one `export_app!(Class, "Title", root)` invocation from a
 /// `src/lib.rs` body (the shape [`export_app`](oppa_web::export_app)
 /// owns — anything else refuses loudly with the expected shape,
-/// never a guessed class name).
+/// never a guessed class name). The 6-argument font arm
+/// (`Class, "Title", root, family, faces, display` — Round 27.1)
+/// parses too: serve only needs the class + title, the font legs
+/// compile through the macro itself.
 pub fn parse_export_app(src: &str) -> Result<(String, String), String> {
     let shape = "export_app!(ClassName, \"Title\", root_fn)";
     let start = src
@@ -877,7 +882,7 @@ pub fn parse_export_app(src: &str) -> Result<(String, String), String> {
     if !closed {
         return Err(format!("malformed export_app! — expected {shape}"));
     }
-    if parts.len() != 2 {
+    if parts.len() != 2 && parts.len() != 5 {
         return Err(format!("malformed export_app! — expected {shape}"));
     }
     let class = parts[0].clone();
@@ -2236,6 +2241,17 @@ mod tests {
         assert!(parse_export_app("fn main() {}").is_err());
         assert!(parse_export_app("export_app!(NoTitle);").is_err());
         assert!(parse_export_app("export_app!(Bad-Name, \"T\", r);").is_err());
+    }
+
+    #[test]
+    fn export_app_parses_font_arm() {
+        // Round 27.1: the 6-argument font arm parses to the same
+        // class + title (serve needs nothing else).
+        let src = "export_app!(\n    SeraWebApp,\n    \"Sera\",\n    app::sera_root,\n    SERA_FONT_FAMILY,\n    SERA_FONT_FACES,\n    SERA_FONT_DISPLAY\n);";
+        let (class, title) = parse_export_app(src).expect("parses");
+        assert_eq!(class, "SeraWebApp");
+        assert_eq!(title, "Sera");
+        assert!(parse_export_app("export_app!(A, \"T\", r, extra);").is_err());
     }
 
     #[test]

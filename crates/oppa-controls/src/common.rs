@@ -1,6 +1,9 @@
 pub const CONTRAST_INK: Color = Color(0xFF_FF_FF);
 
-use oppa::{Color, Ctx, Div, Semantics, SharedString, StyleBuilder, Text, TextClass, VNode};
+use oppa::{
+    AlignItems, Color, Column, Ctx, Div, FontWeight, JustifyContent, Path, Row, Semantics,
+    SharedString, Style, StyleBuilder, Text, TextClass, VNode,
+};
 use std::rc::Rc;
 
 /// Shared press action (`Rc` so props stay `Clone` + `'static` for the
@@ -165,14 +168,12 @@ pub fn dirty_focused_field(host: &oppa::ComponentHost) {
 /// dimming, active-tab ink). Converted leaves always arrive as
 /// `VNode::Element`, so any other shape is a wiring bug and refused
 /// loudly, never passed through unstyled.
+///
+/// Thin delegate over [`VNode::with_ink`](oppa::VNode::with_ink) (decision
+/// 510 — the core now owns it, so hand-built `Text` chains can ink
+/// inline via `Text::new(..).ink(..)` instead of wrapping here).
 pub fn with_ink(vnode: VNode, ink: Color) -> VNode {
-    match vnode {
-        VNode::Element(mut e) => {
-            e.style.ink = Some(ink);
-            VNode::Element(e)
-        }
-        _ => panic!("ink target is not an element — refused, never silent"),
-    }
+    vnode.with_ink(ink)
 }
 
 /// Keyboard-focus ring style (Round 23.2, decision 334): when this
@@ -259,4 +260,277 @@ pub fn field_edge(ctx: &Ctx, invalid: bool) -> Color {
     } else {
         ctx.theme().tokens().border
     }
+}
+
+// ---------------------------------------------------------------------------
+// VectorIcon (decision 510 — the sera-login `IconSpec`, now shared)
+// ---------------------------------------------------------------------------
+
+/// One native vector icon: single-path SVG data scaled to a square
+/// box with its paint ink (decision 291 `Path` leaves — filled
+/// outlines suit the tessellator; every backend renders the same
+/// pixels). `Clone`, so icon sets ride app state like
+/// [`ImageCache`](oppa::ImageCache) ids do.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VectorIcon {
+    pub debug: SharedString,
+    pub data: SharedString,
+    pub color: Color,
+    pub size: f32,
+}
+
+impl VectorIcon {
+    /// Parses single-path SVG markup (`include_str!` of a vendored
+    /// `.svg`), scaling its coordinates to `target_size` (see
+    /// [`Path::from_svg`](oppa::Path::from_svg)). Panics loudly on
+    /// missing path data (never a blank icon).
+    pub fn from_svg(debug: &str, svg: &str, target_size: f32, color: Color) -> Self {
+        Self {
+            debug: SharedString::from(debug),
+            data: oppa::svg_path_data(svg, target_size, debug),
+            color,
+            size: target_size,
+        }
+    }
+
+    /// Loads a single-path SVG file from disk and scales it to
+    /// `target_size` (native desktop/test targets — the browser has
+    /// no filesystem, so `include_str!` + [`from_svg`](Self::from_svg)
+    /// is the portable spelling). Panics loudly on read or parse
+    /// failure (never a blank icon).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_file(debug: &str, file_path: &str, target_size: f32, color: Color) -> Self {
+        let content = std::fs::read_to_string(file_path).unwrap_or_else(|e| {
+            panic!("controls: icon {debug:?} read failed at {file_path} ({e})")
+        });
+        Self::from_svg(debug, &content, target_size, color)
+    }
+
+    /// Renders the icon as a native `Path` leaf with an optional
+    /// accessible label (`""` leaves semantics unset — decorative
+    /// icons are never tab stops).
+    pub fn leaf(&self, alt: &str) -> VNode {
+        let mut vnode = Path::new(&self.debug)
+            .data(&self.data)
+            .fill(self.color)
+            .size(self.size, self.size)
+            .build();
+        if !alt.is_empty() {
+            if let VNode::Element(ref mut el) = vnode {
+                el.semantics = Some(Semantics::default().label(alt));
+            }
+        }
+        vnode
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FieldChrome (decision 510 — the sera-login `credential_field`, now shared)
+// ---------------------------------------------------------------------------
+
+/// Composite input chrome (decision 480's focus-signal rule,
+/// generalized): a labeled container box owning bg/border/radius/pads
+/// around a borderless editing field, with the error line in a slot
+/// below the box (a footer inside the horizontal chrome would
+/// flex-squeeze beside the field — the `DatePicker` precedent).
+/// Plain function vocabulary (`icon`/`field` are move-only `VNode`s,
+/// so this is a builder, not a component — no hover/press state of
+/// its own). Every dimension overrides; defaults reproduce the
+/// sera-login measured chrome (12px left pad, 18px icon slot, 10px
+/// gap, 14px vertical pads, 12px radius, 5px label inset, 8px
+/// label-to-box rhythm).
+pub struct FieldChrome {
+    debug: String,
+    label: SharedString,
+    label_size: u16,
+    label_ink: Option<Color>,
+    chrome_bg: Option<Color>,
+    edge: Option<Color>,
+    edge_focused: Option<Color>,
+    edge_invalid: Option<Color>,
+    radius: f32,
+    min_w: Option<f32>,
+    reserve_error: bool,
+    error_size: u16,
+}
+
+impl FieldChrome {
+    pub fn new(debug: &str, label: impl Into<SharedString>) -> Self {
+        Self {
+            debug: debug.to_string(),
+            label: label.into(),
+            label_size: 14,
+            label_ink: None,
+            chrome_bg: None,
+            edge: None,
+            edge_focused: None,
+            edge_invalid: None,
+            radius: 12.0,
+            min_w: Some(150.0),
+            reserve_error: true,
+            error_size: 12,
+        }
+    }
+
+    pub fn label_size(mut self, px: u16) -> Self {
+        self.label_size = px;
+        self
+    }
+
+    pub fn label_ink(mut self, ink: Color) -> Self {
+        self.label_ink = Some(ink);
+        self
+    }
+
+    pub fn chrome_bg(mut self, bg: Color) -> Self {
+        self.chrome_bg = Some(bg);
+        self
+    }
+
+    /// Idle border ink (default: the theme `border`).
+    pub fn edge(mut self, edge: Color) -> Self {
+        self.edge = Some(edge);
+        self
+    }
+
+    /// Border ink while the inner field owns focus (default: the
+    /// theme `focus_ring`-adjacent primary — callers pass their
+    /// focus blue explicitly; unset falls back to `edge`).
+    pub fn edge_focused(mut self, edge: Color) -> Self {
+        self.edge_focused = Some(edge);
+        self
+    }
+
+    /// Border ink while an error shows (default: the theme `error`).
+    pub fn edge_invalid(mut self, edge: Color) -> Self {
+        self.edge_invalid = Some(edge);
+        self
+    }
+
+    pub fn radius(mut self, radius: f32) -> Self {
+        self.radius = radius;
+        self
+    }
+
+    /// Minimum chrome width (default `Some(150)`; `None` lays out
+    /// content-width).
+    pub fn min_w(mut self, min_w: Option<f32>) -> Self {
+        self.min_w = min_w;
+        self
+    }
+
+    /// Whether the error slot always renders (default true: idle
+    /// holds one space in the error ink, so showing an error never
+    /// moves the form — the reserved-slot rule).
+    pub fn reserve_error(mut self, reserve: bool) -> Self {
+        self.reserve_error = reserve;
+        self
+    }
+
+    pub fn error_size(mut self, px: u16) -> Self {
+        self.error_size = px;
+        self
+    }
+
+    /// Builds the chrome around `icon` (the 18px leading slot) and
+    /// `field` (a borderless editing field taking exactly its text
+    /// line). `error` paints below the box in a right-aligned slot;
+    /// `focused` picks the focus edge.
+    pub fn build(
+        self,
+        ctx: &Ctx,
+        icon: VNode,
+        field: VNode,
+        error: Option<SharedString>,
+        focused: bool,
+    ) -> VNode {
+        let t = ctx.theme().tokens();
+        let slot = Row(format!("{}-slot", self.debug).as_str())
+            .style(
+                Style::new()
+                    .square(18)
+                    .h(20)
+                    .align_items(AlignItems::Center)
+                    .justify_content(JustifyContent::Center),
+            )
+            .child(icon);
+        let edge_color = if focused {
+            self.edge_focused.or(self.edge).unwrap_or(t.primary_pressed)
+        } else if error.is_some() {
+            self.edge_invalid.unwrap_or(t.error)
+        } else {
+            self.edge.unwrap_or(t.border)
+        };
+        let mut chrome_style = Style::new()
+            .fill_width()
+            .bg(self.chrome_bg.unwrap_or(t.surface))
+            .radius(self.radius)
+            .border(1.3, edge_color)
+            .pad_top(14)
+            .pad_bottom(14)
+            .pad_left(12)
+            .pad_right(12)
+            .gap(10)
+            .margin_top(8)
+            .align_items(AlignItems::Center);
+        if let Some(min_w) = self.min_w {
+            chrome_style = chrome_style.min_w(min_w);
+        }
+        let chrome = Row(self.debug.as_str())
+            .style(chrome_style)
+            .children([slot, field]);
+        let label_row = Row(format!("{}-labelrow", self.debug).as_str())
+            .style(Style::new().pad_left(5))
+            .child(with_ink(
+                VNode::from(
+                    Text::new(self.label.clone())
+                        .size(self.label_size)
+                        .weight(FontWeight::MEDIUM),
+                ),
+                self.label_ink.unwrap_or(t.text_secondary),
+            ));
+        let mut rows = vec![label_row, chrome];
+        if let Some(slot) =
+            field_error_slot(ctx, &self.debug, error, self.reserve_error, self.error_size)
+        {
+            rows.push(slot);
+        }
+        Column::new()
+            .style(Style::new().fill_width().gap(0))
+            .children(rows)
+    }
+}
+
+/// The error slot below a field chrome: right-aligned, one step
+/// below the label size. Always renders when `reserve` (idle holds
+/// one space — a space paints no glyphs, so the slot keeps its exact
+/// height invisibly); otherwise renders only while an error shows.
+fn field_error_slot(
+    ctx: &Ctx,
+    debug: &str,
+    error: Option<SharedString>,
+    reserve: bool,
+    size_px: u16,
+) -> Option<VNode> {
+    let t = ctx.theme().tokens();
+    let message = match (error, reserve) {
+        (Some(msg), _) => msg,
+        (None, true) => SharedString::from(" "),
+        (None, false) => return None,
+    };
+    Some(
+        Row(format!("{debug}-err").as_str())
+            .style(
+                Style::new()
+                    .fill_width()
+                    .margin_top(4)
+                    .pad_left(6)
+                    .pad_bottom(4)
+                    .justify_content(JustifyContent::End),
+            )
+            .child(with_ink(
+                VNode::from(Text::new(message).size(size_px)),
+                t.error,
+            )),
+    )
 }

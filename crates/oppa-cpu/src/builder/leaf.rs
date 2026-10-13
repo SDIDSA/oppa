@@ -31,6 +31,9 @@ pub(super) fn emit_path_op(
     if style.bg_gradient.is_some() {
         panic!("plan: bg_gradient on a Path node {id:?} — path paint rides data/fill/stroke, never style gradients");
     }
+    if style.bg_radial.is_some() {
+        panic!("plan: bg_radial on a Path node {id:?} — path paint rides data/fill/stroke, never style gradients");
+    }
     if style.shadow.is_some() {
         panic!("plan: shadow on a Path node {id:?} — path paint rides data/fill/stroke, never style shadows");
     }
@@ -104,6 +107,9 @@ pub(super) fn emit_canvas_ops(
     }
     if style.bg_gradient.is_some() {
         panic!("plan: bg_gradient on a Canvas node {id:?} — canvas paint rides the spec, never style gradients");
+    }
+    if style.bg_radial.is_some() {
+        panic!("plan: bg_radial on a Canvas node {id:?} — canvas paint rides the spec, never style gradients");
     }
     if style.shadow.is_some() {
         panic!("plan: shadow on a Canvas node {id:?} — canvas paint rides the spec, never style shadows");

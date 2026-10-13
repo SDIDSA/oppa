@@ -26,6 +26,9 @@ pub struct TextInputProps {
     pub label: SharedString,
     pub value: Signal<SharedString>,
     pub placeholder: Option<SharedString>,
+    /// Placeholder ink override (default `None` — the theme's
+    /// secondary text; authors may pass a translucent primary).
+    pub placeholder_ink: Option<oppa::Color>,
     pub enabled: bool,
     pub width: f32,
     pub height: f32,
@@ -51,6 +54,7 @@ impl TextInputProps {
             label: SharedString::from(label),
             value,
             placeholder: None,
+            placeholder_ink: None,
             enabled: true,
             width: 200.0,
             height: 32.0,
@@ -74,8 +78,50 @@ impl TextInputProps {
         self
     }
 
+    pub fn debug(mut self, debug: impl Into<SharedString>) -> Self {
+        self.debug = debug.into();
+        self
+    }
+
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
+
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
+    }
+
+    pub fn error_message(mut self, message: impl Into<SharedString>) -> Self {
+        self.error_message = Some(message.into());
+        self
+    }
+
+    pub fn helper_text(mut self, text: impl Into<SharedString>) -> Self {
+        self.helper_text = Some(text.into());
+        self
+    }
+
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = height;
+        self
+    }
+
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Placeholder ink override (see
+    /// [`placeholder_ink`](Self::placeholder_ink)).
+    pub fn placeholder_ink(mut self, ink: oppa::Color) -> Self {
+        self.placeholder_ink = Some(ink);
         self
     }
 
@@ -221,7 +267,7 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
                 text: placeholder.clone(),
                 style: props.style,
             }),
-            t.text_secondary,
+            props.placeholder_ink.unwrap_or(t.text_secondary),
         ),
         _ => TextField {
             text: display_text,
@@ -235,9 +281,10 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     // enabled fields show the I-beam; disabled stays the arrow.
     // Phase 38a: the border edges `error` while invalid.)
     let mut field_style = Style::new().size(props.width, props.height);
-    if props.borderless {
-        field_style = field_style.pad_y(4);
-    } else {
+    // Borderless fields inherit container chrome — no double box and
+    // no double padding (the container owns every inset, so the
+    // field takes exactly its text line).
+    if !props.borderless {
         field_style = field_style
             .radius(4)
             .bg(if props.enabled { t.surface } else { t.disabled })
@@ -288,11 +335,16 @@ pub fn TextInput(ctx: &Ctx, props: &TextInputProps) -> VNode {
     // and tab order (the icon is decorative and handlerless); without
     // an icon this whole branch is skipped, byte-identical tree.
     // The row carries the explicit content height (box minus the
-    // 4+4 vertical pads both paths share) rather than `fill_height`:
-    // parent-driven box growth never reflows a Row's children, so a
-    // filled row would leave the icon top-packed — the explicit
-    // height centers it during the row's own layout.
-    let content_h = (props.height - 8.0).max(props.icon_size);
+    // 4+4 vertical pads the bordered path owns; borderless fields
+    // carry no pads) rather than `fill_height`: parent-driven box
+    // growth never reflows a Row's children, so a filled row would
+    // leave the icon top-packed — the explicit height centers it
+    // during the row's own layout.
+    let content_h = if props.borderless {
+        props.height.max(props.icon_size)
+    } else {
+        (props.height - 8.0).max(props.icon_size)
+    };
     let root = match props.icon {
         Some(image) => {
             let icon_leaf = crate::ImageView(
@@ -348,6 +400,7 @@ pub struct UncontrolledTextInputProps {
     pub label: SharedString,
     pub initial: SharedString,
     pub placeholder: Option<SharedString>,
+    pub placeholder_ink: Option<oppa::Color>,
     pub enabled: bool,
     pub width: f32,
     pub height: f32,
@@ -390,6 +443,7 @@ pub fn UncontrolledTextInput(ctx: &Ctx, props: &UncontrolledTextInputProps) -> V
             label: props.label.clone(),
             value,
             placeholder: props.placeholder.clone(),
+            placeholder_ink: props.placeholder_ink,
             enabled: props.enabled,
             width: props.width,
             height: props.height,

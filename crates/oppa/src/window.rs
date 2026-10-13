@@ -98,6 +98,9 @@ pub fn native_caption_zones(host: &ComponentHost) -> Vec<(CaptionButton, [f32; 4
 /// Rects are `[x, y, w, h]` in device px (committed-box space, the
 /// same space the shells hit-test). Empty when no header bar is
 /// laid out (never `None` — no bar means no drag region, stated).
+/// Degenerate boxes (zero/negative extent, e.g. a content-free bar)
+/// never publish — a zero-area drag region would swallow `HTCLIENT`
+/// answers into dead `HTCAPTION` strips.
 /// Untracked (paint/runner bookkeeping, never effects).
 pub fn window_drag_rects(host: &ComponentHost) -> Vec<[f32; 4]> {
     host.with_retained_mut(|rec, _| {
@@ -110,6 +113,9 @@ pub fn window_drag_rects(host: &ComponentHost) -> Vec<[f32; 4]> {
             let Some(layout) = node.layout.clone() else {
                 continue;
             };
+            if layout.w <= 0.0 || layout.h <= 0.0 {
+                continue;
+            }
             let mut rects = vec![[layout.x, layout.y, layout.w, layout.h]];
             for blocker in press_blockers_under(rec, bar) {
                 rects = subtract_rect(rects, blocker);
@@ -291,10 +297,11 @@ pub enum WindowStyle {
     /// OS window — every pre-482 app behaves exactly this way.
     #[default]
     Decorated,
-    /// Frameless window: no OS title bar, no system caption
-    /// buttons. Solid background. Keeps OS edge resizing where the
-    /// shell maps border hit-tests (Windows) or server decorations
-    /// allow it (Linux).
+    /// Bare rectangle: no OS title bar, no caption buttons, no OS
+    /// window behaviors at all (no edge resizing, no snapping, no
+    /// shadow — decision 494). Solid background. Anything the app
+    /// wants there it wires itself (minimize / maximize through
+    /// [`WindowControl`], close through `ctx.request_close()`).
     Undecorated,
     /// Frameless window with a fully transparent background
     /// (`alpha = 0` clear + premultiplied-alpha swapchain where the
@@ -302,13 +309,16 @@ pub enum WindowStyle {
     /// page background never paints (a set page color is ignored,
     /// never blended — stated, not silent).
     Transparent,
-    /// Client-area-extended / CSD hybrid: no system title bar, but
-    /// the OS keeps managing the window (interactive dragging over
-    /// the app's `HeaderBar` drag region, edge resizing,
-    /// snapping/tiling). The app draws its own header (place a
-    /// `HeaderBar` node from the controls catalog) and bridges the
-    /// caption buttons itself (minimize / maximize through
-    /// [`WindowControl`], close through `ctx.request_close()`).
+    /// Client-area-extended / CSD hybrid: native window frame with
+    /// no system title bar (decision 494) — the OS keeps managing
+    /// the window (edge resizing, snapping/tiling) while the app
+    /// composes its own chrome identifying as the `HeaderBar` drag
+    /// trait (interactive dragging over that region, nested controls
+    /// keep hit-testing). Native caption buttons are optional: the
+    /// app places `CaptionButtons` markers where they belong (the OS
+    /// answers first over the published zones, or the same buttons
+    /// bridge the press where no zones exist); with none declared
+    /// the bar is drag-only.
     Extended,
 }
 
@@ -541,6 +551,33 @@ mod tests {
         );
         // Full cover: nothing remains draggable.
         assert!(subtract_rect(vec![[0.0, 0.0, 100.0, 40.0]], [0.0, 0.0, 100.0, 40.0]).is_empty());
+    }
+
+    /// Decision 494: degenerate bar boxes (zero/negative extent,
+    /// e.g. a content-free `HeaderBar`) publish no drag region — a
+    /// zero-area region would swallow `HTCLIENT` answers into dead
+    /// `HTCAPTION` strips.
+    #[test]
+    fn window_drag_rects_drop_degenerate_bar_boxes() {
+        use crate::component::{ComponentHost, Ctx, Props};
+        use crate::style::Style;
+        use crate::vnode::{Div, Row, VNode};
+        #[derive(Clone)]
+        struct Flat;
+        impl Props for Flat {}
+        fn flat_root(_ctx: &Ctx, _p: &Flat) -> VNode {
+            Row(HEADER_BAR_DEBUG)
+                .style(Style::new().size(0, 0))
+                .child(Div("flat-leaf").style(Style::new().size(0, 0)).build())
+        }
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        host.mount("Flat", Flat, flat_root);
+        host.run_until_idle();
+        assert!(
+            window_drag_rects(&host).is_empty(),
+            "content-free bar publishes nothing"
+        );
     }
 
     /// Decision 485: `native_caption_zones` returns the caption

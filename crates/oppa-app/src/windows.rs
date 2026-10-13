@@ -37,6 +37,7 @@ use oppa_shell_win::{
     Win32SaveDialog, Win32Shell, Win32SystemTheme, Win32WindowControl,
 };
 use oppa_text_dwrite::DWriteTextService;
+use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
 
 use crate::{gpu_disabled_by_env, DesktopLoop, WindowOptions};
 
@@ -105,14 +106,14 @@ impl AppState {
 /// loop needs no twin: the thread is captured by the OS sizing drag
 /// there, so no press can arrive with stale regions.
 ///
-/// Decision 485 rides alongside: the native caption zones
-/// (`oppa::native_caption_zones` over the `HeaderBar` caption
-/// buttons) publish on the same cadence whenever `Extended` meets
+/// Decision 485 rides alongside (reshaped by 494): the native caption zones
+/// (`oppa::native_caption_zones` over the declared `CaptionButtons`)
+/// publish on the same cadence whenever `Extended` meets
 /// `native_caption_buttons` — the shell answers the `HT*BUTTON`
 /// codes over them ahead of everything else, so the OS owns hover
 /// glow, press, and snap layouts. Disabled (or any other style)
-/// clears the zones and the app's bridged buttons keep their
-/// presses.
+/// clears the zones — with the flag off the app declares no buttons
+/// at all, so there is nothing to answer.
 pub(crate) fn sync_drag_regions(shell: &Win32Shell, loop_: &DesktopLoop) {
     let host = loop_.host();
     let style = loop_.window_style();
@@ -134,9 +135,13 @@ pub(crate) fn sync_drag_regions(shell: &Win32Shell, loop_: &DesktopLoop) {
 /// Builds the `WM_SIZE` hook installed via
 /// [`Win32Shell::set_resize_callback`]: a same-size or zero-size
 /// step is a quiet no-op, anything else resizes + repaints,
-/// reconfigures the swapchain, and presents — the live frame the
-/// modal sizing loop would otherwise never produce (DWM would
-/// bitmap-stretch the stale buffer until release). Every step is
+/// reconfigures the swapchain, and presents. Decision 498: steps
+/// apply at most every 33ms (~30Hz) — a full reflow + reshape +
+/// reconfigure + vsync-blocked present per step kept DWM
+/// compositing a surface whose geometry lagged the frame one beat
+/// behind (ghosting past the moving edge); between applied steps
+/// DWM stretches the last frame instead, and the shell fires once
+/// more on `WM_EXITSIZEMOVE` so release lands crisp. Every step is
 /// best-effort (`let _`) like the rest of this runner's HWND
 /// effects: a failed step degrades to the loop-bottom live-size
 /// poll, never a panic inside `wndproc`.
@@ -144,6 +149,10 @@ pub(crate) fn make_resize_callback(
     state: Rc<RefCell<AppState>>,
     hwnd: windows::Win32::Foundation::HWND,
 ) -> Rc<dyn Fn(u32, u32)> {
+    /// Minimum time between applied resize steps (decision 498 —
+    /// ~30Hz live presents; mid-frames DWM stretches).
+    const LIVE_RESIZE_FRAME_BUDGET_MS: u128 = 33;
+    let last_applied: Rc<RefCell<Option<std::time::Instant>>> = Rc::new(RefCell::new(None));
     Rc::new(move |w, h| {
         // Reentrancy guard (decision 483 — found live: a runner
         // poll-hook HWND effect such as the caption-bridge maximize
@@ -157,6 +166,17 @@ pub(crate) fn make_resize_callback(
             return;
         };
         if (w, h) != s.loop_.viewport() && w > 0 && h > 0 {
+            // Throttle (decision 498): a full sequence per step
+            // trails DWM by a beat — mid steps stay quiet and DWM
+            // stretches the last applied frame instead.
+            let now = std::time::Instant::now();
+            let due = last_applied
+                .borrow()
+                .is_none_or(|t| now.duration_since(t).as_millis() >= LIVE_RESIZE_FRAME_BUDGET_MS);
+            if !due {
+                return;
+            }
+            *last_applied.borrow_mut() = Some(now);
             let _ = s.loop_.resize(w, h);
             let _ = s.loop_.repaint();
             s.sync_swapchain();
@@ -305,21 +325,38 @@ pub fn run_windows<P: Props>(
         shell.set_ime_callback(Rc::new(move |msg| sink.borrow_mut().push(msg.clone())));
     }
 
-    // DirectWrite, shared two ways (Round 7.2): the host owns one
-    // clone for layout shaping while this runner keeps the other —
-    // the recording map is shared, so raster-face injection below
-    // covers EVERY id the scene shaped (regular, bold, fallback),
-    // not just a startup probe. Face injection stays best-effort
-    // (decision 200): without a face the backend draws
-    // advance-cell bars — warn loudly and continue, never kill
-    // the window.
+    // Text service (Round 27.1): app-bundled fonts replace the
+    // DirectWrite system service — the app shapes, measures, and
+    // rasterizes from its own bytes on every OS, so outlines agree
+    // everywhere. Every bundled face injects into both raster
+    // backends below, before first paint (the Linux-runner rule).
+    // Without `app_fonts` this stays the shipped DWrite path.
     let dwrite = DWriteTextService::new().map_err(|e| format!("oppa-app: DirectWrite: {e:?}"))?;
-    let mut loop_ = DesktopLoop::new(
-        options.width,
-        options.height,
-        Box::new(dwrite.clone()),
-        "Segoe UI",
-    )?;
+    let mut app_font_pairs: Vec<(oppa::text::FontId, std::sync::Arc<[u8]>, u32)> = Vec::new();
+    let (service, family): (Box<dyn oppa::text::TextService>, String) = match &options.app_fonts {
+        Some(app_fonts) => {
+            let svc =
+                oppa_text_rustybuzz::RustybuzzService::from_bytes_with_chain(app_fonts.faces, &[])
+                    .map_err(|e| format!("oppa-app: app fonts: {e}"))?
+                    .0;
+            for id in svc.all_font_ids() {
+                if let Some((bytes, index)) = svc.face_bytes(id) {
+                    app_font_pairs.push((id, bytes, index));
+                }
+            }
+            if app_font_pairs.is_empty() {
+                return Err(
+                    "oppa-app: app fonts produced no faces — refused, never silent".to_string(),
+                );
+            }
+            (Box::new(svc), app_fonts.family.to_string())
+        }
+        None => (Box::new(dwrite.clone()), "Segoe UI".to_string()),
+    };
+    let mut loop_ = DesktopLoop::new(options.width, options.height, service, &family)?;
+    for (id, bytes, index) in app_font_pairs {
+        loop_.set_font_for(id, bytes, index);
+    }
     // The editing shortcuts read and write the real OS clipboard
     // (decision 246 — same backend the shell lends through its seam;
     // the handle is stateless, so a second owner changes nothing).
@@ -628,6 +665,11 @@ pub fn run_windows<P: Props>(
             .loop_
             .host()
             .set_caption_hover(shell.hover_caption());
+        // Decision 495: the maximized state follows the live window
+        // the same way (the caption glyph swaps on it — change-gated
+        // inside, so steady state never re-renders).
+        let maximized = unsafe { IsZoomed(hwnd).as_bool() };
+        state.borrow().loop_.host().set_maximized(maximized);
         // Overlay meter tick (both modes): present cadence drives the
         // FPS clock, throttled badge refresh included.
         state.borrow().loop_.note_frame_presented();

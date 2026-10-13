@@ -277,6 +277,8 @@ dependencies = [
 name = "cargo-oppa"
 version = "0.1.0"
 dependencies = [
+ "oppa",
+ "oppa-text-rustybuzz",
  "zip",
 ]
 
@@ -1671,6 +1673,7 @@ dependencies = [
  "oppa-shell-win",
  "oppa-text-dwrite",
  "oppa-text-linux",
+ "oppa-text-rustybuzz",
  "raw-window-handle",
  "wgpu",
  "windows",

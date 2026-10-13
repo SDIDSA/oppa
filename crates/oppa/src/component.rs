@@ -507,6 +507,13 @@ struct HostInner {
     /// its glow from it (DWM paints no hover on a stripped frame).
     /// Lazy like the toolbar signal above.
     caption_hover_sig: RefCell<Option<Signal<Option<crate::CaptionButton>>>>,
+    /// Runner-published maximized state (decision 495): whether the
+    /// top-level window is currently maximized — desktop runners
+    /// drain the live OS state per pump (change-only — repeats never
+    /// re-render) and `CaptionButtons` swaps the maximize glyph for
+    /// the restore glyph from it. Headless loops stay `false`
+    /// (never a guess). Lazy like the hover signal above.
+    maximized_sig: RefCell<Option<Signal<bool>>>,
     /// Long-press arms by pointer id (G11, decision 228): armed on
     /// Down, disarmed on Up/Cancel/move-past-slop, fired on the first
     /// host pump or matching input event at/after the deadline (never

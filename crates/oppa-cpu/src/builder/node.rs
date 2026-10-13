@@ -7,7 +7,7 @@ use oppa::{
 
 use super::leaf::{emit_canvas_ops, emit_path_op};
 use super::resolve::{opacity_of, resolve_edge_bands, resolve_ink, resolve_radii};
-use super::shape::{emit_edge_bands, emit_gradient, emit_shadow, emit_shape};
+use super::shape::{emit_edge_bands, emit_gradient, emit_radial, emit_shadow, emit_shape};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_node_ops(
@@ -107,8 +107,17 @@ pub(super) fn emit_node_ops(
     if style_ref.bg_gradient.is_some() && style_ref.bg.is_some() {
         panic!("plan: bg + bg_gradient both set — gradient replaces bg; set exactly one");
     }
+    if style_ref.bg_radial.is_some() && style_ref.bg.is_some() {
+        panic!("plan: bg + bg_radial both set — radial replaces bg; set exactly one");
+    }
+    if style_ref.bg_gradient.is_some() && style_ref.bg_radial.is_some() {
+        panic!("plan: bg_gradient + bg_radial both set — ambiguous fill spec; set exactly one");
+    }
     if style_ref.bg_gradient.is_some() && style_ref.has_any_radius() {
         panic!("plan: bg_gradient with radius/circle — sharp strips vs round shape (follow-up)");
+    }
+    if style_ref.bg_radial.is_some() && style_ref.has_any_radius() {
+        panic!("plan: bg_radial with radius/circle — clipped rings vs round shape (follow-up)");
     }
     // Inset border ring (M5 `Style::border`): an outer fill in the
     // border color plus an inset background fill, reusing the existing
@@ -165,6 +174,31 @@ pub(super) fn emit_node_ops(
                 );
             } else {
                 emit_gradient(plan, id, b.x, b.y, b.w, b.h, g, opacity);
+            }
+        }
+    } else if let Some(g) = style_ref.bg_radial {
+        if b.w > 0.0 && b.h > 0.0 {
+            if let Some((_, border_color)) = border_w {
+                // Uniform-ring outer over an unchanged radial (the
+                // ring covers the outer band; the gradient keeps its
+                // box geometry underneath).
+                emit_shape(
+                    plan,
+                    style_ref,
+                    b,
+                    id,
+                    tag,
+                    border_color,
+                    opacity,
+                    dpr,
+                    0.0,
+                    0.0,
+                    b.w,
+                    b.h,
+                );
+                emit_radial(plan, id, b.x, b.y, g, opacity);
+            } else {
+                emit_radial(plan, id, b.x, b.y, g, opacity);
             }
         }
     } else if let Some(bg) = style_ref.bg {

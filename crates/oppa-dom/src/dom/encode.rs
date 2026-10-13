@@ -427,11 +427,21 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// Hex fill/stroke for vector paths (the stylesheet's `fmt_hex`
-/// rule, duplicated — that helper is private to the css module and
-/// the rule is one line, stated here rather than re-exported).
+/// Hex fill/stroke for vector paths (the stylesheet's color rule,
+/// duplicated — that helper is private to the css module and the
+/// rule is a few lines, stated here rather than re-exported).
 pub(crate) fn dom_hex(c: oppa::Color) -> String {
-    format!("#{:06x}", c.0 & 0x00FF_FFFF)
+    let a = c.alpha_u8();
+    if a == 0xFF {
+        return format!("#{:06x}", c.0 & 0x00FF_FFFF);
+    }
+    format!(
+        "rgba({},{},{},{})",
+        (c.0 >> 16) & 0xFF,
+        (c.0 >> 8) & 0xFF,
+        c.0 & 0xFF,
+        a as f32 / 255.0
+    )
 }
 
 pub(crate) fn css_family(family: &str) -> String {

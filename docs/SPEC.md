@@ -60,6 +60,8 @@ contract test suite — not prose — defines sameness.
 - Form validation (Phase 38a, G7): `invalid` / `required` / `error_message` announce through `Semantics` (validators stay app-side — the payload only announces); `helper_text` renders a visual-only caption. `error_message` wins while `invalid`; controls without a message keep byte-identical trees.
 - Control icons (decision 478): `TextInput`/`Button` take a decorative leading icon (`ImageCache` id + render size; SVGs deposit once through `deposit_svg_icon` at 4x with AA fringe); unset icons keep byte-identical trees — same box, same payload, same tab order (the icon is handlerless, never a stop).
 - Focus state binding (decision 480): `TextInput`/`TextArea` accept an author-owned `Signal<bool>` (`focused` / `focus_signal`) keeping parent compound chrome in sync with field focus without remounting or CSS cascade; unset keeps byte-identical trees.
+- Brand buttons, placed tips, shared chrome (decision 510): `Button` takes brand overrides (`fill` / `pressed_fill` / `ink` / `radius` / `text_style`, each `None` by default — unset keeps the exact shipped themed pixels) plus a native `Path` vector-icon slot (`ButtonVectorIcon{data, ink, size}` — setting both icon slots refuses loudly); `FullWidth` centers the label on the full button width (icon left, equal spacer right) over a `full_width` + `content_pad` box while `Group` keeps the shipped centered unit. `Tooltip` takes `Above` (card 6px over the anchor top, viewport-clamped like below) / `Below` (default), `instant` (delay 0 — first hovered frame opens), and `fill` / `ink` card tint (defaults: theme surface + `text_primary`); dwell/leave/press dismissal is unchanged. `FieldChrome` owns the composite box (label row inset 5px, 18×20 icon slot, 14/12/12/12 pads, 12px radius, 150px minimum) with the error line in a reserved slot below (idle holds one space — errors never move the form) and the edge tracking focus/error/idle in that priority. `CaptionOutbox` publishes level-triggered minimize/maximize/close signals once per root render; `take_actions` drains armed requests oldest-first, clearing each (each press drains exactly once).
+- Authoring shorthands (decision 510): `Text::new(..).ink(..)` ≡ `with_ink` (unset keeps theme resolution); `VNode::with_ink` refuses non-elements loudly; `Path::from_svg(svg, target)` extracts single-path markup and scales coordinates by `target / viewBox` while sizing the leaf `target × target` (missing path data or non-positive targets refuse loudly); `StyleBuilder::{square, center, pad_all, pad_xy, pad_trbl}` equal their longhand chains exactly (pure aliases — existing oracles untouched).
 - Pickers (Phase 38b): `Splitter` fraction clamps into `min_first_px` / `min_second_px` (contradictions — negative/non-finite geometry or minima exceeding the total — refuse loudly); `DatePicker` binds every path into `[min, max]` (arrows pin, month flips past the bound are `None`/disabled, out-of-range days render handlerless, parses outside the bound are ignored); `Tree` flatten refuses missing parents and parent loops loudly.
 - Bars, files, leaves (Phase 38c; decisions 422–423): `Toolbar`/`Menubar` cells are handlerless visuals in one press-owner container (focus never fragments); taps hit-test, separators/disabled are quiet no-ops; `Menubar` opens at most one standalone `Menu` (stale indexes empty quietly) and its bar-blur edge closes unless focus moved into the list; `FilePicker` sets the controlled path on `Some(Ok)` (open takes the first path), dismissal and refusals surface in the caption and leave the path, missing backends refuse loudly; the path line renders filename-first two-line (file name plus wrapping parent directory under the row width; bare names and `(none)` stay one line) with the status caption naming the file, `DesktopLoop::save_file_dialog` / `pick_folder_dialog` return `Result<Option<PathBuf>, PickError>` (`Ok(Some)` = picked, `Ok(None)` = dismissed, `Err(Unsupported)` = no backend installed, `Err(Backend)` = failure propagated) with `has_save_dialog` / `has_folder_dialog` presence probes (open rides `PlatformShell::file_dialog` — `None` means unsupported); bytes open seam (decision 423): `PickedFile{name, bytes}` over `FileOpener::request_bytes` / `poll_bytes` (`None` while open, `Some(Ok(files))` settled with `[]` = dismissed, `Some(Err)` = refusal, level-triggered re-poll; second request supersedes); `AndroidFileOpener` and `WasmHost::file_pick_start` / `file_pick_resolve` gate resolves by generation (stale discards, never half-swaps); the Android read path is emulator-proven (`picker_validate`: MediaStore round-trip byte-exact, resolved bytes replay through `poll_bytes`); Android open fires through the `OppaPickerActivity` trampoline with cache-copy under `picked/` (the shown path is always a real readable file; dismissal is `Ok(vec![])`, read failure is loud); proof loops heartbeat-drain input per frame (ANR-safe); save-bytes stays out; app-facing picks run one press series through `PickSession::press` over any open backend (decision 429 — poll-first, request-if-idle, consume-once: a press consumes an awaiting settlement instead of requesting over it, requests only when idle with a second tick re-polling, each settlement consumed exactly once; blocking backends settle in-press, async across presses, with the shared `OpenOutcome` path/caption vocabulary — `still open…`, `dismissed`, `picked …`, refusals — byte-identical on every platform); `KitchenSinkProps` carries the three PathBuf handles (scripted default; the desktop example forwards the live loop handles, so the sink drives native dialogs there); `RichText`/`Image`/`Canvas` display controls render the Phase 36 leaves (bare leaves byte-identical, labeled wrappers announce); `NavHost` renders the stack's current route and empties quietly past unknown names.
 - Storage roots (Phase 38d, G23): `app_data_dir(app_name)` resolves the OS data dir (`%APPDATA%` / macOS support / `$XDG_DATA_HOME` or `~/.local/share`; wasm refuses loudly); root-escape names (empty, separators, `..`, absolute, drive-prefixed) refuse loudly before any env reads; the `FsSandbox` jail stays lexical (symlinks can point out — apps canonicalize at open when traversal matters).
@@ -100,10 +102,14 @@ contract test suite — not prose — defines sameness.
 - `Decorated`: standard OS window (system title bar + borders,
   system caption buttons, solid page background) — every pre-482 app
   behaves exactly this way with zero changes.
-- `Undecorated`: frameless (no title bar, no caption buttons), solid
-  background; OS edge resizing survives where the shell maps it
-  (Windows answers the sizing codes on 8px border bands with corners
-  winning over edges; Linux keeps compositor resizing).
+- `Undecorated`: a bare rectangle (decision 494) — no title bar,
+  no caption buttons, and no OS window behaviors at all (no edge
+  resizing, no snapping, no shadow): on Windows the shell creates a
+  bare `WS_POPUP` and every point answers `HTCLIENT`; on Linux the
+  compositor owns whatever it owns with decorations cleared.
+  Anything the app wants there it wires itself (minimize / maximize
+  through `WindowControl`, close through `ctx.request_close()`).
+  Solid background.
 - `Transparent`: frameless with a fully transparent background —
   frames clear to `alpha = 0` with a premultiplied-alpha swapchain
   where the surface accepts the mode (a refusal fails loudly into
@@ -114,29 +120,30 @@ contract test suite — not prose — defines sameness.
   paints. The CPU/softbuffer fallback stays opaque
   (XRGB forces it — a documented limit, not a second transparency
   path).
-- `Extended`: frameless with OS window management over the app's
-  `HeaderBar` region — interactive dragging, edge resizing,
-  snapping/tiling. The window keeps its overlapped frame styles
-  (decision 484 — caption, thick frame, system menu, min/max boxes
-  stay set, so snap, tiling, shadows, and minimize/maximize
-  animations survive); only the non-client *visuals* go
-  (`WM_NCCALCSIZE` strip, maximized windows clamped to the work
-  area so the taskbar stays visible). A 1px DWM glass frame survives
-  the strip (decision 489 — native border line + drop shadow; corners
-  and colors stay OS-owned). The runner publishes the committed `HeaderBar`
-  boxes minus press-owning descendants as the drag region
-  (area-exact: bar area minus caption-button boxes; nested buttons
-  and fields keep normal hit-testing while bare chrome drags);
-  maximized windows never answer sizing codes; an absent `HeaderBar`
-  publishes nothing. Caption buttons come in two bridged modes
-  (decision 485): native OS zones by default in `Extended` on
-  Windows (`WindowOptions::native_caption_buttons`, opt out with
-  `false`) — the shell answers `HTMINBUTTON` / `HTMAXBUTTON` /
-  `HTCLOSE` over the `HeaderBar` caption-button boxes (zones align
-  with the button visuals by construction), so the OS tracks hover
-  while the shell performs the
-  clicks itself (decision 488 — `DefWindowProc` tracking needs real
-  caption metrics, so minimize/maximize run the bridge's
+- `Extended`: native window frame with no system title bar
+  (decision 494) — the OS keeps managing the window (edge
+  resizing, snapping/tiling) while the app composes chrome
+  identifying as the `HeaderBar` drag trait. The window keeps its
+  overlapped frame styles (decision 484 — caption, thick frame,
+  system menu, min/max boxes stay set, so snap, tiling, shadows,
+  and minimize/maximize animations survive); only the non-client
+  *visuals* go (`WM_NCCALCSIZE` strip, maximized windows clamped
+  to the work area so the taskbar stays visible). The runner
+  publishes the committed `HeaderBar` boxes minus press-owning
+  descendants as the drag region (area-exact: bar area minus
+  interactive-child boxes; nested buttons and fields keep normal
+  hit-testing while bare chrome drags); maximized windows never
+  answer sizing codes; an absent `HeaderBar` publishes nothing.
+  Native caption buttons are optional (decision 485, reshaped by
+  494): the app places `CaptionButtons` markers where they belong
+  and the flag `WindowOptions::native_caption_buttons` (default
+  `true`) decides their existence — with the flag off the app
+  declares none (drag-only bar). Where declared, the shell answers
+  `HTMINBUTTON` / `HTMAXBUTTON` / `HTCLOSE` over the button boxes
+  on Windows (zones align with the button visuals by
+  construction), so the OS tracks hover while the shell performs
+  the clicks itself (decision 488 — `DefWindowProc` tracking needs
+  real caption metrics, so minimize/maximize run the bridge's
   `ShowWindow` calls and close queues the veto path; double-clicks
   swallow after the single-click acted); the shell reports real
   custom-frame geometry through `WM_GETTITLEBARINFOEX` (decisions
@@ -159,25 +166,37 @@ contract test suite — not prose — defines sameness.
   expectations for the windowed Snap Layouts flyout on hovering
   `HTMAXBUTTON`, awaiting live verification);
   button glyphs are true Win11
-  caption shapes (decision 487 — 16px Segoe-metric strokes baked
-  per palette at 4x, centered exactly in their targets, close-hover
-  white on signal red, docked flush top-right with zero inset);
+  caption shapes (decision 487, user-supplied filled set — rounded
+  10px designs on an 8.5 viewBox — baked per palette at 4x,
+  centered exactly in their targets, close-hover white on signal
+  red, cells exactly adjacent with zero inset; decision 495 — the
+  maximize cell wears the overlapping-squares restore glyph while
+  the window is maximized, swapping back on restore, from the
+  runner-drained maximized signal);
   hover glow paints in-scene from
   the runner-drained hover signal (decision 486 — DWM draws no hover
-  on a stripped frame); or app-bridged
-  (minimize / maximize through `WindowControl`, quiet no-op with no
-  control) when disabled — and always app-bridged on Linux, where no
-  OS zones exist. Apps wire `HeaderBar` `on_*` actions
-  unconditionally as the Linux/off fallback (shadowed harmlessly
+  on a stripped frame); on Linux, where no OS zones exist, the same
+  declared buttons bridge the press through `WindowControl`.
+  Declared actions are wired unconditionally (shadowed harmlessly
   where the OS answers first). Close honors `ctx.request_close()`
   (the close veto still consults) on every close, native or
   bridged. Regions refresh live (per pump iteration on Windows,
-  per press on Linux).
+  per press on Linux). Right-clicking the bar raises the window
+  menu (decision 496, user-found live: `WM_NCRBUTTONUP` over
+  `HTCAPTION` arrived unanswered — the shell shows the system menu
+  explicitly over drag chrome and caption zones, forwarding the
+  command as `WM_SYSCOMMAND` so Close honors the veto).
 - Backends never compute chrome: `Color` stays alpha-less (the
   alpha-0 clear rides a backend flag, not the palette), and the
-  `HeaderBar` control is handlerless chrome composed from the
-  existing `Row`/`Div` vocabulary (no new `Tag`, no reconciler /
-  layout / backend changes — the decision-212 rule).
+  `HeaderBar` / `CaptionButtons` controls are transparent markers
+  composed from the existing `Row`/`Div` vocabulary (no new `Tag`,
+  no reconciler / layout / backend changes — the decision-212
+  rule). `HeaderBar` renders no visuals of its own (fills the
+  available width, packs to content height); `CaptionButtons`
+  renders the standard 46px cells only where declared (zero-size
+  row otherwise). Decision 493's `title_view` / `tools_view` slots
+  are removed by 494 (a full-content factory subsumes them — one
+  composition mechanism).
 
 ## Reload freeze gate
 

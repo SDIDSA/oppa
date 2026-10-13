@@ -9,12 +9,16 @@ use stylebook::{
 };
 
 fn mount_style(style: WindowStyle) -> Harness {
+    mount_style_native(style, false)
+}
+
+fn mount_style_native(style: WindowStyle, native: bool) -> Harness {
     let app = Harness::new();
     app.mount(
         "Stylebook",
         StylebookProps {
             style,
-            native: false,
+            native,
             hooks: ChromeHooks::default(),
         },
         StylebookRoot,
@@ -48,37 +52,52 @@ fn counter_counts_under_every_style() {
     }
 }
 
-/// Decision 482: the in-app header (with bridged caption buttons)
-/// renders exactly in frameless modes — `Decorated` keeps the native
-/// title bar with no duplicate chrome.
+/// Decision 494: custom chrome renders only under `Extended` —
+/// `Decorated` keeps the native title bar and `Undecorated` /
+/// `Transparent` stay bare rectangles (no in-app chrome at all).
+/// Native buttons are declared only with the flag (off draws a
+/// buttonless drag-only bar).
 #[test]
-fn header_and_caption_buttons_render_only_when_frameless() {
+fn chrome_renders_only_under_extended() {
+    let app = mount_style_native(WindowStyle::Extended, true);
+    assert!(has_node(&app, oppa::HEADER_BAR_DEBUG), "extended bars");
+    assert!(has_node(&app, "stylebook-chrome"), "extended chromes");
+    for debug in ["header-min", "header-max", "header-close"] {
+        assert!(has_node(&app, debug), "native declares {debug}");
+    }
+    let bare = mount_style_native(WindowStyle::Extended, false);
+    assert!(
+        has_node(&bare, oppa::HEADER_BAR_DEBUG),
+        "buttonless bar still identifies"
+    );
+    for debug in ["header-min", "header-max", "header-close"] {
+        assert!(
+            !has_node(&bare, debug),
+            "native-off draws no {debug} at all"
+        );
+    }
     for style in [
+        WindowStyle::Decorated,
         WindowStyle::Undecorated,
         WindowStyle::Transparent,
-        WindowStyle::Extended,
     ] {
         let app = mount_style(style);
-        assert!(has_node(&app, oppa::HEADER_BAR_DEBUG), "{style:?} bars");
-        for debug in ["header-min", "header-max", "header-close"] {
-            assert!(has_node(&app, debug), "{style:?} bridges {debug}");
-        }
+        assert!(
+            !has_node(&app, oppa::HEADER_BAR_DEBUG),
+            "{style:?} mounts no chrome"
+        );
+        assert!(
+            !has_node(&app, "header-close"),
+            "{style:?} declares no buttons"
+        );
     }
-    let app = mount_style(WindowStyle::Decorated);
-    assert!(
-        !has_node(&app, oppa::HEADER_BAR_DEBUG),
-        "decorated keeps the native bar only"
-    );
-    assert!(
-        !has_node(&app, "header-close"),
-        "decorated bridges no caption buttons"
-    );
 }
 
-/// Decision 482: only `Extended` publishes an OS drag region (the
-/// bar chrome minus its caption buttons) — the runners publish
-/// through the one `drag_regions_for_style` policy point, so every
-/// other style publishes nothing even with a header mounted.
+/// Decision 494: only `Extended` publishes an OS drag region — the
+/// runners publish through the one `drag_regions_for_style` policy
+/// point, so every other style publishes nothing. (The buttonless
+/// title chrome needs a text service for height, so the publish
+/// proof mounts the native cluster with its explicit 40px cells.)
 #[test]
 fn drag_region_publishes_only_in_extended() {
     for style in [
@@ -92,7 +111,7 @@ fn drag_region_publishes_only_in_extended() {
             "{style:?} publishes no drag region"
         );
     }
-    let app = mount_style(WindowStyle::Extended);
+    let app = mount_style_native(WindowStyle::Extended, true);
     assert!(
         !drag_regions_for_style(app.host(), WindowStyle::Extended).is_empty(),
         "extended publishes the bar region"
@@ -154,9 +173,12 @@ fn argv_parsing_selects_style_and_native_flag() {
         "extended".to_string(),
         "--native-buttons".to_string(),
     ];
-    assert!(parse_native_buttons_flag(&on), "flag present arms native");
+    assert!(
+        parse_native_buttons_flag(&on),
+        "flag present declares buttons"
+    );
     assert!(
         !parse_native_buttons_flag(&on[..2]),
-        "flag absent keeps the bridge"
+        "flag absent draws no buttons"
     );
 }

@@ -603,13 +603,13 @@ fn frameless_classifier_caption_beats_client_border_beats_caption() {
     );
 }
 
-/// Decision 482, live OS proof: a real frameless window answers
-/// `WM_NCHITTEST` through the proc — a published drag region hits
-/// `HTCAPTION`, the left border hits `HTLEFT`, and the interior
-/// hits `HTCLIENT`. Screen points derive from the live window
-/// rect (a hidden `WS_POPUP` still owns screen geometry).
+/// Decision 494: `Undecorated` is a bare popup — every point
+/// answers `HTCLIENT` (no sizing bands, no caption zones, no drag
+/// answers, even over a published region: the runner never publishes
+/// outside `Extended`, and the shell would not answer it if it did).
+/// Client still covers the window pixel for pixel.
 #[test]
-fn frameless_window_answers_nchittest_through_proc() {
+fn undecorated_window_is_all_client() {
     use ::windows::Win32::Foundation::{LPARAM, WPARAM};
     use ::windows::Win32::UI::WindowsAndMessaging::{
         GetClientRect, GetWindowRect, SendMessageW, WM_NCHITTEST,
@@ -618,7 +618,7 @@ fn frameless_window_answers_nchittest_through_proc() {
     super::set_key_override(VK_SHIFT.0, Some(false));
     super::set_key_override(VK_CONTROL.0, Some(false));
     let shell = Win32Shell::new(ShellConfig {
-        title: "frameless-test".to_string(),
+        title: "bare-test".to_string(),
         width: 200,
         height: 150,
         record_messages: false,
@@ -626,9 +626,10 @@ fn frameless_window_answers_nchittest_through_proc() {
         visible: false,
         style: oppa::WindowStyle::Undecorated,
     })
-    .expect("frameless test window builds");
+    .expect("bare test window builds");
     assert_eq!(shell.window_style(), oppa::WindowStyle::Undecorated);
     shell.set_drag_regions(vec![[50.0, 20.0, 100.0, 24.0]]);
+    // Stored (the runner syncs unconditionally) but never answered.
     assert_eq!(shell.drag_regions(), vec![[50.0, 20.0, 100.0, 24.0]]);
     let mut rect = RECT::default();
     let mut client = RECT::default();
@@ -636,8 +637,7 @@ fn frameless_window_answers_nchittest_through_proc() {
         let _ = GetWindowRect(shell.hwnd(), &mut rect);
         let _ = GetClientRect(shell.hwnd(), &mut client);
     }
-    // `WM_NCCALCSIZE` strips the whole non-client area: the client
-    // covers the window pixel for pixel (no title bar, no borders).
+    // A popup owns no non-client area: client == window exactly.
     assert_eq!(client.right - client.left, rect.right - rect.left);
     assert_eq!(client.bottom - client.top, rect.bottom - rect.top);
     let at = |cx: i32, cy: i32| {
@@ -647,32 +647,29 @@ fn frameless_window_answers_nchittest_through_proc() {
     let hit = |cx: i32, cy: i32| unsafe {
         SendMessageW(shell.hwnd(), WM_NCHITTEST, Some(WPARAM(0)), at(cx, cy)).0
     };
-    // Client geometry may be smaller than the requested 200x150
-    // (frame fitting is runner-owned) — probe relative points that
-    // hold for any client area larger than the bands: border at
-    // x=2, region interior, deep interior.
-    assert_eq!(hit(100, 30), HTCAPTION_PX, "drag region captions");
-    assert_eq!(hit(2, 75), HTLEFT_PX, "left border resizes");
-    assert_eq!(hit(100, 100), HTCLIENT_PX, "deep interior is client");
+    // Former drag region, borders, corners, deep interior: all client.
+    for (cx, cy) in [(100, 30), (2, 75), (197, 75), (100, 2), (100, 100), (2, 2)] {
+        assert_eq!(
+            hit(cx, cy),
+            HTCLIENT_PX,
+            "bare point ({cx}, {cy}) is client"
+        );
+    }
 }
 
-/// Decision 484 (the winit borderless architecture — found live:
-/// a bare `WS_POPUP` silently dropped Aero snap/tiling with the
-/// thick frame): frameless windows keep the overlapped frame
-/// styles (`WS_CAPTION | WS_THICKFRAME | WS_SYSMENU` + min/max
-/// boxes) so the OS keeps owning snap, tiling, shadows, and
-/// animations — only the `WM_NCCALCSIZE` visuals go.
+/// Decision 484 (the winit borderless architecture): framed
+/// frameless windows keep the overlapped frame styles
+/// (`WS_CAPTION | WS_THICKFRAME | WS_SYSMENU` + min/max boxes) so
+/// the OS keeps owning snap, tiling, shadows, and animations —
+/// only the `WM_NCCALCSIZE` visuals go. `Undecorated` is exempt
+/// (decision 494 — a bare `WS_POPUP`, proven by the next test).
 #[test]
 fn frameless_window_keeps_frame_styles_for_snap() {
     use ::windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongW, GWL_STYLE, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
         WS_THICKFRAME,
     };
-    for style in [
-        oppa::WindowStyle::Undecorated,
-        oppa::WindowStyle::Transparent,
-        oppa::WindowStyle::Extended,
-    ] {
+    for style in [oppa::WindowStyle::Transparent, oppa::WindowStyle::Extended] {
         let shell = hidden_shell_with_style(style);
         let bits = unsafe { GetWindowLongW(shell.hwnd(), GWL_STYLE) as u32 };
         for flag in [
@@ -688,6 +685,33 @@ fn frameless_window_keeps_frame_styles_for_snap() {
                 "{style:?} keeps frame bit {flag:#x} (got {bits:#x})"
             );
         }
+    }
+}
+
+/// Decision 494: `Undecorated` creates a bare popup carrying none
+/// of the overlapped frame bits (no caption, no thick frame, no
+/// system menu, no min/max boxes) — an empty rectangle with no OS
+/// behaviors at all.
+#[test]
+fn undecorated_window_carries_no_frame_styles() {
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, GWL_STYLE, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+        WS_THICKFRAME,
+    };
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Undecorated);
+    let bits = unsafe { GetWindowLongW(shell.hwnd(), GWL_STYLE) as u32 };
+    for flag in [
+        WS_CAPTION.0,
+        WS_THICKFRAME.0,
+        WS_SYSMENU.0,
+        WS_MINIMIZEBOX.0,
+        WS_MAXIMIZEBOX.0,
+    ] {
+        assert_eq!(
+            bits & flag,
+            0,
+            "Undecorated carries no frame bit {flag:#x} (got {bits:#x})"
+        );
     }
 }
 
@@ -721,22 +745,50 @@ fn transparent_window_composites_and_skips_gdi_erase() {
     );
 }
 
-/// Decision 489: every frameless window extends the 1px glass frame
-/// (native border line + drop shadow — the `WM_NCCALCSIZE` strip
-/// takes them with the visuals). Proven against a hidden window on
-/// the live compositor (same environment bound as creation).
+/// Decision 497 (user-found live: a white sliver lagged one resize
+/// step behind the texture — each step's `WM_PAINT` `BeginPaint`
+/// filled the newly exposed strips with the `COLOR_WINDOW` brush
+/// after the step's present had landed): EVERY style claims
+/// `WM_ERASEBKGND` (the framework owns every pixel — GPU swapchain
+/// or full-client CPU blit — so claiming paints nothing and no
+/// white can smear a live resize on any chrome).
 #[test]
-fn frameless_window_extends_glass_frame() {
+fn all_styles_skip_gdi_erase() {
+    use ::windows::Win32::Foundation::{LPARAM, WPARAM};
+    use ::windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_ERASEBKGND};
     for style in [
+        oppa::WindowStyle::Decorated,
         oppa::WindowStyle::Undecorated,
         oppa::WindowStyle::Transparent,
+        oppa::WindowStyle::Extended,
     ] {
         let shell = hidden_shell_with_style(style);
-        assert!(
-            super::extend_glass_frame(shell.hwnd()).is_ok(),
-            "{style:?} takes the glass frame"
-        );
+        let erased = unsafe {
+            SendMessageW(
+                shell.hwnd(),
+                WM_ERASEBKGND,
+                Some(WPARAM(0)),
+                Some(LPARAM(0)),
+            )
+            .0
+        };
+        assert_eq!(erased, 1, "{style:?} claims erasure (paints nothing)");
     }
+}
+
+/// Decision 489, 494: `Transparent` extends the 1px glass frame
+/// (native border line + drop shadow — the `WM_NCCALCSIZE` strip
+/// takes them with the visuals). `Extended` keeps the real OS frame
+/// and `Undecorated` is a bare popup with nothing to extend.
+/// Proven against a hidden window on the live compositor (same
+/// environment bound as creation).
+#[test]
+fn frameless_window_extends_glass_frame() {
+    let shell = hidden_shell_with_style(oppa::WindowStyle::Transparent);
+    assert!(
+        super::extend_glass_frame(shell.hwnd()).is_ok(),
+        "Transparent takes the glass frame"
+    );
 }
 
 /// Decision 492 positive OS delivery proof: the non-client frame
@@ -1358,5 +1410,150 @@ fn extended_window_maximized_client_rect_matches_work_area() {
     unsafe {
         let _ = ShowWindow(shell.hwnd(), SW_RESTORE);
     }
+    shell.destroy_window();
+}
+
+/// Decision 496 (pure): the menu trigger covers drag chrome and
+/// caption zones, and nothing else — a quiet body click never
+/// menus, and empty geometry never menus.
+#[test]
+fn ncrbuttonup_menu_trigger_covers_bar_and_zones_only() {
+    use crate::win::shell_platform::ncrbuttonup_shows_menu;
+    let drag = [[0.0, 0.0, 400.0, 40.0]];
+    let zones = [(oppa::CaptionButton::Close, [354.0, 0.0, 46.0, 40.0])];
+    assert!(
+        ncrbuttonup_shows_menu(200.0, 20.0, &drag, &zones),
+        "bare chrome menus"
+    );
+    assert!(
+        ncrbuttonup_shows_menu(377.0, 20.0, &drag, &zones),
+        "caption zones menu too (native parity)"
+    );
+    assert!(
+        !ncrbuttonup_shows_menu(200.0, 100.0, &drag, &zones),
+        "body clicks stay quiet"
+    );
+    assert!(
+        !ncrbuttonup_shows_menu(200.0, 20.0, &[], &[]),
+        "nothing published means nothing"
+    );
+}
+
+/// Decision 496, live OS proof: a real `WM_NCRBUTTONUP` over the bar
+/// of a visible `Extended` window raises the system menu (the
+/// `#32768` popup), dismissed programmatically with no veto queued.
+/// `SendMessageW` runs the arm synchronously (no input pump needed);
+/// a watcher thread observes the popup and dismisses it with posted
+/// `WM_CANCELMODE` until the test thread reports back — menu modal
+/// loops honor cancel by dismissing, posted messages are
+/// thread-safe and focus-free, and looping on `done` (instead of a
+/// fixed poll budget) means a late menu can never strand
+/// `SendMessageW` waiting on a human. Same environment bound as the
+/// other live-proc proofs (needs a foreground-capable desktop).
+#[test]
+fn extended_ncrbuttonup_raises_system_menu_live() {
+    use ::windows::core::w;
+    use ::windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
+    use ::windows::Win32::Graphics::Gdi::ClientToScreen;
+    use ::windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        EndMenu, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, PostMessageW,
+        SendMessageW, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW, WM_CANCELMODE, WM_NCRBUTTONUP,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let shell = Win32Shell::new(ShellConfig {
+        title: "menu-test".to_string(),
+        width: 400,
+        height: 300,
+        record_messages: false,
+        suppress_os_composition_window: true,
+        visible: false,
+        style: oppa::WindowStyle::Extended,
+    })
+    .expect("menu test window builds");
+    shell.set_drag_regions(vec![[0.0, 0.0, 400.0, 40.0]]);
+    unsafe {
+        let _ = ShowWindow(shell.hwnd(), SW_SHOW);
+        let _ = SetWindowPos(
+            shell.hwnd(),
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+        // Foreground attachment (the standard bypass — a background
+        // test process otherwise fails the menu's foreground
+        // requirement and the proof false-negatives).
+        let fg = GetForegroundWindow();
+        let fg_thread = GetWindowThreadProcessId(fg, None);
+        let this_thread = GetCurrentThreadId();
+        if fg_thread != this_thread {
+            let _ = AttachThreadInput(this_thread, fg_thread, true);
+            let _ = SetForegroundWindow(shell.hwnd());
+            let _ = AttachThreadInput(this_thread, fg_thread, false);
+        } else {
+            let _ = SetForegroundWindow(shell.hwnd());
+        }
+    }
+    // Bar point in screen coords (client origin + interior point).
+    let mut origin = POINT { x: 0, y: 0 };
+    unsafe {
+        let _ = ClientToScreen(shell.hwnd(), &mut origin);
+    }
+    let (sx, sy) = (origin.x + 200, origin.y + 20);
+    let seen = Arc::new(AtomicBool::new(false));
+    let seen_w = seen.clone();
+    let done = Arc::new(AtomicBool::new(false));
+    let done_w = done.clone();
+    // Raw bits cross threads (`HWND` itself is not `Send`).
+    let hwnd_bits = shell.hwnd().0 as usize;
+    let watcher = std::thread::spawn(move || {
+        use ::windows::Win32::Foundation::HWND;
+        let hwnd_w = HWND(hwnd_bits as *mut core::ffi::c_void);
+        // Observe the popup and cancel it until it dies. Posted
+        // `WM_CANCELMODE` is what menu modal loops honor (plus a
+        // belt-and-braces `EndMenu`): thread-safe, focus-free, and
+        // select-nothing, so no veto may queue. Looping on `done`
+        // instead of a fixed budget means even a late menu gets
+        // dismissed — the `SendMessageW` below can never wedge
+        // waiting on a human.
+        while !done_w.load(Ordering::SeqCst) {
+            let found = unsafe { FindWindowW(w!("#32768"), None).is_ok() };
+            if found {
+                seen_w.store(true, Ordering::SeqCst);
+                unsafe {
+                    let _ = PostMessageW(Some(hwnd_w), WM_CANCELMODE, WPARAM(0), LPARAM(0));
+                    let _ = EndMenu();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    });
+    let packed = ((sy << 16) | (sx & 0xFFFF)) as isize;
+    unsafe {
+        SendMessageW(
+            shell.hwnd(),
+            WM_NCRBUTTONUP,
+            Some(WPARAM(super::HTCAPTION_PX as usize)),
+            Some(LPARAM(packed)),
+        );
+    }
+    // The modal loop returned, so the menu lived and died without us.
+    done.store(true, Ordering::SeqCst);
+    watcher.join().expect("watcher joins");
+    assert!(seen.load(Ordering::SeqCst), "system menu appeared");
+    let vetoed = shell
+        .shared
+        .borrow()
+        .queue
+        .iter()
+        .any(|e| matches!(e, ShellEvent::CloseRequested));
+    assert!(!vetoed, "dismissal selects nothing — no veto queues");
     shell.destroy_window();
 }

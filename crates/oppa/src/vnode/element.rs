@@ -47,6 +47,14 @@ impl ElementBuilder {
         self
     }
 
+    /// Text-ink override for `Text` leaves under this node (decision
+    /// 510 — the builder-side `with_ink`: falls back to the build
+    /// theme's `text_primary` when absent, the `resolve_ink` rule).
+    pub fn ink(mut self, color: crate::style::Color) -> Self {
+        self.inner.style.ink = Some(color);
+        self
+    }
+
     pub fn semantics(mut self, s: Semantics) -> Self {
         self.inner.semantics = Some(s);
         self

@@ -16,6 +16,7 @@ oppa-cpu = { path = "../oppa-cpu" }
 # compile into it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 oppa-gpu = { path = "../oppa-gpu" }
+oppa-text-rustybuzz = { path = "../oppa-text-rustybuzz" }
 wgpu = "29"
 raw-window-handle = "0.6"
 

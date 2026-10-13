@@ -160,6 +160,7 @@ impl Text {
             text: text.into(),
             size_px: None,
             weight: FontWeight::NORMAL,
+            ink: None,
         }
     }
 }
@@ -172,6 +173,7 @@ pub struct TextBuilder {
     text: SharedString,
     size_px: Option<u16>,
     weight: FontWeight,
+    ink: Option<Color>,
 }
 
 impl TextBuilder {
@@ -191,6 +193,14 @@ impl TextBuilder {
     /// Shorthand for `.weight(FontWeight::BOLD)`.
     pub fn bold(mut self) -> Self {
         self.weight = FontWeight::BOLD;
+        self
+    }
+
+    /// Paint ink for the leaf (decision 510 — the `with_ink` wrapper
+    /// as a chain link: `Text::new("Hi").size(14).ink(DIM).into()`).
+    /// `None` (default) keeps the theme resolution exactly as before.
+    pub fn ink(mut self, color: Color) -> Self {
+        self.ink = Some(color);
         self
     }
 
@@ -225,7 +235,12 @@ impl TextBuilder {
 
 impl From<TextBuilder> for VNode {
     fn from(b: TextBuilder) -> Self {
-        VNode::from(b.build())
+        let ink = b.ink;
+        let mut vnode = VNode::from(b.build());
+        if let Some(color) = ink {
+            vnode = vnode.with_ink(color);
+        }
+        vnode
     }
 }
 

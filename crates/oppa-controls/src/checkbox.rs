@@ -24,16 +24,43 @@ pub struct CheckboxProps {
     pub required: bool,
     pub error_message: Option<SharedString>,
     pub helper_text: Option<SharedString>,
+    /// Box edge in px (default 20.0 — the shipped box; authors may
+    /// shrink it, e.g. 18.0, without touching shared pixels
+    /// elsewhere; the vector check scales with it, see below).
+    pub box_px: f32,
+    /// Box corner radius in px (default 4.0 — the shipped radius).
+    pub box_radius: f32,
+    /// Label text class (default `Text::body_secondary` — the shipped
+    /// label; authors may pass a `Custom` size, e.g. 15px).
+    pub label_style: TextClass,
+    /// Label ink override (default `None` — the theme's text ink;
+    /// authors may pass a dimmed ink for secondary labels).
+    pub label_ink: Option<Color>,
+    /// Check-mark ink override (default `None` — literal white, the
+    /// theme-invariant contrast ink on the saturated fill; authors
+    /// may pass a dark ink for a dark-on-accent mark).
+    pub check_ink: Option<Color>,
+    /// Check-mark scale about the box center (default 1.0 — the mark
+    /// fills the box; authors may shrink it, e.g. 0.85, with the
+    /// stroke scaling along so the mark stays proportional).
+    pub check_scale: f32,
 }
 
 impl Props for CheckboxProps {}
 
-/// Checkbox: drawn 20×20 box + visible label, `checkbox` role with
-/// live `checked`; press flips (no-op when disabled). The box fills
-/// Primary with a vector check when on (a real [`Path`] — smooth
-/// 2.5px stroke through (4.5, 10.5) → (8.5, 14.5) → (15.5, 6),
-/// decision 291 — replacing the stepped-square arms, so the mark is
-/// resolution-independent curves, not pixels or font glyphs), stays
+/// Checkbox: 20×20 box by default (`box_px`, exact pre-change pixels
+/// when 20.0) + visible label (`Text::body_secondary` unless
+/// `label_style` says otherwise, theme ink unless `label_ink` says
+/// otherwise), `checkbox` role with
+/// live `checked`; press flips (no-op when disabled). The row pads 4
+/// around with a 10px box-to-label gap. The box fills
+/// Primary with a vector check when on (a real [`Path`] — the shipped
+/// 2.5px white stroke through (4.5, 10.5) → (8.5, 14.5) → (15.5, 6),
+/// decision 291 — scaled by `box_px / 20` (times `check_scale`,
+/// recentered, so smaller boxes and marks keep the same curves
+/// proportionally) in `check_ink` when set, replacing the
+/// stepped-square arms, so the mark is resolution-independent
+/// curves, not pixels or font glyphs), stays
 /// white with a gray border when off, and washes to EE when disabled
 /// (strictly the catalog palette — Primary / Dim gray / white / EE,
 /// no new colors). While held, a checked box deepens to the pressed
@@ -89,10 +116,30 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
     let box_style = focus_ringed(
         ctx,
         props.enabled,
-        Style::new().size(20, 20).radius(4).bg(fill).border(2, edge),
+        Style::new()
+            .size(props.box_px, props.box_px)
+            .radius(props.box_radius)
+            .bg(fill)
+            .border(2, edge),
     );
     // (One `.child()`/`.children()` per builder — terminal — so the
     // check variant builds whole, like the Radio dot.)
+    // The check scales with the box (k = 1 at the shipped 20px, where
+    // the formatted data reproduces the exact shipped path string)
+    // times `check_scale`, recentered so a shrunken mark stays
+    // centered — the stroke scales along, keeping it proportional.
+    let k = props.box_px / 20.0 * props.check_scale;
+    let off = (props.box_px - 20.0 * k) / 2.0;
+    let check_data = format!(
+        "M {} {} L {} {} L {} {}",
+        4.5 * k + off,
+        10.5 * k + off,
+        8.5 * k + off,
+        14.5 * k + off,
+        15.5 * k + off,
+        6.0 * k + off
+    );
+    let check_ink = props.check_ink.unwrap_or(ink);
     let box_vnode = if checked {
         // Vector check (decision 291): one smooth stroked path filling
         // the box exactly (in-flow, same size — no extent change, no
@@ -102,9 +149,9 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
         // construction, now as curves instead of stepped squares.
         Div("checkbox-box").style(box_style).child(
             Path::new("checkbox-check")
-                .data("M 4.5 10.5 L 8.5 14.5 L 15.5 6")
-                .stroke(ink, 2.5)
-                .size(20, 20)
+                .data(&check_data)
+                .stroke(check_ink, 2.5 * k)
+                .size(props.box_px, props.box_px)
                 .build(),
         )
     } else {
@@ -116,8 +163,8 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
             // the platform arrow — see `Button`).
             let mut s = Style::new()
                 .pad_x(4)
-                .pad_y(2)
-                .gap(8)
+                .pad_y(4)
+                .gap(10)
                 .align_items(AlignItems::Center);
             if props.enabled {
                 s = s.cursor(CursorIcon::Pointer);
@@ -131,13 +178,15 @@ pub fn Checkbox(ctx: &Ctx, props: &CheckboxProps) -> VNode {
         Some(press) => builder.on_press(move || press()),
         None => builder,
     };
-    let root = builder.children([
-        box_vnode,
-        VNode::from(Text {
-            text: props.label.clone(),
-            style: Text::body_secondary,
-        }),
-    ]);
+    let label_leaf = VNode::from(Text {
+        text: props.label.clone(),
+        style: props.label_style,
+    });
+    let label_leaf = match props.label_ink {
+        Some(ink) => with_ink(label_leaf, ink),
+        None => label_leaf,
+    };
+    let root = builder.children([box_vnode, label_leaf]);
     // Phase 38a: validation footer stacks under the row only when a
     // message is present (valid rows keep the exact tree).
     with_validation_footer(
@@ -163,6 +212,12 @@ pub struct UncontrolledCheckboxProps {
     pub required: bool,
     pub error_message: Option<SharedString>,
     pub helper_text: Option<SharedString>,
+    pub box_px: f32,
+    pub box_radius: f32,
+    pub label_style: TextClass,
+    pub label_ink: Option<Color>,
+    pub check_ink: Option<Color>,
+    pub check_scale: f32,
 }
 
 impl Props for UncontrolledCheckboxProps {}
@@ -179,6 +234,12 @@ pub fn UncontrolledCheckbox(ctx: &Ctx, props: &UncontrolledCheckboxProps) -> VNo
             required: props.required,
             error_message: props.error_message.clone(),
             helper_text: props.helper_text.clone(),
+            box_px: props.box_px,
+            box_radius: props.box_radius,
+            label_style: props.label_style,
+            label_ink: props.label_ink,
+            check_ink: props.check_ink,
+            check_scale: props.check_scale,
         },
         Checkbox,
     )

@@ -14,11 +14,18 @@ cargo-oppa: verify, build, and launch Oppa apps per target
 
 USAGE:
     cargo oppa new <dir> [--desktop|--web] [--oppa-path <checkout>]
+    cargo oppa add-font <font-file> [dir] [--weights 400,600,700] [--family Name] [--force]
     cargo oppa check [dir]
     cargo oppa build [dir] --desktop|--web|--android [--dev]
     cargo oppa run [dir] --desktop|--web|--android [--port <n>] [--dev] [--no-browser]
     cargo oppa serve [dir] [--port <n>] [--dev] [--no-browser]
 
+    add-font    vendor a font into an app (instance weights, copy the
+                license, generate src/fonts.rs): <font-file> is a
+                TTF/OTF (static or variable); [dir] is the app
+                (default .); --weights pins instanced hundreds
+                (default 400,600,700); --family must match the
+                name-table family; --force overwrites existing faces
     check       verify an app dir (layout + host, wasm, Android checks)
     build       artifacts per target, no launching (Android: signed
                 release APK into android/)
@@ -46,6 +53,7 @@ USAGE:
 EXAMPLES:
     cargo oppa new ~/my-app
     cargo oppa new ~/my-web-app --web
+    cargo oppa add-font ~/Poppins[wght].ttf ~/my-app
     cargo oppa check ~/my-app
     cargo oppa build ~/my-app --desktop
     cargo oppa run ~/my-app --desktop
@@ -75,6 +83,9 @@ fn run(args: &[String]) -> Result<(), String> {
         rest = argv.first().map(String::as_str).unwrap_or_default();
     }
     if rest != "new" {
+        if rest == "add-font" {
+            return run_add_font(&argv[1..]);
+        }
         if rest == "serve" {
             return run_serve(&argv[1..]);
         }
@@ -88,9 +99,9 @@ fn run(args: &[String]) -> Result<(), String> {
             return run_run(&argv[1..]);
         }
         return Err(if args.len() <= 1 {
-            "no subcommand — try `new`, `check`, `build`, `run`, or `serve`".to_string()
+            "no subcommand — try `new`, `add-font`, `check`, `build`, `run`, or `serve`".to_string()
         } else {
-            format!("unknown subcommand {rest:?} — try `new`, `check`, `build`, `run`, or `serve`")
+            format!("unknown subcommand {rest:?} — try `new`, `add-font`, `check`, `build`, `run`, or `serve`")
         });
     }
     let mut dir: Option<String> = None;
@@ -158,6 +169,15 @@ fn run(args: &[String]) -> Result<(), String> {
         println!("  created {}", path.display());
     }
     println!("next: {}", next_steps(template));
+    Ok(())
+}
+
+/// `cargo oppa add-font <font-file> [dir] [--weights a,b,c]
+/// [--family Name] [--force]`.
+fn run_add_font(argv: &[String]) -> Result<(), String> {
+    let args = cargo_oppa::add_font::parse_add_font_args(argv)?;
+    let report = cargo_oppa::add_font::add_font(&args)?;
+    println!("{}", cargo_oppa::add_font::wiring_report(&report));
     Ok(())
 }
 

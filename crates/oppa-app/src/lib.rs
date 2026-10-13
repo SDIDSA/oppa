@@ -98,6 +98,22 @@ pub use scene::SceneCore;
 /// backend-adapter state, not engine logic.
 pub use session::{ScenePresenter, SceneSession};
 
+/// App-bundled font override: the requested shaping family plus its
+/// faces as `(label, sfnt-bytes)` pairs in priority order (the
+/// `RustybuzzService::from_bytes_with_chain` input shape, e.g.
+/// `oppa_fonts::READEX_PRO_FACES` with
+/// `oppa_fonts::READEX_PRO_FAMILY`). When set, the desktop runners
+/// shape, measure, and rasterize from these bytes on every OS instead
+/// of the system fonts, so the app renders identical outlines
+/// everywhere; every face injects into both raster backends before
+/// first paint. `None` (default) keeps the runner's system fonts —
+/// every existing app is untouched.
+#[derive(Clone, Debug)]
+pub struct AppFonts {
+    pub family: &'static str,
+    pub faces: &'static [(&'static str, &'static [u8])],
+}
+
 /// Window launch parameters.
 #[derive(Clone, Debug)]
 pub struct WindowOptions {
@@ -110,18 +126,24 @@ pub struct WindowOptions {
     /// runners map it into shell creation flags before the window
     /// exists and never restyle a live window.
     pub window_style: WindowStyle,
-    /// Native caption buttons (decision 485): in `Extended` mode the
-    /// OS answers minimize/maximize/close over the `HeaderBar`
-    /// caption zones with fully native behavior (real actions,
-    /// hover glow, Win11 snap layouts). Default `true` (the JavaFX
-    /// `EXTENDED` shape — platform buttons present unless the app
-    /// implements its own, in which case disable this so the custom
-    /// buttons keep their presses). Honored in `Extended` on
-    /// Windows only: Linux keeps server-side CSD (no OS zones
-    /// exist), so the app's bridged buttons always own the press
-    /// there — wire `HeaderBar` `on_*` actions unconditionally as
-    /// the Linux/off fallback. Launch-only, like `window_style`.
+    /// Native caption buttons (decision 485, reshaped by 494): in
+    /// `Extended` mode the app declares the native button cluster
+    /// (see `oppa_controls::CaptionButtons`) and the OS answers
+    /// minimize/maximize/close over those boxes with fully native
+    /// behavior (real actions, hover glow, Win11 snap layouts).
+    /// Default `true`. With `false` the app declares no buttons at
+    /// all (drag-only bar — the native-off shape). Honored in
+    /// `Extended` on Windows only: Linux has no OS zones, so
+    /// declared buttons always bridge their presses there — wire
+    /// `CaptionButtons` `on_*` actions unconditionally (they own the
+    /// press on Linux and stand down harmlessly where the OS answers
+    /// first). Launch-only, like `window_style`.
     pub native_caption_buttons: bool,
+    /// App-bundled fonts (see [`AppFonts`]): `None` (default) keeps
+    /// the system text service + family on every runner. Launch-only,
+    /// like `window_style` — services are built before the window
+    /// exists and never swapped on a live loop.
+    pub app_fonts: Option<AppFonts>,
     /// Debug performance overlay configuration.
     pub debug_overlay: DebugOverlayConfig,
     /// Uncapped continuous repaint (benchmark mode): the runner polls
@@ -142,6 +164,7 @@ impl WindowOptions {
             height: height.max(1),
             window_style: WindowStyle::Decorated,
             native_caption_buttons: true,
+            app_fonts: None,
             debug_overlay: DebugOverlayConfig::default(),
             continuous_repaint: false,
         }
@@ -161,8 +184,8 @@ impl WindowOptions {
         self
     }
 
-    /// Frameless window: no title bar, no caption buttons, solid
-    /// background.
+    /// Bare rectangle: no title bar, no caption buttons, no OS
+    /// window behaviors at all (decision 494).
     pub fn undecorated(mut self) -> Self {
         self.window_style = WindowStyle::Undecorated;
         self
@@ -176,19 +199,35 @@ impl WindowOptions {
         self
     }
 
-    /// Client-area-extended hybrid: no system title bar, OS keeps
-    /// managing drag/resize/snap over the app's `HeaderBar` region.
+    /// Client-area-extended hybrid: native window frame with no
+    /// system title bar (decision 494) — the OS keeps managing the
+    /// window while composed `HeaderBar` chrome owns the drag region,
+    /// with optional native `CaptionButtons`.
     pub fn extended(mut self) -> Self {
         self.window_style = WindowStyle::Extended;
         self
     }
 
-    /// Native caption buttons in `Extended` mode (decision 485 —
-    /// launch-only, see [`WindowOptions::native_caption_buttons`]).
-    /// `false` disables the OS zones so app-implemented buttons
-    /// (wired `HeaderBar` `on_*` actions) keep their presses.
+    /// Native caption buttons in `Extended` mode (decision 485,
+    /// reshaped by 494 — launch-only, see [`WindowOptions::native_caption_buttons`]):
+    /// `true` declares the native cluster, `false` draws no buttons
+    /// at all.
     pub fn with_native_caption_buttons(mut self, enabled: bool) -> Self {
         self.native_caption_buttons = enabled;
+        self
+    }
+
+    /// App-bundled fonts (see [`AppFonts`]): `faces` are
+    /// `(label, sfnt-bytes)` pairs in priority order, e.g.
+    /// `oppa_fonts::READEX_PRO_FACES` with
+    /// `oppa_fonts::READEX_PRO_FAMILY`. Launch-only (see
+    /// [`WindowOptions::app_fonts`]).
+    pub fn with_app_fonts(
+        mut self,
+        family: &'static str,
+        faces: &'static [(&'static str, &'static [u8])],
+    ) -> Self {
+        self.app_fonts = Some(AppFonts { family, faces });
         self
     }
 

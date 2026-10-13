@@ -43,7 +43,25 @@ fn fmt_px(device_px: f32, dpr: f32) -> String {
 }
 
 fn fmt_hex(c: oppa::Color) -> String {
-    format!("#{:06x}", c.0 & 0x00FF_FFFF)
+    fmt_color(c)
+}
+
+/// CSS color for a framework color: `#rrggbb` when fully opaque
+/// (every pre-alpha literal renders byte-identically), otherwise
+/// `rgba()` carrying the color's own alpha (see
+/// `Color::alpha_u8`).
+pub(crate) fn fmt_color(c: oppa::Color) -> String {
+    let a = c.alpha_u8();
+    if a == 0xFF {
+        return format!("#{:06x}", c.0 & 0x00FF_FFFF);
+    }
+    format!(
+        "rgba({},{},{},{})",
+        (c.0 >> 16) & 0xFF,
+        (c.0 >> 8) & 0xFF,
+        c.0 & 0xFF,
+        a as f32 / 255.0
+    )
 }
 
 /// CSS easing name for an evaluator [`Ease`](oppa::Ease) (the v1
@@ -111,6 +129,21 @@ pub fn declarations(style: &Style, dpr: f32) -> String {
             "background:linear-gradient({dir},{},{});",
             fmt_hex(bg.from),
             fmt_hex(bg.to)
+        ));
+    } else if let Some(bg) = style.bg_radial {
+        // Round 27.2: two-stop radial fill (mirrors the builder's
+        // concentric-circle expansion functionally — native
+        // interpolation, so exact raster parity is not claimed, only
+        // the stops + geometry). Same both-set precedence as above.
+        // Colors ride `fmt_color` (alpha-aware) rather than the
+        // opaque `fmt_hex` the linear arm keeps.
+        out.push_str(&format!(
+            "background:radial-gradient(circle {}px at {}px {}px,{},{});",
+            fmt_px(bg.r.get() * dpr, dpr),
+            fmt_px(bg.cx.get() * dpr, dpr),
+            fmt_px(bg.cy.get() * dpr, dpr),
+            fmt_color(bg.from),
+            fmt_color(bg.to)
         ));
     } else if let Some(bg) = style.bg {
         if bg != oppa::Color::TRANSPARENT {
@@ -482,6 +515,22 @@ mod tests {
         assert!(
             declarations(&h, 1.0).contains("background:linear-gradient(to right,#ff0000,#0000ff);"),
             "{h:?}"
+        );
+    }
+
+    #[test]
+    fn round_272_radial_gradient_maps_to_css() {
+        // Native radial-gradient carries the author's geometry and
+        // stops (raster parity with the builder's stepped circles is
+        // stated tolerance, not contract).
+        let r: Style = Style::new()
+            .size(100, 100)
+            .bg_radial(30, 70, 50, oppa::Color(0xFF_00_00), oppa::Color(0x00_00_FF))
+            .build();
+        assert!(
+            declarations(&r, 1.0)
+                .contains("background:radial-gradient(circle 50px at 30px 70px,#ff0000,#0000ff);"),
+            "{r:?}"
         );
     }
 }

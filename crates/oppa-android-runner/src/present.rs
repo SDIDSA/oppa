@@ -24,9 +24,7 @@ use oppa::shell::PlatformShell;
 use oppa_app::SceneCore;
 use oppa_shell_android::events::AndroidCmd;
 use oppa_shell_android::input_controller::{AndroidInput, ToolbarOp};
-use oppa_shell_android::selection_menu::{
-    byte_to_utf16_units, MenuAction, MenuSnapshot, SelCause,
-};
+use oppa_shell_android::selection_menu::{byte_to_utf16_units, MenuAction, MenuSnapshot, SelCause};
 
 use crate::ime_bridge;
 use crate::imm_mode;
@@ -403,7 +401,9 @@ fn apply_input_batch(
                     ) {
                         use oppa::input::actions::EditAction;
                         let ok = oppa::apply_edit_action(&session, action, &mut *clipboard);
-                        eprintln!("oppa-key: code={code} action={action:?} ok={ok} (masked={masked})");
+                        eprintln!(
+                            "oppa-key: code={code} action={action:?} ok={ok} (masked={masked})"
+                        );
                         if !ok {
                             match action {
                                 // Single-line Up/Down never consume:
@@ -418,12 +418,8 @@ fn apply_input_batch(
                                 // Clipboard backend failures log loudly
                                 // and consume (never fatal, never
                                 // router-forwarded as phantom keys).
-                                EditAction::Copy
-                                | EditAction::Cut
-                                | EditAction::Paste => {
-                                    eprintln!(
-                                        "oppa-menu: clipboard chord failed: {action:?}"
-                                    );
+                                EditAction::Copy | EditAction::Cut | EditAction::Paste => {
+                                    eprintln!("oppa-menu: clipboard chord failed: {action:?}");
                                 }
                                 _ => {}
                             }
@@ -938,8 +934,15 @@ pub fn drive_interactive(
                 }
                 None => {}
             }
-            let batch_work = apply_input_batch(scene, &cmds, ime_drained, ime_policy, clipboard, &android_input)
-                .map_err(|e| format!("step: {e}"))?;
+            let batch_work = apply_input_batch(
+                scene,
+                &cmds,
+                ime_drained,
+                ime_policy,
+                clipboard,
+                &android_input,
+            )
+            .map_err(|e| format!("step: {e}"))?;
             if batch_work {
                 changed = true;
                 if profile {
@@ -984,8 +987,7 @@ pub fn drive_interactive(
                         eprintln!("oppa-menu: action quiet-miss (no focused session)");
                         continue;
                     };
-                    if android_input.apply_menu_action(&session, *action, clipboard, pin.clone())
-                    {
+                    if android_input.apply_menu_action(&session, *action, clipboard, pin.clone()) {
                         scene.host().run_until_idle();
                         changed = true;
                         if profile {

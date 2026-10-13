@@ -26,7 +26,7 @@ use std::rc::Rc;
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetSysColorBrush, InvalidateRect, UpdateWindow, COLOR_WINDOW, PAINTSTRUCT,
+    BeginPaint, EndPaint, InvalidateRect, UpdateWindow, HBRUSH, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemServices::MK_LBUTTON;
@@ -52,7 +52,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
     WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT, WM_QUIT,
     WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE,
-    WM_SIZE, WM_SYSKEYDOWN, WNDCLASSEXW, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW,
+    WM_SIZE, WM_SYSKEYDOWN, WNDCLASSEXW, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_POPUP,
 };
 
 mod events;
@@ -389,8 +389,10 @@ pub struct ShellShared {
     /// Live-resize hook (Round 7.20, decision 295): the runner
     /// installs this to reflow + repaint + re-present synchronously
     /// from `WM_SIZE` — inside the OS modal sizing loop, where the
-    /// outer pump never runs and the content would otherwise freeze
-    /// under DWM bitmap-stretching until release.
+    /// outer pump never runs. Decision 498 throttles the expensive
+    /// steps runner-side (~30Hz live presents; mid-frames
+    /// DWM-stretch); `WM_EXITSIZEMOVE` fires the hook once more with
+    /// the final size so release lands crisp.
     pub resize_callback: Option<Rc<dyn Fn(u32, u32)>>,
     /// The anchoring log: every caret rect passed through `set_ime`
     /// (client px), in order — the candidate-window anchoring path's
@@ -427,13 +429,13 @@ pub struct ShellShared {
     /// because their boxes were subtracted before publish. Empty =
     /// no caption region (undecorated windows stay fully client).
     pub drag_rects: Vec<[f32; 4]>,
-    /// Native caption zones (decision 485): the `HeaderBar` caption
-    /// button boxes published by the runner (Windows `Extended` +
-    /// `native_caption_buttons` only) so the `WM_NCHITTEST` arm
-    /// answers the `HT*BUTTON` codes ahead of drag regions and
-    /// borders — the OS owns hover glow, press, and snap layouts
-    /// over them. Empty = custom/off (the app's bridged buttons
-    /// keep their presses).
+    /// Native caption zones (decision 485, reshaped by 494): the
+    /// declared `CaptionButtons` boxes published by the runner
+    /// (Windows `Extended` + `native_caption_buttons` only) so the
+    /// `WM_NCHITTEST` arm answers the `HT*BUTTON` codes ahead of drag
+    /// regions and borders — the OS owns hover glow, press, and snap
+    /// layouts over them. Empty = no declared buttons (nothing for
+    /// the OS to answer).
     pub caption_buttons: Vec<(oppa::CaptionButton, [f32; 4])>,
     /// Hovered native caption zone (decision 486): refreshed on
     /// every `WM_NCHITTEST` (zone hit or miss) and cleared on
@@ -497,7 +499,18 @@ impl Win32Shell {
                 lpfnWndProc: Some(shell_wnd_proc),
                 hInstance: hinstance,
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-                hbrBackground: GetSysColorBrush(COLOR_WINDOW),
+                // Decision 497: NULL background brush — the framework
+                // owns every pixel (GPU swapchain, or a full-client
+                // CPU blit), so GDI must never fill. A `COLOR_WINDOW`
+                // white brush here painted a sliver over fresh frames
+                // during live resize: each step's `WM_PAINT`
+                // `BeginPaint` filled the newly exposed strips white
+                // after the step's present landed, lagging one step
+                // behind the texture until the next present covered
+                // it. (`WM_ERASEBKGND` is claimed below on every
+                // style, so `BeginPaint` has nothing to erase with
+                // either — this is the backstop.)
+                hbrBackground: HBRUSH(std::ptr::null_mut()),
                 lpszClassName: class_name,
                 ..Default::default()
             };
@@ -505,26 +518,33 @@ impl Win32Shell {
 
             let mut title = cfg.title.encode_utf16().collect::<Vec<_>>();
             title.push(0);
-            // Decisions 482–484 (the winit borderless architecture):
-            // EVERY style creates the standard overlapped window
+            // Decisions 482–484, 494 (the winit borderless architecture,
+            // as corrected): `Decorated`, `Extended`, and `Transparent`
+            // create the standard overlapped window
             // (`WS_OVERLAPPEDWINDOW`: caption + thick frame + system
             // menu + min/max boxes stay set — the OS keeps owning
             // Aero snap, tiling, Win+arrow keys, the taskbar system
             // menu, DWM shadows, and minimize/maximize animations).
             // Framelessness lives in the message handling, not the
             // creation flags: `WM_NCCALCSIZE` strips the non-client
-            // visuals and `WM_NCHITTEST` answers border/caption hits,
-            // so frameless never means unmanaged (a bare `WS_POPUP`
-            // was tried first — it silently dropped snap/tiling with
-            // the thick frame, found live in Stylebook Extended).
+            // visuals and `WM_NCHITTEST` answers border/caption hits.
+            // `Undecorated` is the exception — a bare `WS_POPUP`
+            // (decision 494): an empty rectangle with no OS behaviors
+            // at all (no resize, no snap, no shadow), so anything the
+            // app wants there it wires itself through `WindowControl`.
             // Transparent additionally needs DWM per-pixel composition
             // (`enable_transparent_blur` below) plus the runner-owned
             // premultiplied-alpha swapchain + alpha-0 clear.
+            let window_flags = if cfg.style == oppa::WindowStyle::Undecorated {
+                WS_POPUP.0
+            } else {
+                WS_OVERLAPPEDWINDOW.0
+            };
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 class_name,
                 windows::core::PCWSTR(title.as_ptr()),
-                WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0),
+                WINDOW_STYLE(window_flags),
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 cfg.width,
@@ -554,13 +574,15 @@ impl Win32Shell {
                 }
             }
 
-            // Decision 489, 492: frameless windows without a real OS frame
-            // (`Undecorated`, `Transparent`) extend the 1px glass frame (native
-            // border line + drop shadow — the `WM_NCCALCSIZE` strip takes them
-            // with the visuals). `Extended` keeps standard OS non-client frame
-            // metrics on left, right, and bottom (decision 492), so 1px glass is
-            // not needed there. Loud on refusal but never fatal.
-            if cfg.style.is_frameless() && cfg.style != oppa::WindowStyle::Extended {
+            // Decision 489, 492, 494: only `Transparent` extends the
+            // 1px glass frame (native border line + drop shadow — the
+            // `WM_NCCALCSIZE` strip takes them with the visuals).
+            // `Extended` keeps standard OS non-client frame metrics on
+            // left, right, and bottom (decision 492), so 1px glass is
+            // not needed there; `Undecorated` is a bare popup with no
+            // OS behaviors at all (decision 494 — nothing to extend).
+            // Loud on refusal but never fatal.
+            if cfg.style == oppa::WindowStyle::Transparent {
                 if let Err(e) = extend_glass_frame(hwnd) {
                     eprintln!("oppa-shell-win: glass frame unavailable: {e} (no border/shadow)");
                 }
@@ -619,12 +641,12 @@ impl Win32Shell {
         self.shared.borrow().drag_rects.clone()
     }
 
-    /// Publishes the native caption zones (decision 485 — the runner
-    /// recomputes these from `oppa::native_caption_zones` alongside
-    /// the drag regions; the `WM_NCHITTEST` arm answers the
-    /// `HT*BUTTON` codes over them ahead of everything else).
-    /// Empty clears the zones (custom/off — bridged buttons keep
-    /// their presses).
+    /// Publishes the native caption zones (decision 485, reshaped
+    /// by 494 — the runner recomputes these from
+    /// `oppa::native_caption_zones` alongside the drag regions; the
+    /// `WM_NCHITTEST` arm answers the `HT*BUTTON` codes over them
+    /// ahead of everything else). Empty clears the zones (no
+    /// declared buttons — nothing to answer).
     pub fn set_caption_buttons(&self, zones: Vec<(oppa::CaptionButton, [f32; 4])>) {
         self.shared.borrow_mut().caption_buttons = zones;
     }

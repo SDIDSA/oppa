@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 use super::*;
-use windows::Win32::Foundation::{POINT, RECT};
+use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO,
     MONITOR_DEFAULTTONEAREST,
@@ -12,9 +12,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetSystemMetrics, IsZoomed, ShowWindow, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER,
-    SM_CYSIZEFRAME, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, TITLEBARINFOEX, WM_ERASEBKGND,
-    WM_GETTITLEBARINFOEX, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE,
+    GetClientRect, GetMessagePos, GetSystemMenu, GetSystemMetrics, IsZoomed, PostMessageW,
+    SetForegroundWindow, ShowWindow, TrackPopupMenuEx, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER,
+    SM_CYSIZEFRAME, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, TITLEBARINFOEX, TPM_LEFTALIGN,
+    TPM_LEFTBUTTON, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN, WM_ERASEBKGND, WM_EXITSIZEMOVE,
+    WM_GETTITLEBARINFOEX, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMOUSELEAVE, WM_NCRBUTTONUP,
+    WM_NULL, WM_SYSCOMMAND,
 };
 
 /// Publishes the hovered caption zone (decision 486): maps the
@@ -94,6 +97,58 @@ fn title_bar_info(shared: &Rc<RefCell<ShellShared>>, hwnd: HWND) -> Option<TITLE
         rgstate: states,
         rgrect: rects,
     })
+}
+
+/// System-menu trigger for `WM_NCRBUTTONUP` (decision 496): menu
+/// when the release lands over the drag chrome or a caption zone
+/// (native parity — right-clicks anywhere on a real title bar raise
+/// the menu, buttons included). Pure (the proc supplies the live
+/// point + runner-published geometry).
+pub(crate) fn ncrbuttonup_shows_menu(
+    x: f32,
+    y: f32,
+    drag: &[[f32; 4]],
+    zones: &[(oppa::CaptionButton, [f32; 4])],
+) -> bool {
+    zones.iter().any(|(_, r)| in_rects(x, y, &[*r])) || in_rects(x, y, drag)
+}
+
+/// Shows the window menu explicitly (decision 496): foreground
+/// dance (the documented `TrackPopupMenu` requirement — the menu
+/// never opens for a background window), command return, forward as
+/// `WM_SYSCOMMAND` (Close flows into the `WM_CLOSE` veto path like
+/// every other close). Holds no borrows across the modal loop, so
+/// nested messages keep the decision-483 reentrancy shape.
+fn show_system_menu(hwnd: HWND) {
+    unsafe {
+        let menu = GetSystemMenu(hwnd, false);
+        if menu.is_invalid() {
+            return;
+        }
+        let _ = SetForegroundWindow(hwnd);
+        let pos = GetMessagePos();
+        let (x, y) = (
+            (pos & 0xFFFF) as i16 as i32,
+            ((pos >> 16) & 0xFFFF) as i16 as i32,
+        );
+        let cmd = TrackPopupMenuEx(
+            menu,
+            (TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON | TPM_RIGHTBUTTON | TPM_RETURNCMD).0,
+            x,
+            y,
+            hwnd,
+            None,
+        );
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        if cmd.0 != 0 {
+            let _ = PostMessageW(
+                Some(hwnd),
+                WM_SYSCOMMAND,
+                WPARAM(cmd.0 as usize),
+                LPARAM(GetMessagePos() as isize),
+            );
+        }
+    }
 }
 
 /// Live monitor work area for `hwnd` (decision 484): the maximized
@@ -316,9 +371,12 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             // outside-the-client-area resize grab margins over the dropshadow
             // for free and satisfies Windows 11 DWM's frame requirement for
             // windowed Snap Layouts flyout activation over `HTMAXBUTTON`.
-            // Other frameless styles (`Undecorated`, `Transparent`) strip the
+            // Other frameless styles (`Transparent`) strip the
             // non-client visuals completely to 0 and clamp to the monitor work
-            // area when maximized. Decorated windows keep default handling.
+            // area when maximized. (`Undecorated` is a bare `WS_POPUP`
+            // with no non-client area at all — decision 494 — so this
+            // arm is only a backstop plus the maximized work-area
+            // clamp.) Decorated windows keep default handling.
             if shared.borrow().style == oppa::WindowStyle::Extended {
                 if wparam.0 != 0 {
                     let params = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
@@ -371,17 +429,17 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             }
         }
         WM_ERASEBKGND => {
-            // Decision 484: transparent windows never GDI-erase — the
-            // class brush is `COLOR_WINDOW` white, and erasing would
-            // paint an opaque sheet under the alpha-composited flip
-            // content (the Stylebook white-background report). The
-            // swapchain owns every pixel, so claiming erasure paints
-            // nothing. All other styles keep default handling.
-            if shared.borrow().style.is_transparent() {
-                LRESULT(1)
-            } else {
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
+            // Decision 497 (user-found live: a white sliver lagged
+            // one resize step behind the texture): NO style GDI-erases
+            // — the framework owns every pixel (GPU swapchain, or a
+            // full-client CPU blit), so claiming erasure paints
+            // nothing. Previously only transparent windows claimed
+            // (decision 484 — an opaque sheet under alpha-composited
+            // content); every other style erased with the
+            // `COLOR_WINDOW` white brush, and each live-resize step's
+            // `WM_PAINT` `BeginPaint` filled the newly exposed strips
+            // white after the step's present had already landed.
+            LRESULT(1)
         }
         WM_NCHITTEST => {
             // Decisions 482–492: hit-testing.
@@ -394,7 +452,10 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             // the client area (`def == HTCLIENT`), drag regions check next
             // (`HTCAPTION`, with top edge returning `HTTOP`/`HTTOPLEFT`/`HTTOPRIGHT`
             // when windowed for the top resize grab), then `HTCLIENT`.
-            // Other frameless styles keep the internal frameless_hit_test classifier.
+            // `Transparent` keeps the internal frameless_hit_test classifier.
+            // `Undecorated` is a bare popup (decision 494) — everything
+            // answers `HTCLIENT` (no sizing bands, no zones, no drag;
+            // the app wires its own chrome through `WindowControl`).
             // Decorated windows keep default handling.
             if shared.borrow().style == oppa::WindowStyle::Extended {
                 let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
@@ -441,7 +502,7 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
                 } else {
                     LRESULT(HTCLIENT_PX)
                 }
-            } else if shared.borrow().style.is_frameless() {
+            } else if shared.borrow().style == oppa::WindowStyle::Transparent {
                 // Screen point packs as i16 pairs in lParam.
                 let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
                 let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;
@@ -486,6 +547,9 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
                     maximized,
                     &drag,
                 ))
+            } else if shared.borrow().style == oppa::WindowStyle::Undecorated {
+                // Decision 494: bare popup — everything is client.
+                LRESULT(HTCLIENT_PX)
             } else {
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
@@ -502,8 +566,12 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             // covers the synchronous `WM_SIZE`); close queues
             // `CloseRequested` so the loop veto consults exactly like
             // `WM_CLOSE`. Anything else keeps default handling
-            // (caption double-click zoom, border behavior).
-            if shared.borrow().style.is_frameless() {
+            // (caption double-click zoom, border behavior). Bare
+            // popups never take this path (decision 494 — everything
+            // is client, so no non-client clicks arrive).
+            if shared.borrow().style.is_frameless()
+                && shared.borrow().style != oppa::WindowStyle::Undecorated
+            {
                 let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
                 let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;
                 let mut pt = POINT { x: sx, y: sy };
@@ -536,14 +604,41 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             // a single-click that already acted — swallow it so the
             // action doesn't fire twice (no maximize-flicker).
             // Elsewhere keeps default handling (caption
-            // double-click zoom).
-            if shared.borrow().style.is_frameless() {
+            // double-click zoom). Bare popups never take this path
+            // (decision 494).
+            if shared.borrow().style.is_frameless()
+                && shared.borrow().style != oppa::WindowStyle::Undecorated
+            {
                 let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
                 let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;
                 let mut pt = POINT { x: sx, y: sy };
                 let _ = ScreenToClient(hwnd, &mut pt);
                 let zones = shared.borrow().caption_buttons.clone();
                 if caption_zone_at(pt.x as f32, pt.y as f32, &zones).is_some() {
+                    return LRESULT(0);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_NCRBUTTONUP => {
+            // Decision 496 (user-found live: right-clicking the bar
+            // never raised the window menu — button messages over
+            // `HTCAPTION` arrive as non-client messages that nothing
+            // answered): `Extended`-only, show the system menu over
+            // drag chrome and caption zones (native parity — a real
+            // title bar menus anywhere, buttons included). Every
+            // other style keeps default handling.
+            if shared.borrow().style == oppa::WindowStyle::Extended {
+                let sx = ((lparam.0 & 0xFFFF) as u16) as i16 as i32;
+                let sy = (((lparam.0 >> 16) & 0xFFFF) as u16) as i16 as i32;
+                let mut pt = POINT { x: sx, y: sy };
+                let _ = ScreenToClient(hwnd, &mut pt);
+                let (drag, zones) = {
+                    let s = shared.borrow();
+                    (s.drag_rects.clone(), s.caption_buttons.clone())
+                };
+                if ncrbuttonup_shows_menu(pt.x as f32, pt.y as f32, &drag, &zones) {
+                    show_system_menu(hwnd);
                     return LRESULT(0);
                 }
             }
@@ -562,8 +657,11 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             // boxes offset by the live window origin). Only with a
             // published bar box; otherwise default handling
             // (decorated + headerless keep the OS metrics,
-            // byte-identical).
-            if shared.borrow().style.is_frameless() {
+            // byte-identical). Bare popups never answer (decision
+            // 494 — no OS behaviors there at all).
+            if shared.borrow().style.is_frameless()
+                && shared.borrow().style != oppa::WindowStyle::Undecorated
+            {
                 if let Some(filled) = title_bar_info(&shared, hwnd) {
                     let info = unsafe { &mut *(lparam.0 as *mut TITLEBARINFOEX) };
                     *info = filled;
@@ -792,21 +890,41 @@ pub(crate) unsafe extern "system" fn shell_wnd_proc(
             LRESULT(0)
         }
         WM_SIZE => {
-            // Live resize inside the modal sizing loop (Round 7.20,
-            // decision 295): while the border drag traps the thread
-            // in `DefWindowProcW`, the outer pump never runs — so the
-            // runner's resize hook runs HERE, synchronously, on every
-            // size step (reflow + repaint + swapchain reconfigure +
-            // present, zero DWM stretching). `lParam` packs the new
-            // client size exactly like the mouse messages (see
-            // `client_x` / `client_y`); minimized (1 =
-            // SIZE_MINIMIZED) and zero sizes never reach the hook (no
-            // surface exists for them). `DefWindowProcW` still runs
-            // so the OS sizing state updates normally.
+            // Live resize (Round 7.20, decision 295): the runner's
+            // resize hook runs HERE, synchronously, on every size
+            // step — including inside the OS modal sizing loop, where
+            // the outer pump never runs (decision 498 throttles the
+            // expensive steps runner-side to ~30Hz; between applied
+            // steps DWM stretches the last frame, and the exit arm
+            // below lands one crisp present on release).
+            // `lParam` packs the new client size exactly like the
+            // mouse messages (see `client_x` / `client_y`); minimized
+            // (1 = SIZE_MINIMIZED) and zero sizes never reach the
+            // hook (no surface exists for them). `DefWindowProcW`
+            // still runs so the OS sizing state updates normally.
             let w = client_x(lparam);
             let h = client_y(lparam);
             let minimized = wparam.0 == 1;
             if !minimized && w > 0 && h > 0 {
+                let cb = shared.borrow().resize_callback.clone();
+                if let Some(cb) = cb {
+                    cb(w as u32, h as u32);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_EXITSIZEMOVE => {
+            // Decision 498: the modal loop closed — one full present
+            // with the final live size (the hook throttles mid-drag
+            // steps to ~30Hz, so this lands crisp on release instead
+            // of one stretched frame later; the loop-bottom poll
+            // would converge on the next pump anyway). Move-only
+            // drags (no size change) flow through harmlessly: the
+            // hook no-ops on same-size steps.
+            let mut client = RECT::default();
+            let _ = GetClientRect(hwnd, &mut client);
+            let (w, h) = (client.right - client.left, client.bottom - client.top);
+            if w > 0 && h > 0 {
                 let cb = shared.borrow().resize_callback.clone();
                 if let Some(cb) = cb {
                     cb(w as u32, h as u32);

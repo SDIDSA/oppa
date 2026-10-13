@@ -1,8 +1,8 @@
 //! Desktop entry (Windows + Linux, same source): the launch style
 //! rides `--style=` (default `extended`), so one binary exercises
-//! all four chromes; `--native-buttons` enables the OS caption zones
-//! in `Extended` mode (default off — the custom bridge owns every
-//! press here). Run with `cargo run -p stylebook` or
+//! all four chromes; `--native-buttons` declares the native caption
+//! cluster in `Extended` mode (default off — drag-only bar).
+//! Run with `cargo run -p stylebook` or
 //! `cargo run -p stylebook -- --style transparent`.
 
 use oppa_app::{run_desktop_with, WindowOptions};
@@ -50,10 +50,10 @@ fn main() {
             std::process::exit(2);
         }
     };
-    // Decision 485 opt-in demo: native zones default off here so the
-    // custom bridge below owns every press; `--native-buttons` lets
-    // the OS answer first (the wired actions stand down harmlessly
-    // and stay as the Linux fallback).
+    // Decision 485 opt-in demo: native buttons default off here so
+    // the bare drag bar shows first; `--native-buttons` declares the
+    // caption cluster (the OS answers first on Windows, the wired
+    // actions bridge on Linux).
     let native = parse_native_buttons_flag(&raw);
     let hooks = ChromeHooks::default();
     let props = StylebookProps {

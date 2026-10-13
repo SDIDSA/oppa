@@ -559,3 +559,73 @@ fn error_boundary_custom_fallback_renders_and_resets() {
 
     std::panic::set_hook(hook);
 }
+
+/// Decision 510: `Above` + `instant` + tinted tooltips (the
+/// delete-mark recipe) — the card opens on the first hovered frame
+/// (no dwell), floats over the anchor, and carries the override fill
+/// and ink instead of the themed surface.
+#[derive(Clone, Props)]
+struct AboveProps;
+
+fn above_anchor(_ctx: &Ctx, _p: &AboveProps) -> VNode {
+    Div("above-btn")
+        .style(Style::new().size(60, 30).bg(Color(0x33_33_33)))
+        .build()
+}
+
+fn above_screen(ctx: &Ctx, _p: &()) -> VNode {
+    let tp = TooltipProps::new("Delete", above_anchor, AboveProps)
+        .above()
+        .instant()
+        .fill(Color(0xCC_22_22))
+        .ink(Color(0xFF_FF_FF));
+    Div("screen").style(Style::new().size(400, 300)).child(
+        Div("above-wrap")
+            .style(Style::new().x(100.0).absolute_y(100.0).w(60.0).h(30.0))
+            .child(ctx.child("oppa::AboveTip", 1, &tp, Tooltip)),
+    )
+}
+
+#[test]
+fn tooltip_above_instant_tinted_opens_on_first_hover() {
+    let host = ComponentHost::new();
+    host.set_viewport(400.0, 300.0);
+    host.set_text_service(Box::new(FakeText));
+    host.mount("S", (), above_screen);
+    host.run_until_idle();
+    assert!(
+        find_retained_by_debug(&host, "tooltip-card").is_empty(),
+        "initially closed"
+    );
+    // Instant: no dwell — the first hovered frame opens.
+    hover(&host, 130.0, 115.0);
+    let card = find_retained_by_debug(&host, "tooltip-card")
+        .into_iter()
+        .next()
+        .expect("instant tip opens on first hover");
+    let tip = host.committed_box(card).expect("laid card");
+    let anchor = host
+        .committed_box(node_by_debug(&host, "above-btn"))
+        .expect("laid anchor");
+    assert!(
+        tip.y + tip.h <= anchor.y,
+        "card floats above the anchor, got tip bottom {} vs anchor top {}",
+        tip.y + tip.h,
+        anchor.y
+    );
+    // Override tint rides the card style, not the themed surface.
+    let bg = host.with_retained_mut(|rec, styles| {
+        styles
+            .get(rec.get(card).expect("live card").style)
+            .cloned()
+            .unwrap_or_default()
+            .bg
+    });
+    assert_eq!(bg, Some(Color(0xCC_22_22)), "error fill pins the card");
+    // Leaving dismisses immediately.
+    hover(&host, 10.0, 280.0);
+    assert!(
+        find_retained_by_debug(&host, "tooltip-card").is_empty(),
+        "dismisses on leave"
+    );
+}

@@ -65,6 +65,28 @@ pub struct Color(pub u32);
 
 impl Color {
     pub const TRANSPARENT: Color = Color(0x0000_0000);
+
+    /// Effective alpha byte for painters (Round 27.2): the top byte
+    /// of 32-bit values (`0xAARRGGBB`), full opacity for 24-bit
+    /// values (`0xRRGGBB` — the codebase-wide literal shape, whose
+    /// would-be alpha byte is the color itself). Before this rule
+    /// every backend read alpha from the style `opacity` alone, so
+    /// translucent literals painted fully opaque — a silent no-op
+    /// the painter tests now pin.
+    ///
+    /// Sharp edge, stated plainly: the zero value reads opaque
+    /// black here (`0x000000` is a working black ink in existing
+    /// scenes), so [`TRANSPARENT`](Self::TRANSPARENT) keeps working
+    /// only through the plan builder's explicit skips (bg, ring,
+    /// bands — never painted), never by flowing into a converter.
+    /// Keep it out of ink/shadow colors.
+    pub fn alpha_u8(self) -> u8 {
+        if self.0 > 0x00FF_FFFF {
+            (self.0 >> 24) as u8
+        } else {
+            0xFF
+        }
+    }
 }
 
 /// Easing subset, CSS-expressible by lock (§9.1: v1 animatables are the
@@ -137,6 +159,31 @@ pub struct LinearGradient {
     pub to: Color,
     /// False = top-to-bottom; true = left-to-right.
     pub horizontal: bool,
+}
+
+/// Two-stop radial background gradient, data only (Round 27.2,
+/// decision 507): center + radius in node-local px with a center
+/// (`from`) and rim (`to`) color. The FramePlan builder expands it
+/// into 1px concentric solid-circle steps (largest first, so each
+/// smaller disc overpaints — the linear-strip doctrine applied
+/// radially), so CPU/GPU agree by construction; the DOM backend
+/// serves native `radial-gradient` (stops + geometry agree, raster
+/// interpolation is browser-owned, stated tolerance). Replaces `bg`
+/// — setting any two of `bg`/`bg_gradient`/`bg_radial` refuses loudly
+/// at plan build — and refuses loudly with `radius`/`circle` (round
+/// clipping is a follow-up). Paint-only, never layout.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RadialGradient {
+    /// Center x in node-local px (origin at the committed box top-left).
+    pub cx: Px,
+    /// Center y in node-local px.
+    pub cy: Px,
+    /// Radius in px (1px ring steps — like the linear strips).
+    pub r: Px,
+    /// Center color.
+    pub from: Color,
+    /// Rim color.
+    pub to: Color,
 }
 
 /// One grid track (Phase 36 PR2a, decision 353 — G15 minimal Grid):
@@ -511,6 +558,10 @@ pub struct Style {
     /// Two-stop linear background fill (Round 1.3; paint-only, never
     /// layout-affecting; replaces `bg` — see [`LinearGradient`]).
     pub bg_gradient: Option<LinearGradient>,
+    /// Two-stop radial background fill (Round 27.2; paint-only,
+    /// never layout-affecting; replaces `bg` — see
+    /// [`RadialGradient`]).
+    pub bg_radial: Option<RadialGradient>,
     /// Text ink override (M5; `DrawOp::Text` falls back to the build
     /// theme's `text_primary` when absent — see `oppa::render`).
     pub ink: Option<Color>,
@@ -557,6 +608,59 @@ impl StyleBuilder {
     pub fn size(mut self, w: impl IntoPx, h: impl IntoPx) -> Self {
         self.inner.w = Some(w.into_px());
         self.inner.h = Some(h.into_px());
+        self
+    }
+
+    /// Square box (`size` with both sides equal — icon slots, avatar
+    /// boxes, centered glyph cells; decision 510).
+    pub fn square(mut self, s: impl IntoPx) -> Self {
+        let px = s.into_px();
+        self.inner.w = Some(px);
+        self.inner.h = Some(px);
+        self
+    }
+
+    /// Centers content on both axes (`align_items` + `justify_content`
+    /// — icon slots, avatar monograms, tip cards; decision 510).
+    pub fn center(mut self) -> Self {
+        self.inner.align_items = Some(AlignItems::Center);
+        self.inner.justify_content = Some(JustifyContent::Center);
+        self
+    }
+
+    /// Uniform padding on all four sides (the `pad_x`/`pad_y` shape
+    /// for all-over insets like card panels; per-side methods refine
+    /// it under the CSS-shorthand rule).
+    pub fn pad_all(mut self, p: impl IntoPx) -> Self {
+        let px = p.into_px();
+        self.inner.pad_x = Some(px);
+        self.inner.pad_y = Some(px);
+        self
+    }
+
+    /// Symmetric padding as `(horizontal, vertical)` (the `margin`
+    /// shape for pads — panels with one horizontal and one vertical
+    /// inset; per-side methods refine it).
+    pub fn pad_xy(mut self, x: impl IntoPx, y: impl IntoPx) -> Self {
+        self.inner.pad_x = Some(x.into_px());
+        self.inner.pad_y = Some(y.into_px());
+        self
+    }
+
+    /// Per-side padding in CSS `top right bottom left` order (the
+    /// four-call chain as one call — title-bar insets, brand groups;
+    /// each set side wins over `pad_x`/`pad_y`, the shorthand rule).
+    pub fn pad_trbl(
+        mut self,
+        top: impl IntoPx,
+        right: impl IntoPx,
+        bottom: impl IntoPx,
+        left: impl IntoPx,
+    ) -> Self {
+        self.inner.pad_top = Some(top.into_px());
+        self.inner.pad_right = Some(right.into_px());
+        self.inner.pad_bottom = Some(bottom.into_px());
+        self.inner.pad_left = Some(left.into_px());
         self
     }
 
@@ -941,6 +1045,28 @@ impl StyleBuilder {
             from,
             to,
             horizontal: true,
+        });
+        self
+    }
+
+    /// Two-stop radial background fill (`from` at (`cx`, `cy`) →
+    /// `to` at radius `r`, all node-local px — Round 27.2; same
+    /// replace-`bg` rules as [`Self::bg_gradient`], see
+    /// [`RadialGradient`]).
+    pub fn bg_radial(
+        mut self,
+        cx: impl IntoPx,
+        cy: impl IntoPx,
+        r: impl IntoPx,
+        from: Color,
+        to: Color,
+    ) -> Self {
+        self.inner.bg_radial = Some(RadialGradient {
+            cx: cx.into_px(),
+            cy: cy.into_px(),
+            r: r.into_px(),
+            from,
+            to,
         });
         self
     }

@@ -73,6 +73,12 @@ fn checkbox_flips_and_reports_checked() {
         required: false,
         error_message: None,
         helper_text: None,
+        box_px: 20.0,
+        box_radius: 4.0,
+        label_style: oppa::Text::body_secondary,
+        label_ink: None,
+        check_ink: None,
+        check_scale: 1.0,
     };
     host.mount("Chk", CheckCase { props }, check_render);
     host.run_until_idle();
@@ -128,6 +134,12 @@ fn checkbox_renders_drawn_box_check_iff_checked_and_label() {
         required: false,
         error_message: None,
         helper_text: None,
+        box_px: 20.0,
+        box_radius: 4.0,
+        label_style: oppa::Text::body_secondary,
+        label_ink: None,
+        check_ink: None,
+        check_scale: 1.0,
     };
     host.mount("ChkV", CheckCase { props }, check_render);
     host.run_until_idle();
@@ -156,6 +168,55 @@ fn checkbox_renders_drawn_box_check_iff_checked_and_label() {
     assert!(
         find_retained_by_debug(&host, "checkbox-check-arm").is_empty(),
         "no stepped-square arms — the mark is one vector"
+    );
+}
+
+/// Decision 508: the check mark takes an ink override and a
+/// center-preserving scale (defaults keep the exact shipped mark —
+/// proven by every suite above running `None`/`1.0`).
+#[test]
+fn checkbox_check_ink_and_scale_override() {
+    let host = ComponentHost::new();
+    let checked = host.runtime().signal(true);
+    let props = CheckboxProps {
+        label: SharedString::from("T&C"),
+        checked: checked.clone(),
+        enabled: true,
+        on_change: None,
+        invalid: false,
+        required: false,
+        error_message: None,
+        helper_text: None,
+        box_px: 18.0,
+        box_radius: 5.0,
+        label_style: oppa::Text::body_secondary,
+        label_ink: None,
+        check_ink: Some(oppa::Color(0x11_22_33)),
+        check_scale: 0.85,
+    };
+    host.mount("ChkInk", CheckCase { props }, check_render);
+    host.run_until_idle();
+    let id = node_by_debug(&host, "checkbox-check");
+    let spec = host
+        .with_retained_mut(|rec, _| rec.get(id).and_then(|n| n.path.clone()))
+        .expect("check carries a path spec");
+    let stroke = spec.stroke.expect("check is stroked");
+    assert_eq!(
+        stroke.color,
+        oppa::Color(0x11_22_33),
+        "ink override wins over contrast white"
+    );
+    // 2.5 * (18/20) * 0.85 = 1.9125.
+    assert!(
+        (stroke.width - 1.9125).abs() < 1e-4,
+        "stroke scales with the mark, got {}",
+        stroke.width
+    );
+    // Recentered about the 18px box: (4.5 * 0.765) + (18 - 20 * 0.765) / 2.
+    assert!(
+        spec.data.starts_with("M 4.7925"),
+        "shrunken mark recenters, got {:?}",
+        spec.data
     );
 }
 
@@ -494,4 +555,109 @@ fn button_icon_renders_and_still_activates() {
     assert_eq!(sem.label.as_deref(), Some("OK"));
     press_node(&host, id);
     assert!(fired.get(), "press activates with an icon set");
+}
+
+/// Decision 510: brand overrides pin fill/pressed-fill/ink/radius/
+/// text style while press semantics stay the control's — and the
+/// full-width label centers on the whole box (symmetric icon/spacer
+/// insets, the card submit-button shape).
+#[test]
+fn button_brand_overrides_pin_chrome_and_center_label() {
+    const FILL: oppa::Color = oppa::Color(0xFF_6E_A0_FF);
+    const PRESSED: oppa::Color = oppa::Color(0xFF_54_8D_EB);
+    const INK: oppa::Color = oppa::Color(0xFF_18_23_38);
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    host.set_viewport(400.0, 300.0);
+    let fired = host.runtime().signal(false);
+    let set = fired.clone();
+    let props = ButtonProps::new("Sign in", move || set.set(true))
+        .debug("brand")
+        .full_width()
+        .height(44.0)
+        .content_pad(12.0)
+        .fill(FILL)
+        .pressed_fill(PRESSED)
+        .ink(INK)
+        .radius(12.0)
+        .text_style(oppa::TextClass::Custom {
+            size_px: 15,
+            weight: oppa::FontWeight::SEMI_BOLD,
+        })
+        .vector_icon("M 0 0 L 20 0 L 20 20 Z", INK, 20.0)
+        .full_width_label();
+    host.mount("BtnBrand", ButtonCase { props }, button_render);
+    host.run_until_idle();
+    // Full-width 44px box under the 400px viewport.
+    let outer_id = node_by_debug(&host, "brand");
+    let outer = host.committed_box(outer_id).expect("box");
+    assert!(
+        approx(outer.w, 400.0) && approx(outer.h, 44.0),
+        "full-width 400x44, got {}x{}",
+        outer.w,
+        outer.h
+    );
+    // Pinned fill rides the root style.
+    let bg = host.with_retained_mut(|rec, styles| {
+        styles
+            .get(rec.get(outer_id).expect("live button").style)
+            .cloned()
+            .unwrap_or_default()
+            .bg
+    });
+    assert_eq!(bg, Some(FILL), "brand fill pins the box");
+    // Symmetric insets: the 20px icon rides the 12px left pad while
+    // an equal spacer balances the right.
+    let icon = host
+        .committed_box(node_by_debug(&host, "brand-icon"))
+        .expect("icon slot");
+    let pad = host
+        .committed_box(node_by_debug(&host, "brand-pad"))
+        .expect("spacer");
+    assert!(
+        approx(icon.w, 20.0) && approx(pad.w, 20.0),
+        "20px icon and spacer, got {} and {}",
+        icon.w,
+        pad.w
+    );
+    assert!(
+        approx(icon.x - outer.x, 12.0),
+        "icon rides the left pad, got {}",
+        icon.x - outer.x
+    );
+    assert!(
+        approx(outer.x + outer.w - (pad.x + pad.w), 12.0),
+        "spacer balances the right, got {}",
+        outer.x + outer.w - (pad.x + pad.w)
+    );
+    // Label ink pins to the dark brand ink.
+    let text_id = node_by_debug(&host, "text");
+    let ink = host.with_retained_mut(|rec, styles| {
+        styles
+            .get(rec.get(text_id).expect("live label").style)
+            .cloned()
+            .unwrap_or_default()
+            .ink
+    });
+    assert_eq!(ink, Some(INK), "brand ink pins the label");
+    // Press still activates through the control's own ownership.
+    press_node(&host, node_by_debug(&host, "brand"));
+    assert!(fired.get(), "press activates the branded button");
+}
+
+/// Decision 510: two leading visuals refuse loudly (one icon slot,
+/// never two — an ambiguous composition, not a silent pick).
+#[test]
+#[should_panic(expected = "one leading visual")]
+fn button_dual_icon_slots_refuse_loudly() {
+    let host = ComponentHost::new();
+    host.set_text_service(Box::new(FakeText));
+    let rgba = vec![255u8; 4 * 4 * 4];
+    let image = host.images().insert_pixels("btn-both", 4, 4, rgba);
+    let props =
+        ButtonProps::new("OK", || {})
+            .icon(image)
+            .vector_icon("M 0 0 Z", oppa::Color(1), 16.0);
+    host.mount("BtnBoth", ButtonCase { props }, button_render);
+    host.run_until_idle();
 }

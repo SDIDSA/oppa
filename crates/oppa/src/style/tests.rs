@@ -77,6 +77,37 @@ fn per_side_fields_refine_shorthands_and_corners_resolve() {
 }
 
 #[test]
+fn color_alpha_byte_follows_bit_width() {
+    // 24-bit literals (the codebase-wide shape) paint opaque —
+    // their would-be alpha byte is the color itself.
+    assert_eq!(Color(0x22_66_CC).alpha_u8(), 0xFF);
+    assert_eq!(Color(0x00_00_00).alpha_u8(), 0xFF);
+    assert_eq!(Color(0xFF_FF_FF).alpha_u8(), 0xFF);
+    // 32-bit literals carry an explicit alpha byte.
+    assert_eq!(Color(0xFF_6E_A0_FF).alpha_u8(), 0xFF);
+    assert_eq!(Color(0x59_FF_FF_FF).alpha_u8(), 0x59);
+    // 0x00FFFFFF is numerically 0xFFFFFF (indistinguishable from
+    // opaque white) — exact-zero alphas on nonzero colors are
+    // unrepresentable by construction.
+    assert_eq!(Color(0x00_FF_FF_FF).alpha_u8(), 0xFF);
+    // TRANSPARENT is numerically zero, so it reads opaque here by
+    // the same rule — it keeps working only through the builder
+    // skips, never by flowing into a converter.
+    assert_eq!(Color::TRANSPARENT.alpha_u8(), 0xFF);
+}
+
+#[test]
+fn bg_radial_stores_geometry_and_stops() {
+    let v: Style = Style::new()
+        .bg_radial(30, 740.0, 539, Color(1), Color(2))
+        .build();
+    let g = v.bg_radial.expect("radial stored");
+    assert_eq!((g.cx.get(), g.cy.get(), g.r.get()), (30.0, 740.0, 539.0));
+    assert_eq!((g.from, g.to), (Color(1), Color(2)));
+    assert!(v.bg_gradient.is_none() && v.bg.is_none());
+}
+
+#[test]
 fn shadow_blur_defaults_zero_and_edges_merge() {
     // `.shadow` alone keeps the shipped offset-solid shape (blur 0).
     let plain: Style = Style::new().size(44, 24).shadow(1, 2, Color(1)).build();
@@ -165,4 +196,38 @@ fn phase36_grid_flex_and_clamp_participate_in_identity() {
         .max_w(400)
         .build();
     assert_eq!(grid.clone().intern(&mut t), same.intern(&mut t));
+}
+
+/// Decision 510: additive layout shorthands — each equals its
+/// longhand chain exactly (existing oracles are untouched; these are
+/// pure aliases, never new layout).
+#[test]
+fn shorthand_builders_equal_longhand_chains() {
+    let square: Style = Style::new().square(20).build();
+    let manual: Style = Style::new().size(20, 20).build();
+    assert_eq!(square, manual, "square ≡ size(s, s)");
+    let centered: Style = Style::new().center().build();
+    let manual: Style = Style::new()
+        .align_items(AlignItems::Center)
+        .justify_content(JustifyContent::Center)
+        .build();
+    assert_eq!(centered, manual, "center ≡ align + justify center");
+    let all: Style = Style::new().pad_all(25).build();
+    let manual: Style = Style::new().pad_x(25).pad_y(25).build();
+    assert_eq!(all, manual, "pad_all ≡ pad_x + pad_y");
+    let xy: Style = Style::new().pad_xy(25, 14).build();
+    let manual: Style = Style::new().pad_x(25).pad_y(14).build();
+    assert_eq!(xy, manual, "pad_xy ≡ pad_x + pad_y");
+    let trbl: Style = Style::new().pad_trbl(7, 8, 6, 8).build();
+    let manual: Style = Style::new()
+        .pad_top(7)
+        .pad_right(8)
+        .pad_bottom(6)
+        .pad_left(8)
+        .build();
+    assert_eq!(trbl, manual, "pad_trbl ≡ four per-side pads");
+    // Per-side methods still refine the shorthands (CSS rule holds).
+    let refined: Style = Style::new().pad_all(25).pad_left(8).build();
+    assert_eq!(refined.pad_left, Some(Px::of(8.0)));
+    assert_eq!(refined.pad_x, Some(Px::of(25.0)));
 }

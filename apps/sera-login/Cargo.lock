@@ -1430,6 +1430,7 @@ dependencies = [
  "oppa-shell-win",
  "oppa-text-dwrite",
  "oppa-text-linux",
+ "oppa-text-rustybuzz",
  "raw-window-handle",
  "wgpu",
  "windows",

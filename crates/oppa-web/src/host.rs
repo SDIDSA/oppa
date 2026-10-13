@@ -276,25 +276,38 @@ impl WasmHost {
     /// preloaded images) -- mount + settle through the plain host
     /// API, then finish with [`WasmHost::shell`].
     pub fn boot() -> (Rc<MockClock>, ComponentHost) {
+        Self::boot_with_fonts(
+            oppa_fonts::DEJAVU_SANS_FAMILY,
+            &[("DejaVuSans.ttf", oppa_fonts::DEJAVU_SANS)],
+        )
+    }
+
+    /// Boots the rig with app-bundled measuring fonts (Round 27.1):
+    /// same contract as [`boot`](Self::boot), but the rustybuzz
+    /// service shapes from `faces` under `family` instead of the
+    /// bundled DejaVu. Pair with [`shell_with_fonts`](Self::shell_with_fonts)
+    /// so the browser displays the same outlines it measured.
+    pub fn boot_with_fonts(
+        family: &str,
+        faces: &[(&str, &[u8])],
+    ) -> (Rc<MockClock>, ComponentHost) {
         let clock = Rc::new(MockClock::new());
         let host = ComponentHost::with_clock(clock.clone());
         host.set_viewport(VW, VH);
-        // Round 6.3: the bundled DejaVu Sans rustybuzz service --
-        // the same bytes on every platform, so web text measures
-        // real advances instead of zero (the documented
-        // serviceless rule it replaces). The expect is the loud
-        // arm (fixed bytes that fail to parse are a packaging
-        // bug, never a silent zero); skip notes name no faces
-        // here (one known-good face in, zero expected out).
-        let (service, skipped) = oppa_text_rustybuzz::RustybuzzService::from_bytes_with_chain(
-            &[("DejaVuSans.ttf", oppa_fonts::DEJAVU_SANS)],
-            &[],
-        )
-        .expect("oppa-web: bundled DejaVu Sans parses");
+        // Round 6.3: the bundled-faces rustybuzz service -- the same
+        // bytes on every platform, so web text measures real advances
+        // instead of zero (the documented serviceless rule it
+        // replaces). The expect is the loud arm (fixed bytes that
+        // fail to parse are a packaging bug, never a silent zero);
+        // skip notes name no faces here (known-good faces in, zero
+        // expected out).
+        let (service, skipped) =
+            oppa_text_rustybuzz::RustybuzzService::from_bytes_with_chain(faces, &[])
+                .expect("oppa-web: bundled app fonts parse");
         let _ = skipped;
         host.set_text_service(Box::new(service));
         host.set_layout_config(oppa::LayoutTextConfig {
-            family: oppa_fonts::DEJAVU_SANS_FAMILY.to_string(),
+            family: family.to_string(),
             ..Default::default()
         });
         host.set_presenter_name("DOM");
@@ -323,6 +336,27 @@ impl WasmHost {
         }
     }
 
+    /// Builds the DOM shell with an explicit display face (Round
+    /// 27.1): like [`shell`](Self::shell), plus the browser serves
+    /// `family` from `display_bytes` (single `@font-face` — the
+    /// variable-font rule: browsers interpolate weights from it
+    /// while the DOM backend emits no `font-weight`, so display
+    /// weight differences stay browser-synthesized exactly like the
+    /// shipped single-face DejaVu). Registered before the first
+    /// `html()` call, so the page CSS carries it before any text
+    /// renders.
+    pub fn shell_with_fonts(
+        host: ComponentHost,
+        clock: Rc<MockClock>,
+        images: ImageCache,
+        family: &str,
+        display_bytes: &[u8],
+    ) -> Self {
+        let mut me = Self::shell(host, clock, images);
+        me.pres.dom.register_font(family, display_bytes);
+        me
+    }
+
     /// Boots the rig, mounts `render`, and primes the shell (diff
     /// cursor past the initial render). The one-call path for roots
     /// with no pre-mount wiring (props carry everything).
@@ -336,6 +370,27 @@ impl WasmHost {
         host.run_until_idle();
         let images = host.images();
         Self::shell(host, clock, images)
+    }
+
+    /// Boots the rig with app-bundled fonts, mounts `render`, and
+    /// primes the shell (Round 27.1): `family` + `faces` drive
+    /// measuring (see [`boot_with_fonts`](Self::boot_with_fonts))
+    /// while the browser displays `display_bytes` under the same
+    /// family (see [`shell_with_fonts`](Self::shell_with_fonts)).
+    /// The one-call path for font-overriding roots.
+    pub fn mount_root_with_fonts<P: oppa::Props>(
+        name: &str,
+        props: P,
+        render: fn(&Ctx, &P) -> oppa::VNode,
+        family: &str,
+        faces: &[(&str, &[u8])],
+        display_bytes: &[u8],
+    ) -> Self {
+        let (clock, host) = Self::boot_with_fonts(family, faces);
+        host.mount(name, props, render);
+        host.run_until_idle();
+        let images = host.images();
+        Self::shell_with_fonts(host, clock, images, family, display_bytes)
     }
 
     /// The full host (the testkit escape-hatch rule applied to the
@@ -651,6 +706,12 @@ impl WasmHost {
 /// forwards `html` / `click` / `hover` / `key` / `text` / `tick` /
 /// `sync_system_theme` / `resize` / `theme_chrome` — the exact surface
 /// the shared bootstrap drives.
+///
+/// The 6-argument arm additionally overrides the bundled fonts
+/// (Round 27.1): `$family` + `$faces` drive measuring while the
+/// browser displays `$display` under the same family (see
+/// `mount_root_with_fonts`) — e.g. Readex Pro statics for measure
+/// with the variable file for display.
 #[macro_export]
 macro_rules! export_app {
     ($name:ident, $title:literal, $root:path) => {
@@ -665,6 +726,65 @@ macro_rules! export_app {
             pub fn new() -> Self {
                 Self {
                     app: ::oppa_web::WasmHost::mount_root($title, (), $root),
+                }
+            }
+
+            pub fn html(&mut self) -> String {
+                self.app.html()
+            }
+
+            pub fn click(&mut self, x: f32, y: f32) -> Option<String> {
+                self.app.click(x, y)
+            }
+
+            pub fn hover(&mut self, x: f32, y: f32) -> Option<String> {
+                self.app.hover(x, y)
+            }
+
+            pub fn key(&mut self, code: u32, pressed: bool) -> Option<String> {
+                self.app.key(code, pressed)
+            }
+
+            pub fn text(&mut self, pid: &str, value: &str) -> Option<String> {
+                self.app.text(pid, value)
+            }
+
+            pub fn tick(&mut self, now_ms: f64) -> Option<String> {
+                self.app.tick(now_ms)
+            }
+
+            pub fn sync_system_theme(&mut self) -> Option<String> {
+                self.app.sync_system_theme()
+            }
+
+            pub fn resize(&mut self, w: f32, h: f32, dpr: f32) -> Option<String> {
+                self.app.resize(w, h, dpr)
+            }
+
+            pub fn theme_chrome(&self) -> String {
+                self.app.theme_chrome()
+            }
+        }
+    };
+    ($name:ident, $title:literal, $root:path, $family:expr, $faces:expr, $display:expr) => {
+        #[wasm_bindgen]
+        pub struct $name {
+            app: ::oppa_web::WasmHost,
+        }
+
+        #[wasm_bindgen]
+        impl $name {
+            #[wasm_bindgen(constructor)]
+            pub fn new() -> Self {
+                Self {
+                    app: ::oppa_web::WasmHost::mount_root_with_fonts(
+                        $title,
+                        (),
+                        $root,
+                        $family,
+                        $faces,
+                        $display,
+                    ),
                 }
             }
 

@@ -24,7 +24,10 @@ mod media;
 mod text;
 
 pub use element::{Column, Custom, Div, ElementBuilder, Grid, Portal, Row, ScrollArea, Stack};
-pub use media::{Canvas, CanvasOp, CanvasSpec, Img, Path, PathSpec, StrokeDesc};
+pub use media::{
+    extract_svg_path, scale_svg_path, svg_path_data, Canvas, CanvasOp, CanvasSpec, Img, Path,
+    PathSpec, StrokeDesc,
+};
 pub use text::{RichText, Text, TextArea, TextBuilder, TextClass, TextField, TextSpan};
 
 use std::cell::RefCell;
@@ -209,6 +212,22 @@ pub enum VNode {
 impl VNode {
     pub fn hole() -> Self {
         VNode::Hole
+    }
+
+    /// Sets the text-ink override on a converted text-leaf `VNode`
+    /// (decision 510 — the `oppa-controls::with_ink` helper, now
+    /// shared: placeholder dimming, label inks, active-tab ink all
+    /// ride this). Converted leaves always arrive as
+    /// `VNode::Element`, so any other shape is a wiring bug and
+    /// refused loudly, never passed through unstyled.
+    pub fn with_ink(self, ink: crate::style::Color) -> Self {
+        match self {
+            VNode::Element(mut e) => {
+                e.style.ink = Some(ink);
+                VNode::Element(e)
+            }
+            _ => panic!("ink target is not an element — refused, never silent"),
+        }
     }
 
     pub fn is_hole(&self) -> bool {

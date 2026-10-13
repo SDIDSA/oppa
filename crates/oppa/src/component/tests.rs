@@ -292,6 +292,29 @@ fn caption_hover_defaults_none_and_publishes_change_only() {
     );
 }
 
+/// Decision 495: the maximized signal defaults to windowed;
+/// runner publishes follow change-only (repeats never invalidate —
+/// polling must not spin the loop).
+#[test]
+fn maximized_defaults_false_and_publishes_change_only() {
+    let host = ComponentHost::new();
+    let maximized = host.maximized();
+    assert!(
+        !crate::reactive::untrack(|| maximized.get()),
+        "boot state is windowed"
+    );
+    host.set_maximized(true);
+    assert!(
+        crate::reactive::untrack(|| maximized.get()),
+        "signal follows the publish"
+    );
+    host.set_maximized(false);
+    assert!(
+        !crate::reactive::untrack(|| maximized.get()),
+        "restoring reverts"
+    );
+}
+
 #[test]
 fn custom_theme_tokens_override_per_mode_and_republish() {
     // Decision 477: per-mode custom palettes — unset slots fall
