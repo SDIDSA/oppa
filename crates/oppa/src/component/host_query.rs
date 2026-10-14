@@ -48,6 +48,17 @@ impl ComponentHost {
         LayoutLedger::committed(&rec, id)
     }
 
+    /// Effective box for paint/hit at `now` (decisions 521-522): the
+    /// fence interpolator's current box while one runs, else `None`
+    /// (callers fall back to the committed box — one accessor, one
+    /// answer, never dual truth). Untracked, like `committed_box`;
+    /// effects keep reading `settled_box` (engine truth, never the
+    /// interpolated lag).
+    pub fn effective_box(&self, id: NodeId, now: f64) -> Option<LayoutBox> {
+        let dpr = self.layout_config().device_pixel_ratio.max(f32::EPSILON);
+        self.inner.evaluator.borrow().resolve_box(id, now, dpr)
+    }
+
     /// Last LAYOUT run's engine stats (wrap round-trip counts live here).
     pub fn layout_stats(&self) -> LayoutStats {
         self.inner.layout.borrow().last_stats()
@@ -163,22 +174,32 @@ impl ComponentHost {
     }
 
     /// Core-side hit-test over committed boxes (renderer-independent).
+    /// Fenced boxes substitute while a fence runs (decisions 521-522
+    /// — hit follows the lagging visual, never the committed target).
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {
         let rec = self.inner.rec.borrow();
         let styles = self.inner.styles.borrow();
         let now = self.inner.rt.now_secs();
-        input::hit_test(&rec, &styles, x, y, &|id| {
-            let retained = styles.get(rec.get(id)?.style).and_then(|s| s.transform);
-            // Evaluator-live transforms win over retained ones (hit
-            // follows the mid-flight visual at event time); settled
-            // nodes resolve to their committed target here.
-            Some(
-                self.inner
-                    .evaluator
-                    .borrow()
-                    .resolve_transform(id, retained, now),
-            )
-        })
+        let dpr = self.layout_config().device_pixel_ratio.max(f32::EPSILON);
+        input::hit_test(
+            &rec,
+            &styles,
+            x,
+            y,
+            &|id| {
+                let retained = styles.get(rec.get(id)?.style).and_then(|s| s.transform);
+                // Evaluator-live transforms win over retained ones (hit
+                // follows the mid-flight visual at event time); settled
+                // nodes resolve to their committed target here.
+                Some(
+                    self.inner
+                        .evaluator
+                        .borrow()
+                        .resolve_transform(id, retained, now),
+                )
+            },
+            &|id| self.inner.evaluator.borrow().resolve_box(id, now, dpr),
+        )
     }
 
     /// Accumulated paint transform from `id` up through its

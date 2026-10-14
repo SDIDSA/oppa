@@ -134,7 +134,7 @@ fn motion_tabbar_sits_above_the_room() {
 
 #[test]
 fn motion_pure_helpers_cover_all_rooms() {
-    assert_eq!(TABS.len(), 6, "six rooms, one per goal item");
+    assert_eq!(TABS.len(), 7, "seven rooms — six motion goals plus layout animation");
     assert_eq!(EASE_NAMES.len(), 5, "four cubics plus the spring");
     assert_eq!(
         SharedString::from(motion::room_title("springs")),
@@ -597,6 +597,11 @@ fn goto_micro(app: &Harness) {
 
 fn goto_overlays(app: &Harness) {
     press(app, "motion-tab-overlays");
+    app.advance_frames(2.0 / 60.0);
+}
+
+fn goto_layout(app: &Harness) {
+    press(app, "motion-tab-layout");
     app.advance_frames(2.0 / 60.0);
 }
 
@@ -1087,4 +1092,105 @@ fn motion_ambient_loops_and_chain_completes() {
         assert_eq!(ev.active_count(), 0, "unmount retires the loop");
     });
     assert!(!app.host().has_demand());
+}
+
+/// Decisions 521-522: expanding the card runs the fence (interior
+/// height mid-flight, committed target already applied), lands
+/// exact, and retires to zero work.
+#[test]
+fn motion_layout_expand_fences_then_settles() {
+    let (app, _) = mount_clocked();
+    goto_layout(&app);
+    let card = app.node("motion-layout-card");
+    press(&app, "motion-layout-expand");
+    app.advance_frames(2.0 / 60.0);
+    let target = committed(&app, "motion-layout-card");
+    assert_eq!((target.w, target.h), (160.0, 96.0), "expand commits");
+    // Mid-flight (default 150ms Out): strictly interior.
+    app.advance_frames(0.06);
+    let now = app.host().now_ms() / 1000.0;
+    let mid = app
+        .host()
+        .effective_box(card, now)
+        .expect("fence interpolates");
+    assert!(
+        mid.h > 48.0 && mid.h < 96.0,
+        "fence runs mid-flight, got {}",
+        mid.h
+    );
+    app.advance_frames(1.0);
+    app.host().with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "fence retires to zero work");
+    });
+    assert_eq!(
+        committed(&app, "motion-layout-card").h,
+        96.0,
+        "settles exact on target"
+    );
+    assert!(!app.host().has_demand(), "quiet after the fence");
+}
+
+/// Decisions 521-522 shared timeline: the expanding card (fence)
+/// and the sibling below (FLIP, same spec, same commit) track each
+/// other every frame — the card's bottom edge never crosses the
+/// sibling's visual top.
+#[test]
+fn motion_layout_shared_timeline_never_overlaps() {
+    let (app, _) = mount_clocked();
+    goto_layout(&app);
+    let card = app.node("motion-layout-card");
+    let sib = app.node("motion-layout-sib");
+    press(&app, "motion-layout-expand");
+    for _ in 0..12 {
+        app.advance_frames(1.0 / 60.0);
+        let now = app.host().now_ms() / 1000.0;
+        // Settled fences read None (the committed fallback already
+        // agrees) — the invariant holds through settle either way.
+        let card_box = app
+            .host()
+            .effective_box(card, now)
+            .or_else(|| app.host().committed_box(card))
+            .expect("card has a box");
+        let sib_box = committed(&app, "motion-layout-sib");
+        let flip_dy = app
+            .host()
+            .with_evaluator(|ev| ev.resolve_transform(sib, None, now).dy.get());
+        let card_bottom = card_box.y + card_box.h;
+        let sib_visual_top = sib_box.y + flip_dy;
+        assert!(
+            card_bottom <= sib_visual_top + 1.0,
+            "shared timeline holds (bottom {card_bottom} vs top {sib_visual_top})"
+        );
+    }
+    app.advance_frames(1.0);
+    assert!(!app.host().has_demand(), "quiet after the shared run");
+}
+
+/// Decision 521: inserting a row shifts every flagged row below it
+/// through FLIP (mid-flight offsets strictly interior), landing
+/// exact and quiet.
+#[test]
+fn motion_layout_insert_flips_rows_then_settles() {
+    let (app, _) = mount_clocked();
+    goto_layout(&app);
+    let r0 = app.node("motion-layout-r0");
+    let y0 = committed(&app, "motion-layout-r0").y;
+    press(&app, "motion-layout-add");
+    app.advance_frames(2.0 / 60.0);
+    let y1 = committed(&app, "motion-layout-r0").y;
+    assert!(y1 > y0, "insert shifts rows down");
+    app.advance_frames(0.06);
+    let now = app.host().now_ms() / 1000.0;
+    let dy = app
+        .host()
+        .with_evaluator(|ev| ev.resolve_transform(r0, None, now).dy.get());
+    assert!(
+        dy < 0.0 && dy > y0 - y1,
+        "flip offsets mid-flight, got {dy}"
+    );
+    app.advance_frames(1.0);
+    app.host().with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "flip retires to zero work");
+    });
+    assert!(!app.host().has_demand(), "quiet after the flip");
 }

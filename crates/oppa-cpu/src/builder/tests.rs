@@ -797,3 +797,81 @@ fn text_bake_translates_and_scales_glyph_geometry() {
     assert!((se - pe * 2.0).abs() < 1e-6, "em scales by sy");
     assert!((sg1 - pg1 * 2.0).abs() < 1e-6, "cell offsets scale by sx");
 }
+
+/// Decisions 521-522: the fence paints the interpolated box
+/// mid-flight (interior width, pinned damage), lands exact on the
+/// committed target, and retires quiet. The builder samples the
+/// evaluator directly — no publish step, no backend changes.
+#[test]
+fn fence_paints_interpolated_box_then_lands_exact() {
+    use oppa::{Ease, MockClock, Transition};
+    #[derive(Clone)]
+    struct FenceProps {
+        wide: Signal<bool>,
+    }
+    impl Props for FenceProps {}
+    fn fence_scene(ctx: &Ctx, props: &FenceProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        let w = if props.wide.get() { 200.0 } else { 100.0 };
+        Div("fence-card")
+            .style(
+                Style::new()
+                    .size(w, 50.0)
+                    .bg(oppa::Color(0x22_66_CC))
+                    .layout_anim(Transition::new(200, Ease::Linear)),
+            )
+            .build()
+    }
+    fn rect_of(plan: &FramePlan, id: oppa::NodeId) -> (f32, f32, f32, f32) {
+        plan.ops
+            .iter()
+            .find_map(|op| match op {
+                DrawOp::Rect {
+                    node, x, y, w, h, ..
+                } if *node == id => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .expect("fence card rect op")
+    }
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    host.mount("Fence", FenceProps { wide: wide.clone() }, fence_scene);
+    host.run_until_idle();
+    let id = oppa::find_retained_by_debug(&host, "fence-card")[0];
+    wide.set(true);
+    host.run_once();
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    let builder = FramePlanBuilder::new(1.0);
+    let plan = host.with_retained_mut(|rec, styles| {
+        host.with_evaluator(|ev| builder.build_full_evaluated(rec, styles, ev, now))
+    });
+    let (_, _, w, _) = rect_of(&plan, id);
+    assert!(
+        w > 100.0 && w < 200.0,
+        "fence paints interior width mid-flight, got {w}"
+    );
+    assert!(
+        plan.damage.iter().any(|d| d.w > 0.0 && d.h > 0.0),
+        "fence frames carry damage"
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    let builder = FramePlanBuilder::new(1.0);
+    let now = clock.get();
+    let plan = host.with_retained_mut(|rec, styles| {
+        host.with_evaluator(|ev| builder.build_full_evaluated(rec, styles, ev, now))
+    });
+    assert_eq!(
+        rect_of(&plan, id),
+        (0.0, 0.0, 200.0, 50.0),
+        "settled fence paints the committed target"
+    );
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "fence retires to zero work");
+    });
+    assert!(!host.has_demand(), "quiet after the fence");
+}

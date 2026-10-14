@@ -116,7 +116,7 @@ pub use text::{
     FontId, FontInfo, FontMetrics, FontStretch, FontStyle, FontWeight, MeasuredRun, ShapedGlyph,
     ShapedRun, TextError, TextRun, TextService, TextStyle,
 };
-pub use transition::{ease_at, AnimProp, TransitionEvaluator};
+pub use transition::{ease_at, AnimProp, LayoutAnimSpec, TransitionEvaluator};
 pub use vnode::{
     extract_svg_path, scale_svg_path, stamp_handler_owner, stamp_node_owner, svg_path_data, Canvas,
     CanvasOp, CanvasSpec, Children, Column, Custom, Div, Element, ElementBuilder, Grid, ImageId,

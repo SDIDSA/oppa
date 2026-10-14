@@ -16,6 +16,14 @@ impl DomBackend {
         self.handles = handles;
     }
 
+    /// Sets the live layout track specs for the next
+    /// [`sync`](Self::sync) (decisions 521-522 — the presenter's
+    /// evaluator-exported specs, replacing backend state wholesale;
+    /// empty derives byte-identical markup to pre-521).
+    pub fn set_layout_anim(&mut self, specs: Vec<oppa::LayoutAnimSpec>) {
+        self.layout_anim = specs;
+    }
+
     /// Sets the page-chrome theme for the next [`sync`](Self::sync)
     /// (theme contract round — the runner's host mode, published per
     /// frame like the overlays above). Change-only: repeats are free,

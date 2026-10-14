@@ -103,13 +103,17 @@ impl Harness {
             })
     }
 
-    /// Committed-box center in device px (loud when unboxed — pump
-    /// first so layout has run).
+    /// Visual center in device px (loud when unboxed — pump
+    /// first so layout has run): the fence-interpolated box while a
+    /// fence runs (decisions 521-522 — taps land where the pixels
+    /// are), else the committed box.
     pub fn center(&self, debug: &str) -> (f32, f32) {
         let id = self.node(debug);
+        let now = self.host.runtime().now_secs();
         let b = self
             .host
-            .committed_box(id)
+            .effective_box(id, now)
+            .or_else(|| self.host.committed_box(id))
             .unwrap_or_else(|| panic!("testkit: node {debug:?} has no committed box — pump first"));
         (b.x + b.w / 2.0, b.y + b.h / 2.0)
     }

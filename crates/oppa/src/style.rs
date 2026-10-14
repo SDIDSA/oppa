@@ -997,6 +997,14 @@ pub struct Style {
     /// over this timing) instead of snapping. Opt-in only — nodes
     /// without it unmount instantly exactly as before.
     pub exit: Option<Transition>,
+    /// Layout-animation timing (decisions 521–522 — paint- and
+    /// layout-observing, never layout-affecting: the declaration
+    /// itself changes no box): position-only moves FLIP through the
+    /// transform machinery (521) and explicit-px size changes run
+    /// the fenced box interpolator (522), both over this one spec.
+    /// Opt-in only — undeclared layout changes apply instantly
+    /// exactly as before.
+    pub layout_anim: Option<Transition>,
     /// Pointer cursor while hovering this node (Round 8.3; paint-only,
     /// never layout-affecting — see [`CursorIcon`]).
     pub cursor: Option<CursorIcon>,
@@ -1517,6 +1525,14 @@ impl StyleBuilder {
     /// keyframes cannot spell an exit).
     pub fn exit(mut self, t: Transition) -> Self {
         self.inner.exit = Some(t);
+        self
+    }
+
+    /// Layout-animation timing (decisions 521–522 — opt-in FLIP for
+    /// position moves plus the fenced box interpolator for
+    /// explicit-px size changes, both over this one spec).
+    pub fn layout_anim(mut self, t: Transition) -> Self {
+        self.inner.layout_anim = Some(t);
         self
     }
 

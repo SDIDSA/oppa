@@ -38,6 +38,7 @@ impl ComponentHost {
             settle_observers: RefCell::new(Vec::new()),
             deferred: RefCell::new(Vec::new()),
             cancelled_exits: RefCell::new(Vec::new()),
+            scroll_offsets_seen: RefCell::new(HashMap::new()),
             close_requested_flag: Cell::new(false),
             system_bars_request: Cell::new(None),
             selection_handles_visible: Cell::new(true),
@@ -71,21 +72,27 @@ impl ComponentHost {
         let weak: Weak<HostInner> = Rc::downgrade(&inner);
         inner.rt.set_layout_pass(move |_rt| {
             if let Some(inner) = weak.upgrade() {
-                Self::run_layout_pass(&inner);
+                Self::run_layout_pass(inner);
             }
         });
         Self { inner }
     }
 
     /// The LAYOUT-phase engine run: dirty subtrees in, settled boxes out.
-    fn run_layout_pass(inner: &HostInner) {
-        let service = inner.text_service.borrow();
-        let service_ref = service.as_deref();
+    fn run_layout_pass(inner: Rc<HostInner>) {
         let (viewport_w, viewport_h) = inner.viewport.get();
-        let mut rec = inner.rec.borrow_mut();
-        let styles = inner.styles.borrow();
-        let mut layout = inner.layout.borrow_mut();
-        layout.run(&mut rec, &styles, service_ref, viewport_w, viewport_h);
+        {
+            let service = inner.text_service.borrow();
+            let service_ref = service.as_deref();
+            let mut rec = inner.rec.borrow_mut();
+            let styles = inner.styles.borrow();
+            let mut layout = inner.layout.borrow_mut();
+            layout.run(&mut rec, &styles, service_ref, viewport_w, viewport_h);
+        }
+        // Decisions 521-522: drain this pass's animation records into
+        // tracks (the guards above must drop first — synthesis walks
+        // the same tables).
+        synthesize_layout_moves(&inner);
     }
 
     pub(super) fn alloc_instance(
@@ -398,11 +405,17 @@ impl ComponentHost {
                 .extend(diff.exits.iter().cloned());
         }
         self.cancel_superseded_exits(&diff);
-        // Same hygiene for the U8 text feeds (decision 188).
+        // Same hygiene for the U8 text feeds (decision 188) and the
+        // scroll-offset snapshots (decisions 521-522 — retired
+        // containers drop their baselines with the feed tables).
         {
             let rec = self.inner.rec.borrow();
             self.inner
                 .field_feeds
+                .borrow_mut()
+                .retain(|id, _| rec.get(*id).is_some());
+            self.inner
+                .scroll_offsets_seen
                 .borrow_mut()
                 .retain(|id, _| rec.get(*id).is_some());
         }
@@ -696,59 +709,304 @@ impl ComponentHost {
     /// nodes for repaint, and fires completion observers — tracks and
     /// observers share it, never two animations.
     pub(super) fn ensure_settle_drain(&self) {
-        if self.inner.trans_anim.get() {
-            return;
-        }
-        self.inner.trans_anim.set(true);
-        let weak: Weak<HostInner> = Rc::downgrade(&self.inner);
-        self.inner.rt.add_animation(move |now| {
-            let Some(inner) = weak.upgrade() else {
-                return false;
-            };
-            let live = inner.evaluator.borrow_mut().settle(now);
-            // Decision 520: completed exits release before observer
-            // fire (completion chains see the post-exit world) and
-            // sweep their orphaned instances (no leak through the
-            // 519 retirement — proven headless).
-            ComponentHost {
-                inner: inner.clone(),
-            }
-            .finalize_settled_exits();
-            if live == 0 {
-                inner.trans_anim.set(false);
-            } else {
-                // Repaint drive (M8): interpolation progress writes no
-                // signals, so the damage discipline would never see it
-                // — re-dirty exactly the live nodes every frame. The
-                // builder rebuilds them, backends re-splice them, the
-                // surface advances; settled frames go quiet again.
-                let nodes = inner.evaluator.borrow().live_nodes();
-                inner.rec.borrow_mut().mark_paint_dirty(&nodes);
-            }
-            // Decision 512: completion observers — fire one-shot
-            // callbacks for nodes with no live track (retired this
-            // tick or already settled). Take-then-extend: chained
-            // re-observations during firing re-queue into the freed
-            // table instead of clobbering the kept set. Callbacks run
-            // without the evaluator borrowed (they may observe or
-            // signal freely).
-            if !inner.settle_observers.borrow().is_empty() {
-                let pending = std::mem::take(&mut *inner.settle_observers.borrow_mut());
-                let (fire, keep): (Vec<_>, Vec<_>) = {
-                    let ev = inner.evaluator.borrow();
-                    pending
-                        .into_iter()
-                        .partition(|(node, _)| ev.is_settled(*node))
-                };
-                for (_, cb) in fire {
-                    cb();
-                }
-                inner.settle_observers.borrow_mut().extend(keep);
-            }
-            live > 0
-        });
-        self.inner.rt.request_frame();
+        ensure_settle_drain_on(&self.inner);
     }
+}
+
+/// Drains this layout pass's animation records into tracks
+/// (decisions 521-522): relativize FLIP deltas against recorded
+/// ancestors, suppress scroll-driven moves, cull off-viewport
+/// targets, synthesize, arm the drive. Quiet when nothing recorded
+/// (no census, no arming — quiet passes stay byte-identical).
+fn synthesize_layout_moves(inner: &Rc<HostInner>) {
+    use crate::layout::{LayoutMove, LayoutMoveKind};
+    let moves: Vec<LayoutMove> = std::mem::take(&mut inner.layout.borrow_mut().last_moves);
+    if moves.is_empty() {
+        return;
+    }
+    // Stamped commits snap (Q5 covers layout like exits and tweens —
+    // the reconciler's last diff carries the stamp).
+    if inner
+        .rec
+        .borrow()
+        .last_diff()
+        .is_some_and(|d| d.suppress_transitions)
+    {
+        return;
+    }
+    let now = inner.rt.now_secs();
+    let dpr = inner
+        .layout
+        .borrow()
+        .config()
+        .device_pixel_ratio
+        .max(f32::EPSILON);
+    let (vw, vh) = inner.viewport.get();
+    // Merge per-node spans (decisions 521-522): multi-pass layout
+    // can touch one node twice in a pass (measure-at-origin commit
+    // plus container reposition); the track must run from the FIRST
+    // old to the LAST new or the first painted frame jumps. Fence
+    // wins kind disputes (any size change in the span interpolates).
+    let mut merged: Vec<LayoutMove> = Vec::with_capacity(moves.len());
+    {
+        let mut slot_of: HashMap<NodeId, usize> = HashMap::new();
+        for m in moves {
+            if let Some(&idx) = slot_of.get(&m.id) {
+                let slot = &mut merged[idx];
+                slot.new = m.new.clone();
+                if m.kind == LayoutMoveKind::Fence {
+                    slot.kind = LayoutMoveKind::Fence;
+                }
+                if slot.spec != m.spec {
+                    slot.spec = m.spec;
+                }
+            } else {
+                slot_of.insert(m.id, merged.len());
+                merged.push(m);
+            }
+        }
+    }
+    // Recorded absolute deltas in old-minus-new (visual-offset) form,
+    // for parent-relative FLIP below.
+    let mut recorded: HashMap<NodeId, (f32, f32)> = HashMap::new();
+    for m in &merged {
+        recorded.insert(m.id, (m.old.x - m.new.x, m.old.y - m.new.y));
+    }
+    let rec = inner.rec.borrow();
+    // Drop records superseded by post-pass adjustments (decisions
+    // 521-522): the root viewport-forcing block rewrites boxes after
+    // the last record (an auto root reads 600-then-20 in one pass);
+    // animating toward a stale `new` would shrink toward a box that
+    // no longer exists. A dropped record snaps — the safe direction.
+    merged.retain(|m| {
+        rec.get(m.id)
+            .and_then(|n| n.layout.clone())
+            .as_ref()
+            .is_some_and(|b| b == &m.new)
+    });
+    recorded.retain(|id, _| merged.iter().any(|m| m.id == *id));
+    // Fence refusals on final spans (decisions 521-522): a changed
+    // axis without explicit-px, and text content, refuse loudly here
+    // (transients revert before this point — only final truth can
+    // refuse, never an intermediate state).
+    {
+        let styles = inner.styles.borrow();
+        let same = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        for m in &merged {
+            if m.kind != LayoutMoveKind::Fence {
+                continue;
+            }
+            let style = rec
+                .get(m.id)
+                .and_then(|n| styles.get(n.style).cloned())
+                .unwrap_or_default();
+            let (explicit_w, explicit_h) = crate::layout::resolve_explicit(&style, dpr);
+            if !same(m.old.w, m.new.w) && explicit_w.is_none() {
+                panic!(
+                    "layout anim: width changed on {:?} without explicit w — opt-in size animation needs explicit-px extents, never auto",
+                    m.id
+                );
+            }
+            if !same(m.old.h, m.new.h) && explicit_h.is_none() {
+                panic!(
+                    "layout anim: height changed on {:?} without explicit h — opt-in size animation needs explicit-px extents, never auto",
+                    m.id
+                );
+            }
+            if let Some(n) = rec.get(m.id) {
+                if n.text.is_some() || n.text_hint.is_some() || n.rich_text.is_some() {
+                    panic!(
+                        "layout anim: size changed on text node {:?} — text never fences (shape once, ride FLIP for moves)",
+                        m.id
+                    );
+                }
+            }
+        }
+    }
+    // Scroll suppression (decision 521): a flagged row inside a
+    // scroll container whose offset changed never eases wheel input.
+    // Snapshots persist per container (first sight suppresses —
+    // conservative, stated).
+    let mut suppressed = HashSet::new();
+    {
+        let mut seen = inner.scroll_offsets_seen.borrow_mut();
+        // Prune retired containers with the feed tables' hygiene
+        // (same commit, same predicate — done by the caller below).
+        for m in &merged {
+            let mut cur = rec.get(m.id).and_then(|n| n.parent);
+            let mut skip = false;
+            while let Some(c) = cur {
+                let Some(node) = rec.get(c) else {
+                    break;
+                };
+                if node.tag == crate::vnode::Tag::ScrollArea {
+                    if let Some((ox, oy)) = container_offset(inner, c) {
+                        let changed = seen.get(&c).is_some_and(|&(px, py)| px != ox || py != oy);
+                        let first_sight = !seen.contains_key(&c);
+                        seen.insert(c, (ox, oy));
+                        if changed || first_sight {
+                            skip = true;
+                            break;
+                        }
+                    }
+                }
+                cur = node.parent;
+            }
+            if skip {
+                suppressed.insert(m.id);
+            }
+        }
+    }
+    // Viewport cull (decision 521): skip targets fully outside on
+    // both ends (animating into view still paints its entry — either
+    // end visible keeps the track).
+    let in_view = |b: &crate::layout::LayoutBox| {
+        let (vw_dev, vh_dev) = (vw * dpr, vh * dpr);
+        b.x < vw_dev && b.x + b.w > 0.0 && b.y < vh_dev && b.y + b.h > 0.0
+    };
+    let created_before = inner.evaluator.borrow().created();
+    {
+        let mut ev = inner.evaluator.borrow_mut();
+        for m in &merged {
+            if suppressed.contains(&m.id) {
+                continue;
+            }
+            if !in_view(&m.old) && !in_view(&m.new) {
+                continue;
+            }
+            match m.kind {
+                LayoutMoveKind::Flip => {
+                    // Parent-relative (decision 521): subtract recorded
+                    // ancestor deltas so a riding child records zero
+                    // (transforms compose down every backend — absolute
+                    // deltas would double-apply). Unrecorded ancestors
+                    // keep their share in the child's track (stated).
+                    // Old-minus-new form throughout (the painted offset
+                    // at track start must equal the pre-commit visual).
+                    let mut rel = (m.old.x - m.new.x, m.old.y - m.new.y);
+                    let mut cur = rec.get(m.id).and_then(|n| n.parent);
+                    while let Some(c) = cur {
+                        if let Some((px, py)) = recorded.get(&c) {
+                            rel.0 -= px;
+                            rel.1 -= py;
+                        }
+                        cur = rec.get(c).and_then(|n| n.parent);
+                    }
+                    ev.synthesize_flip(
+                        m.id,
+                        rel.0,
+                        rel.1,
+                        m.spec.dur_ms,
+                        m.spec.ease,
+                        m.spec.delay_ms,
+                        now,
+                    );
+                }
+                LayoutMoveKind::Fence => {
+                    ev.synthesize_fence(
+                        m.id,
+                        [m.old.x, m.old.y, m.old.w, m.old.h],
+                        [m.new.x, m.new.y, m.new.w, m.new.h],
+                        m.spec.dur_ms,
+                        m.spec.ease,
+                        m.spec.delay_ms,
+                        now,
+                        dpr,
+                    );
+                }
+            }
+        }
+    }
+    if inner.evaluator.borrow().created() > created_before {
+        ensure_settle_drain_on(inner);
+    }
+}
+
+/// Current scroll offset of a scroll container (decision 521):
+/// bound feeds first, owner self-wire second, `None` for static
+/// containers (never suppresses — nothing scrolls them).
+fn container_offset(inner: &HostInner, container: NodeId) -> Option<(f32, f32)> {
+    let ox = inner
+        .scroll_x_feeds
+        .borrow()
+        .get(&container)
+        .cloned()
+        .map(|s| untrack(|| s.get()))
+        .or_else(|| {
+            ComponentHost::owner_scroll_x_signal(inner, container).map(|(s, _)| untrack(|| s.get()))
+        });
+    let oy = inner
+        .scroll_feeds
+        .borrow()
+        .get(&container)
+        .cloned()
+        .map(|s| untrack(|| s.get()))
+        .or_else(|| {
+            ComponentHost::owner_scroll_signal(inner, container).map(|(s, _)| untrack(|| s.get()))
+        });
+    match (ox, oy) {
+        (None, None) => None,
+        (ox, oy) => Some((ox.unwrap_or(0.0), oy.unwrap_or(0.0))),
+    }
+}
+
+/// Inner-level settle-drain arming (decision 521): the same rule as
+/// [`ComponentHost::ensure_settle_drain`], callable without a host
+/// handle so the layout pass can arm the drive for tracks it
+/// synthesizes (layout runs after reconcile armed it — or didn't).
+fn ensure_settle_drain_on(inner: &Rc<HostInner>) {
+    if inner.trans_anim.get() {
+        return;
+    }
+    inner.trans_anim.set(true);
+    let weak: Weak<HostInner> = Rc::downgrade(inner);
+    inner.rt.add_animation(move |now| {
+        let Some(inner) = weak.upgrade() else {
+            return false;
+        };
+        let live = inner.evaluator.borrow_mut().settle(now);
+        // Decision 520: completed exits release before observer
+        // fire (completion chains see the post-exit world) and
+        // sweep their orphaned instances (no leak through the
+        // 519 retirement — proven headless).
+        ComponentHost {
+            inner: inner.clone(),
+        }
+        .finalize_settled_exits();
+        if live == 0 {
+            inner.trans_anim.set(false);
+        } else {
+            // Repaint drive (M8): interpolation progress writes no
+            // signals, so the damage discipline would never see it
+            // — re-dirty exactly the live nodes every frame. The
+            // builder rebuilds them, backends re-splice them, the
+            // surface advances; settled frames go quiet again.
+            let nodes = inner.evaluator.borrow().live_nodes();
+            inner.rec.borrow_mut().mark_paint_dirty(&nodes);
+        }
+        // Decision 512: completion observers — fire one-shot
+        // callbacks for nodes with no live track (retired this
+        // tick or already settled). Take-then-extend: chained
+        // re-observations during firing re-queue into the freed
+        // table instead of clobbering the kept set. Callbacks run
+        // without the evaluator borrowed (they may observe or
+        // signal freely).
+        if !inner.settle_observers.borrow().is_empty() {
+            let pending = std::mem::take(&mut *inner.settle_observers.borrow_mut());
+            let (fire, keep): (Vec<_>, Vec<_>) = {
+                let ev = inner.evaluator.borrow();
+                pending
+                    .into_iter()
+                    .partition(|(node, _)| ev.is_settled(*node))
+            };
+            for (_, cb) in fire {
+                cb();
+            }
+            inner.settle_observers.borrow_mut().extend(keep);
+        }
+        live > 0
+    });
+    inner.rt.request_frame();
 }
 impl Default for ComponentHost {
     fn default() -> Self {

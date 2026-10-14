@@ -345,14 +345,28 @@ impl DomBackend {
         // Static wrappers (transparent layout pass-throughs) carry no
         // geometry — children resolve against the real container.
         let positioned = !is_root && !is_static_wrapper(rec, id);
-        let inline_geom = geom_inline(
-            node.layout.as_ref(),
-            is_root,
-            &kind,
-            self.dpr,
-            origin,
-            positioned,
-        );
+        // Decisions 521-522: layout animation — geometry from the
+        // fence spec sampled on the backend clock (committed
+        // otherwise; content reads below stay committed), fenced
+        // subtrees clip like the builder's rung-2 rule, flip offsets
+        // step inline with the keyframes (never a CSS transition —
+        // stepped values own the motion, so `no_transition` freezes
+        // while flipping).
+        let spec = if self.layout_anim.is_empty() {
+            None
+        } else {
+            self.layout_anim.iter().find(|s| s.id == id)
+        };
+        let now = self.kf_now;
+        let dpr = self.dpr;
+        let fence_box = spec.and_then(|s| s.sample_box(now, dpr));
+        let geom_box: Option<&oppa::LayoutBox> = fence_box.as_ref().or(node.layout.as_ref());
+        let flip: (f32, f32) = spec.map(|s| s.sample_flip(now)).unwrap_or((0.0, 0.0));
+        let flipped = flip != (0.0, 0.0);
+        let mut inline_geom = geom_inline(geom_box, is_root, &kind, self.dpr, origin, positioned);
+        if fence_box.is_some() && !node.children.is_empty() {
+            inline_geom.push_str("overflow:hidden;");
+        }
         let mut attrs = node.semantics.as_ref().map(aria_attrs).unwrap_or_default();
         if node
             .semantics
@@ -437,8 +451,11 @@ impl DomBackend {
         // evaluated paint, re-declared inline while it runs (empty
         // otherwise — unkeyframed markup byte-identical). Decision
         // 511 extends the re-declaration to the transform leg (same
-        // rule — tweens keep the CSS `transition:` mapping).
-        let inline_kf = stepped_inline(self.kf_eval.resolve_keyframe(id, self.kf_now));
+        // rule — tweens keep the CSS `transition:` mapping). Decision
+        // 521 folds the FLIP offset into the stepped transform (same
+        // outermost composition as every backend); flip-only nodes
+        // declare just their offset (bg/opacity cascade untouched).
+        let inline_kf = stepped_inline(self.kf_eval.resolve_keyframe(id, self.kf_now), flip);
         DomElement {
             node: id,
             kind,
@@ -458,7 +475,10 @@ impl DomBackend {
             // `derive` never sets the stamp itself: `sync` flags exactly
             // the touched set of the sync that consumed it (see above),
             // so the flag clears on the next re-derive by comparison.
-            no_transition: false,
+            // Flipped nodes freeze it too (decision 521 — stepped
+            // offsets own the motion; a CSS transition would smooth
+            // each 16ms step into mush).
+            no_transition: flipped,
             inline_kf,
         }
     }
@@ -466,7 +486,10 @@ impl DomBackend {
 
 /// Stepped keyframe inline values (the derive rule above, extracted
 /// so the exit pass shares it — never a quieter fork).
-fn stepped_inline(kf: Option<(Option<oppa::Color>, f32, oppa::Transform)>) -> String {
+fn stepped_inline(
+    kf: Option<(Option<oppa::Color>, f32, oppa::Transform)>,
+    flip: (f32, f32),
+) -> String {
     match kf {
         Some((bg, op, xf)) => {
             let mut s = String::new();
@@ -474,13 +497,38 @@ fn stepped_inline(kf: Option<(Option<oppa::Color>, f32, oppa::Transform)>) -> St
                 s.push_str(&format!("background-color:{};", dom_hex(c)));
             }
             s.push_str(&format!("opacity:{};", css_num(op)));
-            let v = crate::css::transform_value(xf);
+            let v = crate::css::transform_value(compose_flip(xf, flip));
             if !v.is_empty() {
                 s.push_str(&format!("transform:{v};"));
             }
             s
         }
+        // Flip-only (decision 521): just the offset — bg/opacity
+        // cascade untouched (unlike keyframes, which restate the
+        // triple they own).
+        None if flip != (0.0, 0.0) => {
+            let v = crate::css::transform_value(compose_flip(oppa::Transform::identity(), flip));
+            if v.is_empty() {
+                String::new()
+            } else {
+                format!("transform:{v};")
+            }
+        }
         None => String::new(),
+    }
+}
+
+/// Composes a FLIP offset outermost over a transform (decision 521 —
+/// the evaluator's `apply_flip` rule, mirrored here so the stepped
+/// triple stays one composed value).
+fn compose_flip(xf: oppa::Transform, flip: (f32, f32)) -> oppa::Transform {
+    if flip == (0.0, 0.0) {
+        return xf;
+    }
+    oppa::Transform {
+        dx: oppa::Px::of(xf.dx.get() + flip.0),
+        dy: oppa::Px::of(xf.dy.get() + flip.1),
+        ..xf
     }
 }
 
@@ -488,5 +536,5 @@ fn stepped_inline(kf: Option<(Option<oppa::Color>, f32, oppa::Transform)>) -> St
 /// re-declared per frame (shared rule above) plus click-through —
 /// ghosts paint, never take input.
 fn exit_inline(kf: Option<(Option<oppa::Color>, f32, oppa::Transform)>) -> String {
-    format!("pointer-events:none;{}", stepped_inline(kf))
+    format!("pointer-events:none;{}", stepped_inline(kf, (0.0, 0.0)))
 }

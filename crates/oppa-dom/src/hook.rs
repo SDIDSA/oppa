@@ -77,6 +77,11 @@ pub fn install_dom_paint_hook(
                 // retire tracks); the stepped path samples it during
                 // sync below.
                 be.track_animation(&diffs, rec, styles, now);
+                // Decisions 521-522: publish live layout track specs
+                // (the backend samples them on its own clock — same
+                // per-frame publish as every overlay above).
+                let specs = host2.with_evaluator(|ev| ev.layout_track_specs());
+                be.set_layout_anim(specs);
                 be.sync(rec, styles, &mut sheet.borrow_mut())
                     .expect("dom backend sync failed")
             });
@@ -149,6 +154,10 @@ mod tests {
         host.with_retained_mut(|rec, styles| {
             let mut be = backend.borrow_mut();
             be.track_animation(&diffs, rec, styles, now);
+            // Decisions 521-522: publish live layout track specs
+            // (mirrors the presenter legs above).
+            let specs = host.with_evaluator(|ev| ev.layout_track_specs());
+            be.set_layout_anim(specs);
             be.sync(rec, styles, sheet).expect("sync").touched
         })
     }
@@ -389,5 +398,219 @@ mod tests {
             backend.borrow().element(id).is_none(),
             "re-show cancels the ghost"
         );
+    }
+
+    /// Decisions 521-522: the fence substitutes interpolated geometry
+    /// mid-flight (derived inline width strictly interior), reports
+    /// touched work every changing frame, and settles back to the
+    /// committed target with no clip on leaves.
+    #[test]
+    fn fence_substitutes_geometry_then_settles() {
+        use oppa::MockClock;
+        #[derive(Clone)]
+        struct FenceProps {
+            wide: Signal<bool>,
+        }
+        impl Props for FenceProps {}
+        fn fence_scene(ctx: &Ctx, props: &FenceProps) -> VNode {
+            let _ = ctx.signal(0u32);
+            let w = if props.wide.get() { 200.0 } else { 100.0 };
+            Div("card")
+                .style(
+                    Style::new()
+                        .size(w, 50.0)
+                        .bg(Color(0x22_66_CC))
+                        .layout_anim(Transition::new(200, Ease::Linear)),
+                )
+                .build()
+        }
+        let clock = Rc::new(MockClock::new());
+        let host = ComponentHost::with_clock(clock.clone());
+        host.set_viewport(800.0, 600.0);
+        let wide = host.runtime().signal(false);
+        host.mount("Fence", FenceProps { wide: wide.clone() }, fence_scene);
+        host.run_until_idle();
+        let backend = Rc::new(RefCell::new(DomBackend::new(1.0)));
+        let mut sheet = StyleSheet::new(1.0);
+        let mut cursor = 0;
+        drive(&host, &backend, &mut sheet, &mut cursor, clock.get());
+        let id = host
+            .with_retained_mut(|rec, _| rec.find_by_debug("card"))
+            .into_iter()
+            .next()
+            .expect("card node");
+        wide.set(true);
+        host.run_once();
+        clock.advance(0.1);
+        host.run_once();
+        let touched = drive(&host, &backend, &mut sheet, &mut cursor, clock.get());
+        assert!(touched > 0, "fence frames report touched work");
+        {
+            let be = backend.borrow();
+            let geom = be.element(id).expect("el").inline_geom.clone();
+            assert!(
+                geom.contains("width:150px"),
+                "fence substitutes interior geometry, got {geom:?}"
+            );
+            assert!(
+                !geom.contains("overflow:hidden"),
+                "leaf fences clip nothing, got {geom:?}"
+            );
+        }
+        clock.advance(1.0);
+        host.run_until_idle();
+        drive(&host, &backend, &mut sheet, &mut cursor, clock.get());
+        {
+            let be = backend.borrow();
+            let geom = be.element(id).expect("el").inline_geom.clone();
+            assert!(
+                geom.contains("width:200px"),
+                "settled fence derives the target, got {geom:?}"
+            );
+        }
+        assert!(!host.has_demand(), "quiet after the fence");
+    }
+
+    /// Decision 521: FLIP steps the offset inline while live (no CSS
+    /// transition owns it) and reverts to bare markup at settle.
+    #[test]
+    fn flip_steps_inline_then_reverts() {
+        use oppa::{Column, MockClock};
+        #[derive(Clone)]
+        struct FlipProps {
+            extra: Signal<bool>,
+        }
+        impl Props for FlipProps {}
+        fn flip_scene(ctx: &Ctx, props: &FlipProps) -> VNode {
+            let _ = ctx.signal(0u32);
+            let anim = Transition::new(200, Ease::Linear);
+            let mut kids = Vec::new();
+            if props.extra.get() {
+                kids.push(Div("extra").style(Style::new().size(100.0, 20.0)).build());
+            }
+            for (i, name) in ["flip-a", "flip-b"].into_iter().enumerate() {
+                kids.push(
+                    Div(name)
+                        .key(i as u64)
+                        .style(Style::new().size(100.0, 20.0).layout_anim(anim))
+                        .build(),
+                );
+            }
+            Column::new().children(kids)
+        }
+        let clock = Rc::new(MockClock::new());
+        let host = ComponentHost::with_clock(clock.clone());
+        host.set_viewport(800.0, 600.0);
+        let extra = host.runtime().signal(false);
+        host.mount(
+            "Flip",
+            FlipProps {
+                extra: extra.clone(),
+            },
+            flip_scene,
+        );
+        host.run_until_idle();
+        let backend = Rc::new(RefCell::new(DomBackend::new(1.0)));
+        let mut sheet = StyleSheet::new(1.0);
+        let mut cursor = 0;
+        drive(&host, &backend, &mut sheet, &mut cursor, clock.get());
+        let row = host
+            .with_retained_mut(|rec, _| rec.find_by_debug("flip-a"))
+            .into_iter()
+            .next()
+            .expect("row node");
+        extra.set(true);
+        host.run_once();
+        clock.advance(0.1);
+        host.run_once();
+        let touched = drive(&host, &backend, &mut sheet, &mut cursor, clock.get());
+        assert!(touched > 0, "flip frames report touched work");
+        {
+            let be = backend.borrow();
+            let el = be.element(row).expect("el");
+            assert!(
+                el.inline_kf.contains("translate("),
+                "live flips step inline, got {:?}",
+                el.inline_kf
+            );
+            assert!(
+                el.no_transition,
+                "stepped offsets freeze the CSS mapping while flipping"
+            );
+        }
+        clock.advance(1.0);
+        host.run_until_idle();
+        drive(&host, &backend, &mut sheet, &mut cursor, clock.get());
+        {
+            let be = backend.borrow();
+            let el = be.element(row).expect("el");
+            assert_eq!(el.inline_kf, "", "settled flips step nothing");
+            assert!(!el.no_transition, "the freeze clears at settle");
+        }
+        assert!(!host.has_demand(), "quiet after the flip");
+    }
+
+    /// Decision 522 rung 2: a fenced node with children clips to the
+    /// interpolated box (accordion reveal, no per-frame reflow).
+    #[test]
+    fn fenced_parent_clips_children() {
+        use oppa::MockClock;
+        #[derive(Clone)]
+        struct AccProps {
+            wide: Signal<bool>,
+        }
+        impl Props for AccProps {}
+        fn acc_scene(ctx: &Ctx, props: &AccProps) -> VNode {
+            let _ = ctx.signal(0u32);
+            let w = if props.wide.get() { 200.0 } else { 100.0 };
+            Div("acc")
+                .style(
+                    Style::new()
+                        .size(w, 50.0)
+                        .bg(Color(0x22_66_CC))
+                        .layout_anim(Transition::new(200, Ease::Linear)),
+                )
+                .child(Div("acc-kid").style(Style::new().size(200.0, 50.0)).build())
+        }
+        let clock = Rc::new(MockClock::new());
+        let host = ComponentHost::with_clock(clock.clone());
+        host.set_viewport(800.0, 600.0);
+        let wide = host.runtime().signal(false);
+        host.mount("Acc", AccProps { wide: wide.clone() }, acc_scene);
+        host.run_until_idle();
+        let backend = Rc::new(RefCell::new(DomBackend::new(1.0)));
+        let mut sheet = StyleSheet::new(1.0);
+        let mut cursor = 0;
+        drive(&host, &backend, &mut sheet, &mut cursor, clock.get());
+        let id = host
+            .with_retained_mut(|rec, _| rec.find_by_debug("acc"))
+            .into_iter()
+            .next()
+            .expect("acc node");
+        wide.set(true);
+        host.run_once();
+        clock.advance(0.1);
+        host.run_once();
+        drive(&host, &backend, &mut sheet, &mut cursor, clock.get());
+        {
+            let be = backend.borrow();
+            let geom = be.element(id).expect("el").inline_geom.clone();
+            assert!(
+                geom.contains("overflow:hidden"),
+                "fenced parents clip children, got {geom:?}"
+            );
+        }
+        clock.advance(1.0);
+        host.run_until_idle();
+        drive(&host, &backend, &mut sheet, &mut cursor, clock.get());
+        {
+            let be = backend.borrow();
+            let geom = be.element(id).expect("el").inline_geom.clone();
+            assert!(
+                geom.contains("width:200px") && !geom.contains("overflow:hidden"),
+                "settled accordion derives the bare target, got {geom:?}"
+            );
+        }
+        assert!(!host.has_demand(), "quiet after the reveal");
     }
 }

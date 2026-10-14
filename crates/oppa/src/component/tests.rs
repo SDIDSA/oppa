@@ -2060,3 +2060,549 @@ fn exit_loop_refuses_loudly() {
     show.set(false);
     host.run_once();
 }
+
+// ---------------------------------------------------------------------------
+// Decisions 521-522: layout animation (FLIP for position, fence for size)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct FenceCardProps {
+    wide: Signal<bool>,
+}
+impl Props for FenceCardProps {}
+
+fn fence_card_comp(ctx: &Ctx, props: &FenceCardProps) -> VNode {
+    let _ = ctx.signal(0u32);
+    // Non-black fill (pure 0x000000 reads TRANSPARENT and skips paint
+    // — never a fill endpoint, by doctrine).
+    let w = if props.wide.get() { 200.0 } else { 100.0 };
+    crate::vnode::Div("fence-card")
+        .style(
+            Style::new()
+                .size(w, 50.0)
+                .bg(crate::style::Color(0x22_66_CC))
+                .layout_anim(Transition::new(200, Ease::Linear)),
+        )
+        .build()
+}
+
+/// Fence interpolates explicit-px size mid-flight, lands exact on
+/// the committed target, and retires to zero work (no new demand
+/// source — quiescence reads the one number).
+#[test]
+fn fence_interpolates_size_then_settles_quiet() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    host.mount(
+        "Fence",
+        FenceCardProps { wide: wide.clone() },
+        fence_card_comp,
+    );
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "fence-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    wide.set(true);
+    host.run_once();
+    // Committed box jumps at once (engine truth); the fence lags it.
+    host.with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "fence track live");
+    });
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    let mid = host
+        .effective_box(card, now)
+        .expect("fence interpolates mid-flight");
+    assert!(
+        mid.w > 100.0 && mid.w < 200.0,
+        "fence runs mid-flight, got {}",
+        mid.w
+    );
+    assert!(
+        host.committed_box(card).expect("committed").w == 200.0,
+        "committed box already at target"
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "fence retires to zero work");
+    });
+    assert!(!host.has_demand(), "quiet after the fence");
+}
+
+#[derive(Clone)]
+struct FlipListProps {
+    extra: Signal<bool>,
+}
+impl Props for FlipListProps {}
+
+fn flip_list_comp(ctx: &Ctx, props: &FlipListProps) -> VNode {
+    let _ = ctx.signal(0u32);
+    let anim = Transition::new(200, Ease::Linear);
+    let mut kids = Vec::new();
+    if props.extra.get() {
+        kids.push(
+            crate::vnode::Div("flip-extra")
+                .style(Style::new().size(100.0, 20.0))
+                .build(),
+        );
+    }
+    for (i, name) in ["flip-a", "flip-b"].into_iter().enumerate() {
+        kids.push(
+            crate::vnode::Div(name)
+                .key(i as u64)
+                .style(Style::new().size(100.0, 20.0).layout_anim(anim))
+                .build(),
+        );
+    }
+    crate::vnode::Column::new().children(kids)
+}
+
+/// Inserting a sibling shifts flagged rows down through FLIP
+/// (mid-flight offsets strictly interior), landing exact and quiet.
+#[test]
+fn flip_moves_shifted_rows_then_settles_quiet() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let extra = host.runtime().signal(false);
+    host.mount(
+        "Flip",
+        FlipListProps {
+            extra: extra.clone(),
+        },
+        flip_list_comp,
+    );
+    host.run_until_idle();
+    let a = crate::find_retained_by_debug(&host, "flip-a")
+        .into_iter()
+        .next()
+        .expect("row a retained");
+    let y0 = host.committed_box(a).expect("row laid out").y;
+    extra.set(true);
+    host.run_once();
+    let y1 = host.committed_box(a).expect("row shifted").y;
+    assert!(y1 > y0, "insert shifts the row down");
+    // Mid-flight: the row paints above its committed box (offset
+    // decays to zero — frozen clock + bounded pumps only).
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    let dy = host.with_evaluator(|ev| ev.resolve_transform(a, None, now).dy.get());
+    assert!(
+        dy < 0.0 && dy > y0 - y1,
+        "flip offsets mid-flight, got {dy} for a {}px move",
+        y1 - y0
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "flip retires to zero work");
+    });
+    assert!(!host.has_demand(), "quiet after the flip");
+}
+
+/// A child riding its moving parent records zero (transforms
+/// compose down every backend — absolute deltas would double-apply).
+/// Exactly one flip track exists (the parent's); the child resolves
+/// identity while painting parent-composed.
+#[test]
+fn flip_parent_relative_records_zero_for_riding_child() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let dx = host.runtime().signal(0.0f32);
+    #[derive(Clone)]
+    struct ShiftProps {
+        dx: Signal<f32>,
+    }
+    impl Props for ShiftProps {}
+    fn shift_comp(ctx: &Ctx, props: &ShiftProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        let anim = Transition::new(200, Ease::Linear);
+        let inner = ctx.child(
+            "ShiftKid",
+            1,
+            &ShiftProps {
+                dx: props.dx.clone(),
+            },
+            shift_kid_comp,
+        );
+        // Static root (roots pin at the origin — the moving wrap
+        // nests one level down so `.x()` actually displaces it).
+        let wrap = crate::vnode::Div("shift-wrap")
+            .style(Style::new().x(props.dx.get()).layout_anim(anim))
+            .child(inner);
+        crate::vnode::Div("shift-root").child(wrap)
+    }
+    fn shift_kid_comp(ctx: &Ctx, _: &ShiftProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        crate::vnode::Div("shift-kid")
+            .style(
+                Style::new()
+                    .size(40.0, 20.0)
+                    .layout_anim(Transition::new(200, Ease::Linear)),
+            )
+            .build()
+    }
+    host.mount("Shift", ShiftProps { dx: dx.clone() }, shift_comp);
+    host.run_until_idle();
+    let kid = crate::find_retained_by_debug(&host, "shift-kid")
+        .into_iter()
+        .next()
+        .expect("kid retained");
+    dx.set(50.0);
+    host.run_once();
+    // Exactly the parent's track: the riding child records zero
+    // (zero offsets snap — no track).
+    host.with_evaluator(|ev| {
+        let live = ev.live_nodes();
+        assert_eq!(live.len(), 1, "one flip track, got {live:?}");
+    });
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    host.with_evaluator(|ev| {
+        assert!(
+            ev.resolve_transform(kid, None, now).is_identity(),
+            "child carries no offset of its own"
+        );
+    });
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after the shift");
+}
+
+#[derive(Clone)]
+struct ScrollRowProps {
+    off: Option<crate::ScrollOffset>,
+}
+impl Props for ScrollRowProps {}
+
+fn scroll_area_comp(ctx: &Ctx, _: &ScrollRowProps) -> VNode {
+    let _ = ctx.signal(0u32);
+    // Owner offset (the VirtualList shape — the body owns the
+    // offset, rows position from it, no explicit bind).
+    let off = ctx.scroll_offset();
+    let row = ctx.child(
+        "ScrollRow",
+        1,
+        &ScrollRowProps {
+            off: Some(off.clone()),
+        },
+        scroll_row_comp,
+    );
+    crate::vnode::ScrollArea("scroll-box")
+        .style(Style::new().size(200.0, 200.0))
+        .on_scroll(|| {})
+        .child(row)
+}
+
+fn scroll_row_comp(ctx: &Ctx, props: &ScrollRowProps) -> VNode {
+    let _ = ctx.signal(0u32);
+    let off = props.off.clone().expect("container passes its offset");
+    crate::vnode::Div("scroll-row")
+        .style(
+            Style::new()
+                .size(180.0, 30.0)
+                .absolute_y(10.0 - off.get())
+                .layout_anim(Transition::new(200, Ease::Linear)),
+        )
+        .build()
+}
+
+/// Scroll-driven moves never ease (decision 521): the flagged row
+/// jumps with the offset while recording nothing.
+#[test]
+fn flip_scroll_driven_moves_suppress() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    host.mount("ScrollAnim", ScrollRowProps { off: None }, scroll_area_comp);
+    host.run_until_idle();
+    let row = crate::find_retained_by_debug(&host, "scroll-row")
+        .into_iter()
+        .next()
+        .expect("row retained");
+    let y0 = host.committed_box(row).expect("row laid out").y;
+    // Drive the owner offset directly (same value change a wheel
+    // feed produces — the suppression keys on change, not source).
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "idle has no tracks");
+    });
+    // Reach the owner offset through the instance (the row reads the
+    // container's own signal — bump it like a feed would).
+    let bumped = host.instance_scroll(1).expect("owner offset exists");
+    bumped.set(100.0);
+    host.run_once();
+    let y1 = host.committed_box(row).expect("row scrolled").y;
+    assert!(
+        (y0 - y1 - 100.0).abs() < 1e-3,
+        "offset moves the row, {y0} -> {y1}"
+    );
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "scroll moves record nothing");
+    });
+    assert!(!host.has_demand(), "quiet after the scroll");
+}
+
+/// Mid-flight fences retarget from the live box (decision 522 —
+/// restart-from-current, never cancel, never jump).
+#[test]
+fn fence_mid_flight_retargets_from_live() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    host.mount(
+        "Fence2",
+        FenceCardProps { wide: wide.clone() },
+        fence_card_comp,
+    );
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "fence-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    wide.set(true);
+    host.run_once();
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    let mid = host.effective_box(card, now).expect("fence live").w;
+    assert!(mid > 100.0 && mid < 200.0, "mid-flight, got {mid}");
+    // Retarget mid-flight (same signal shape, new target): shrink
+    // back while the grow is live — continuity, no jump.
+    wide.set(false);
+    host.run_once();
+    clock.advance(0.05);
+    host.run_once();
+    let now = clock.get();
+    let after = host.effective_box(card, now).expect("retarget live").w;
+    assert!(
+        after < mid,
+        "retarget heads back from the live box, {mid} -> {after}"
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after the retarget");
+    assert_eq!(
+        host.committed_box(card).expect("card").w,
+        100.0,
+        "lands on the latest target"
+    );
+}
+
+/// Mutating a sibling mid-flight retargets without dirt leakage
+/// (decision 522): generation bumps stay bounded to genuine commits
+/// (no per-frame layout churn), the fence lands exact, and the tree
+/// goes quiet.
+#[test]
+fn fence_sibling_mutation_stays_dirt_bounded() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    #[derive(Clone)]
+    struct PairProps {
+        wide_card: Signal<bool>,
+        wide_sib: Signal<bool>,
+    }
+    impl Props for PairProps {}
+    fn pair_comp(ctx: &Ctx, props: &PairProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        let anim = Transition::new(200, Ease::Linear);
+        let card = crate::vnode::Div("dirt-card")
+            .style(
+                Style::new()
+                    .size(if props.wide_card.get() { 200.0 } else { 100.0 }, 50.0)
+                    .layout_anim(anim),
+            )
+            .build();
+        let sib = crate::vnode::Div("dirt-sib")
+            .style(Style::new().size(if props.wide_sib.get() { 150.0 } else { 80.0 }, 50.0))
+            .build();
+        crate::vnode::Column::new().children(vec![card, sib])
+    }
+    let wide_card = host.runtime().signal(false);
+    let wide_sib = host.runtime().signal(false);
+    host.mount(
+        "Pair",
+        PairProps {
+            wide_card: wide_card.clone(),
+            wide_sib: wide_sib.clone(),
+        },
+        pair_comp,
+    );
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "dirt-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    let gen0 = host.layout_generation();
+    wide_card.set(true);
+    host.run_once();
+    let gen1 = host.layout_generation();
+    assert_eq!(gen1, gen0 + 1, "expand commits once");
+    // Idle frames bump nothing (no per-frame layout churn).
+    for _ in 0..3 {
+        clock.advance(1.0 / 60.0);
+        host.run_once();
+    }
+    assert_eq!(
+        host.layout_generation(),
+        gen1,
+        "mid-flight frames run no layout"
+    );
+    // Sibling mutates mid-flight: one more commit, then quiet.
+    wide_sib.set(true);
+    host.run_once();
+    assert_eq!(host.layout_generation(), gen1 + 1, "sibling commits once");
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after both settle");
+    assert_eq!(
+        host.committed_box(card).expect("card").w,
+        200.0,
+        "fence lands on its target"
+    );
+}
+
+/// An auto-sized box that changes size under a layout_anim
+/// declaration refuses loudly (no defined endpoint rule — the
+/// clamp-panic precedent, judged on final spans).
+#[test]
+#[should_panic(expected = "without explicit h")]
+fn fence_auto_height_refuses_loudly() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let tall = host.runtime().signal(false);
+    #[derive(Clone)]
+    struct AutoProps {
+        tall: Signal<bool>,
+    }
+    impl Props for AutoProps {}
+    fn auto_comp(ctx: &Ctx, props: &AutoProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        // The kid snaps (explicit, undeclared); the inner auto
+        // height follows content — the refusal case. (Nested: mount
+        // roots take the viewport height, so the auto box nests one
+        // level down.)
+        let kid = crate::vnode::Div("auto-kid")
+            .style(Style::new().size(50.0, if props.tall.get() { 60.0 } else { 30.0 }))
+            .build();
+        let inner = crate::vnode::Div("auto-box")
+            .style(
+                Style::new()
+                    .w(200.0)
+                    .layout_anim(Transition::new(200, Ease::Linear)),
+            )
+            .child(kid);
+        crate::vnode::Div("auto-root")
+            .style(Style::new().size(400.0, 400.0))
+            .child(inner)
+    }
+    host.mount("Auto", AutoProps { tall: tall.clone() }, auto_comp);
+    host.run_until_idle();
+    tall.set(true);
+    host.run_once();
+}
+
+/// A size change on a refused node jumps entirely (decision 521 —
+/// mixed move+resize on a refused node never half-animates). This
+/// test documents the jump through an undeclared twin: same tree
+/// without the declaration snaps to the same end state.
+#[test]
+fn mixed_move_resize_without_declaration_snaps() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    #[derive(Clone)]
+    struct PlainProps {
+        wide: Signal<bool>,
+    }
+    impl Props for PlainProps {}
+    fn plain_comp(ctx: &Ctx, props: &PlainProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        // No layout_anim anywhere: every layout change applies
+        // instantly, exactly as before decisions 521-522.
+        let w = if props.wide.get() { 200.0 } else { 100.0 };
+        crate::vnode::Div("plain-card")
+            .style(Style::new().size(w, 50.0))
+            .build()
+    }
+    host.mount("Plain", PlainProps { wide: wide.clone() }, plain_comp);
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "plain-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    wide.set(true);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "undeclared moves create no tracks");
+    });
+    assert_eq!(
+        host.committed_box(card).expect("card").w,
+        200.0,
+        "undeclared resize snaps to target"
+    );
+    assert!(!host.has_demand(), "quiet");
+    let _ = clock;
+}
+
+/// Stamped commits snap layout too (Q5 covers layout like exits
+/// and tweens): a binding edge plus a box move in one commit
+/// creates no tracks — values jump.
+#[test]
+fn stamped_layout_moves_snap() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    #[derive(Clone)]
+    struct StampProps {
+        wide: Signal<bool>,
+    }
+    impl Props for StampProps {}
+    fn stamp_comp(ctx: &Ctx, props: &StampProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        // Binding edge on the same signal that grows the card: one
+        // commit carries both the stamp and the move. The memo must
+        // be READ (unevaluated memos record no dependency edges, so
+        // an unread binding never fires — pull semantics, §9.1).
+        let wide = props.wide.clone();
+        let _ = ctx.binding(move || wide.get()).read();
+        let w = if props.wide.get() { 200.0 } else { 100.0 };
+        crate::vnode::Div("stamp-card")
+            .style(
+                Style::new()
+                    .size(w, 50.0)
+                    .layout_anim(Transition::new(200, Ease::Linear)),
+            )
+            .build()
+    }
+    host.mount("Stamp", StampProps { wide: wide.clone() }, stamp_comp);
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "stamp-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    wide.set(true);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "stamped moves create no tracks");
+    });
+    assert_eq!(
+        host.committed_box(card).expect("card").w,
+        200.0,
+        "stamped resize jumps to target"
+    );
+    assert!(!host.has_demand(), "quiet");
+    let _ = clock;
+}

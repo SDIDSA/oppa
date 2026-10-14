@@ -155,6 +155,11 @@ impl ScenePresenter for DomPresenter {
         let now = host.runtime().now_secs();
         let stats = host.with_retained_mut(|rec, styles| {
             self.dom.track_animation(&[], rec, styles, now);
+            // Decisions 521-522: publish live layout track specs
+            // (the backend samples them on its own clock — host-side
+            // settle must never freeze a lagging backend mid-flight).
+            let specs = host.with_evaluator(|ev| ev.layout_track_specs());
+            self.dom.set_layout_anim(specs);
             self.dom
                 .sync(rec, styles, &mut self.sheet)
                 .expect("dom sync failed")

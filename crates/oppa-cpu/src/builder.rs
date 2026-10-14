@@ -393,6 +393,17 @@ impl<'a> Walker<'a> {
         if self.is_dirty(id) {
             match box_opt {
                 Some(b) => {
+                    // Decisions 521-522: a fenced node paints its
+                    // interpolated box (the fence track while one runs;
+                    // committed boxes stay engine truth — raw builds
+                    // show the target, like removals). Children keep
+                    // their committed end-state boxes under it.
+                    let fence_box = match self.eval {
+                        Some((e, now)) => e.resolve_box(id, now, dpr),
+                        None => None,
+                    };
+                    let fenced = fence_box.is_some();
+                    let b = fence_box.unwrap_or(b);
                     // Decision 511: this node's paint transform
                     // (evaluator-live else retained) composes with the
                     // ancestry — damage covers the transformed AABB,
@@ -430,8 +441,11 @@ impl<'a> Walker<'a> {
                         h: dh,
                     });
                     // ScrollArea viewports clip their content (M4: emitted
-                    // whenever the viewport node rebuilds).
-                    let clips = tag == Tag::ScrollArea;
+                    // whenever the viewport node rebuilds). Fenced nodes
+                    // with children clip to the interpolated box too
+                    // (decision 522 accordion reveal — leaf fences carry
+                    // no children, so leaves paint exactly as before).
+                    let clips = tag == Tag::ScrollArea || (fenced && !children.is_empty());
                     if clips {
                         self.plan.ops.push(DrawOp::PushClip {
                             x: dx,

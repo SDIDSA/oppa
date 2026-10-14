@@ -272,13 +272,174 @@ pub struct TransitionEvaluator {
     /// them explicitly at exit completion or re-show cancel (stale
     /// generations never collide: recycled slots mint fresh ids).
     exits: HashMap<NodeId, Interp>,
+    /// Layout FLIP tracks (decision 521): one Once translate-only
+    /// track per moved node, keyed by live id. Separate from `active`
+    /// so a FLIP never eats a user transform track (and vice versa) —
+    /// both sample every frame and compose outermost-first at resolve
+    /// time. Pruned with `active` (retired ids drop; ghosts ride
+    /// exits, never flips).
+    flips: HashMap<NodeId, Interp>,
+    /// Fenced box tracks (decision 522): one Once box interpolation
+    /// per resized node, keyed by live id. Pruned with `active`.
+    layout: HashMap<NodeId, BoxInterp>,
     /// Tracks ever created (the §9.4 instrument: a stamped sweep
     /// must show a zero delta here — counted, not inferred). One per
-    /// node per delta (tweens, keyframe tracks, and exit fades alike —
-    /// a track is a track, never per-property).
+    /// node per delta (tweens, keyframe tracks, exit fades, flips,
+    /// and fence tracks alike — a track is a track, never
+    /// per-property).
     created: u64,
     /// Stamped style deltas honored (snapped, no track).
     suppressed: u64,
+}
+
+/// One fenced-box interpolation (decision 522): axis legs from the
+/// previous committed box to the new one, Once only (layout tracks
+/// are synthesized, never declared — there is no loop spelling to
+/// refuse). Settles like any Once track; sampling rounds positions
+/// to the device grid like `commit_box` (extents stay subpixel).
+#[derive(Clone, Debug)]
+struct BoxInterp {
+    from: [f32; 4],
+    to: [f32; 4],
+    dur: f64,
+    ease: Ease,
+    delay: f64,
+    start: f64,
+}
+
+impl BoxInterp {
+    fn settled(&self, now: f64) -> bool {
+        now - self.start >= self.delay + self.dur
+    }
+
+    /// Sampled box at `now` (`dpr` grids the positions — the
+    /// `round_to_device_px` rule, so the settle frame lands
+    /// byte-exact on the committed target).
+    fn sample(&self, now: f64, dpr: f32) -> crate::layout::LayoutBox {
+        let t = ((now - self.start) - self.delay).max(0.0);
+        let r = if self.dur <= 0.0 {
+            1.0
+        } else {
+            (t / self.dur).min(1.0)
+        };
+        // Settle-exact (the r ≥ 1 gate, never the eased value — spring
+        // overshoot rides raw mid-leg like transforms, then lands).
+        if r >= 1.0 {
+            return Self::box_of(self.to, dpr);
+        }
+        let e = ease_at(self.ease, r);
+        let lerp = |f: f32, o: f32| f + (o - f) * e as f32;
+        Self::box_of(
+            [
+                lerp(self.from[0], self.to[0]),
+                lerp(self.from[1], self.to[1]),
+                lerp(self.from[2], self.to[2]),
+                lerp(self.from[3], self.to[3]),
+            ],
+            dpr,
+        )
+    }
+
+    fn box_of(v: [f32; 4], dpr: f32) -> crate::layout::LayoutBox {
+        crate::layout::LayoutBox {
+            x: crate::text::round_to_device_px(v[0], dpr),
+            y: crate::text::round_to_device_px(v[1], dpr),
+            w: v[2],
+            h: v[3],
+            ..Default::default()
+        }
+    }
+}
+
+/// One live layout track as plain data (decision 522): what
+/// registry-persistent backends sample on their own clock (the
+/// exit-twin precedent — host-side settle must never freeze a
+/// lagging backend mid-flight). Sampling lives here, once, so
+/// every backend agrees bit-for-bit with the evaluator.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutAnimSpec {
+    pub id: NodeId,
+    pub kind: crate::layout::LayoutMoveKind,
+    /// Fence: previous committed box. Flip: the start offset in
+    /// `[dx, dy, _, _]` (old-minus-new visual offset).
+    pub from: [f32; 4],
+    /// Fence: the committed target. Flip: zeros (offsets decay).
+    pub to: [f32; 4],
+    /// Track start (frame-clock seconds, same basis as every sample).
+    pub start: f64,
+    pub dur_ms: u32,
+    pub delay_ms: u32,
+    pub ease: Ease,
+}
+
+impl LayoutAnimSpec {
+    fn dur(&self) -> f64 {
+        f64::from(self.dur_ms) / 1000.0
+    }
+
+    fn delay(&self) -> f64 {
+        f64::from(self.delay_ms) / 1000.0
+    }
+
+    /// True past the end (backends fall back to committed boxes —
+    /// the same quiet the host drive reads).
+    pub fn settled(&self, now: f64) -> bool {
+        now - self.start >= self.delay() + self.dur()
+    }
+
+    /// Eased ratio in `[0, 1]` (`None` past the end).
+    fn ratio(&self, now: f64) -> Option<f64> {
+        if self.settled(now) {
+            return None;
+        }
+        let t = ((now - self.start) - self.delay()).max(0.0);
+        let r = if self.dur() <= 0.0 {
+            1.0
+        } else {
+            (t / self.dur()).min(1.0)
+        };
+        Some(r)
+    }
+
+    /// Interpolated box (fence only — `None` for flips and past the
+    /// end). Settle-exact: the final live frame lands on `to`
+    /// (which equals the committed target by construction).
+    pub fn sample_box(&self, now: f64, dpr: f32) -> Option<crate::layout::LayoutBox> {
+        if self.kind != crate::layout::LayoutMoveKind::Fence {
+            return None;
+        }
+        let r = self.ratio(now)?;
+        if r >= 1.0 {
+            return Some(BoxInterp::box_of(self.to, dpr));
+        }
+        let e = ease_at(self.ease, r);
+        let lerp = |f: f32, o: f32| f + (o - f) * e as f32;
+        Some(BoxInterp::box_of(
+            [
+                lerp(self.from[0], self.to[0]),
+                lerp(self.from[1], self.to[1]),
+                lerp(self.from[2], self.to[2]),
+                lerp(self.from[3], self.to[3]),
+            ],
+            dpr,
+        ))
+    }
+
+    /// Live flip offset (flip only — zeros for fences and past the
+    /// end; exact zeros keep unflipped chains dust-free).
+    pub fn sample_flip(&self, now: f64) -> (f32, f32) {
+        if self.kind != crate::layout::LayoutMoveKind::Flip {
+            return (0.0, 0.0);
+        }
+        let Some(r) = self.ratio(now) else {
+            return (0.0, 0.0);
+        };
+        if r >= 1.0 {
+            return (0.0, 0.0);
+        }
+        let e = ease_at(self.ease, r) as f32;
+        (self.from[0] * (1.0 - e), self.from[1] * (1.0 - e))
+    }
 }
 
 impl TransitionEvaluator {
@@ -522,13 +683,32 @@ impl TransitionEvaluator {
 
     /// Evaluated transform for `node` at `now` (same precedence as
     /// [`resolve_bg`](Self::resolve_bg); untracked nodes fall back to the
-    /// retained value, defaulting to identity).
+    /// retained value, defaulting to identity). Layout FLIP offsets
+    /// (decision 521) compose outermost — parent-space translation
+    /// outside the node-local transform, so builder, hit-test, and DOM
+    /// agree with zero consumer changes.
     pub fn resolve_transform(
         &self,
         node: NodeId,
         style_xf: Option<Transform>,
         now: f64,
     ) -> Transform {
+        let base = if let Some(i) = self.active.get(&node) {
+            i.sample_xf(now)
+        } else if let Some(i) = self.exits.get(&node) {
+            i.sample_xf(now)
+        } else if let Some(t) = self.targets.get(&node) {
+            t.transform
+        } else {
+            style_xf.unwrap_or(Transform::identity())
+        };
+        Self::apply_flip(base, self.flip_offset(node, now))
+    }
+
+    /// User transform without the FLIP layer (decision 521 — the
+    /// stepped path composes the offset itself so the triple stays
+    /// one composed value).
+    fn user_transform(&self, node: NodeId, style_xf: Option<Transform>, now: f64) -> Transform {
         if let Some(i) = self.active.get(&node) {
             return i.sample_xf(now);
         }
@@ -541,44 +721,91 @@ impl TransitionEvaluator {
         style_xf.unwrap_or(Transform::identity())
     }
 
+    /// Live FLIP offset at `now` (decision 521): `(0, 0)` without one
+    /// (exact — no float dust enters unflipped chains).
+    fn flip_offset(&self, node: NodeId, now: f64) -> (f32, f32) {
+        let Some(f) = self.flips.get(&node) else {
+            return (0.0, 0.0);
+        };
+        if f.settled(now) {
+            return (0.0, 0.0);
+        }
+        let t = f.sample_xf(now);
+        (t.dx.get(), t.dy.get())
+    }
+
+    /// Composes a FLIP offset outermost over a user transform (both
+    /// parent-space translations add exactly — skipped whole for
+    /// zero offsets so ST-only chains stay bit-exact).
+    fn apply_flip(base: Transform, flip: (f32, f32)) -> Transform {
+        if flip.0 == 0.0 && flip.1 == 0.0 {
+            return base;
+        }
+        Transform {
+            dx: crate::style::Px::of(base.dx.get() + flip.0),
+            dy: crate::style::Px::of(base.dy.get() + flip.1),
+            ..base
+        }
+    }
+
     /// Live stepped values for `node` at `now` (the DOM stepped
     /// path): `Some` exactly while a track runs unsettled that the
     /// CSS path cannot serve — keyframe tracks (never plain tweens,
     /// those keep the CSS mapping) plus spring tweens (decision 513:
     /// no CSS spelling exists, so the stepped values own the motion)
     /// plus deferred exits (decision 520: ghosts have no CSS mapping
-    /// either — always keyframed, always stepped).
+    /// either — always keyframed, always stepped) plus layout FLIPs
+    /// (decision 521: offsets have no CSS spelling either — stepped
+    /// while live, composed outermost like everywhere else).
     pub fn resolve_keyframe(
         &self,
         node: NodeId,
         now: f64,
     ) -> Option<(Option<Color>, f32, Transform)> {
-        let i = self.active.get(&node).or_else(|| self.exits.get(&node))?;
-        if !i.needs_stepping() || i.settled(now) {
-            return None;
+        let flip = self.flip_offset(node, now);
+        let flipped = flip.0 != 0.0 || flip.1 != 0.0;
+        let i = self.active.get(&node).or_else(|| self.exits.get(&node));
+        match i {
+            Some(t) if t.needs_stepping() && !t.settled(now) => Some((
+                t.sample_bg(now),
+                t.sample_op(now),
+                Self::apply_flip(t.sample_xf(now), flip),
+            )),
+            _ if flipped => Some((
+                self.resolve_bg(node, None, now),
+                self.resolve_opacity(node, 1.0, now),
+                Self::apply_flip(self.user_transform(node, None, now), flip),
+            )),
+            _ => None,
         }
-        Some((i.sample_bg(now), i.sample_op(now), i.sample_xf(now)))
     }
 
     /// Retires settled tracks at `now` (the TIME-phase drive:
     /// register as a `TIME` animation while it returns non-zero — static
     /// UI idles). Once exits retire exactly like Once tweens, so a
-    /// faded ghost goes quiet through the same gate. Returns the live
-    /// count after retiring.
+    /// faded ghost goes quiet through the same gate; flips and fences
+    /// retire through it too (quiescence reads one number). Returns
+    /// the live count after retiring.
     pub fn settle(&mut self, now: f64) -> usize {
         self.active.retain(|_, i| !i.settled(now));
         self.exits.retain(|_, i| !i.settled(now));
-        self.active.len() + self.exits.len()
+        self.flips.retain(|_, i| !i.settled(now));
+        self.layout.retain(|_, i| !i.settled(now));
+        self.active.len() + self.exits.len() + self.flips.len() + self.layout.len()
     }
 
     /// Drops targets/tracks for retired nodes (call after commits
     /// that remove subtrees — `Remove` forgets roots only). Deferred
     /// exits are never pruned here (decision 520 — arena liveness
     /// cannot judge ghosts; the host releases them explicitly at
-    /// completion or re-show cancel).
+    /// completion or re-show cancel). Flips and fences key live ids
+    /// only — retired ones drop with everything else (a removed
+    /// node's motion ends; exits own its ghost).
     pub fn prune_dead(&mut self, rec: &Reconciler) {
         self.targets.retain(|id, _| rec.get(*id).is_some());
         self.active.retain(|id, _| rec.get(*id).is_some());
+        self.flips.retain(|id, _| rec.get(*id).is_some());
+        self.layout.retain(|id, _| rec.get(*id).is_some());
     }
 
     /// Releases deferred-exit tracks for `ids` (decision 520: exit
@@ -596,6 +823,170 @@ impl TransitionEvaluator {
         self.exits.len()
     }
 
+    /// Synthesizes one FLIP track (decision 521): Once translate-only
+    /// from `(dx, dy)` to zero over the node's own spec.
+    /// Residual-aware: a live flip contributes its current value, so
+    /// interruptions add onto the visible offset instead of jumping
+    /// (`live + fresh residual` — never recomputed from committed
+    /// boxes alone). Zero offsets and zero durations snap (the track
+    /// drops; paint sits on the committed box).
+    #[allow(clippy::too_many_arguments)] // one synthesis site; a params struct buys nothing
+    pub fn synthesize_flip(
+        &mut self,
+        id: NodeId,
+        dx: f32,
+        dy: f32,
+        dur_ms: u32,
+        ease: Ease,
+        delay_ms: u32,
+        now: f64,
+    ) {
+        let (live_x, live_y) = self.flip_offset(id, now);
+        let (fx, fy) = (live_x + dx, live_y + dy);
+        if fx == 0.0 && fy == 0.0 {
+            self.flips.remove(&id);
+            return;
+        }
+        if dur_ms == 0 {
+            self.flips.remove(&id);
+            return;
+        }
+        let dur = f64::from(dur_ms) / 1000.0;
+        self.flips.insert(
+            id,
+            Interp {
+                bg_legs: Vec::new(),
+                op_legs: Vec::new(),
+                xf_legs: vec![(
+                    Transform::translate(fx, fy),
+                    Transform::identity(),
+                    dur,
+                    ease,
+                )],
+                ends: vec![dur],
+                total: dur,
+                delay: f64::from(delay_ms) / 1000.0,
+                start: now,
+                mode: KeyframeMode::Once,
+                // Stepped everywhere (decision 521 — offsets have no
+                // CSS spelling; the DOM exit-layer precedent).
+                keyframed: true,
+            },
+        );
+        self.created += 1;
+    }
+
+    /// Synthesizes one fence track (decision 522): Once box
+    /// interpolation from `from` to `to` (the committed target —
+    /// settle-exact by construction). Restarts from the live
+    /// interpolated box when one runs (interruptions retarget, never
+    /// jump, never cancel); a no-op span drops the track.
+    #[allow(clippy::too_many_arguments)] // one synthesis site; a params struct buys nothing
+    pub fn synthesize_fence(
+        &mut self,
+        id: NodeId,
+        from: [f32; 4],
+        to: [f32; 4],
+        dur_ms: u32,
+        ease: Ease,
+        delay_ms: u32,
+        now: f64,
+        dpr: f32,
+    ) {
+        let start = self
+            .layout
+            .get(&id)
+            .map(|b| {
+                let s = b.sample(now, dpr);
+                [s.x, s.y, s.w, s.h]
+            })
+            .unwrap_or(from);
+        if start == to {
+            self.layout.remove(&id);
+            return;
+        }
+        if dur_ms == 0 {
+            self.layout.remove(&id);
+            return;
+        }
+        self.layout.insert(
+            id,
+            BoxInterp {
+                from: start,
+                to,
+                dur: f64::from(dur_ms) / 1000.0,
+                ease,
+                delay: f64::from(delay_ms) / 1000.0,
+                start: now,
+            },
+        );
+        self.created += 1;
+    }
+
+    /// Interpolated box at `now` (decision 522): `Some` exactly while
+    /// a fence track runs unsettled — consumers fall back to the
+    /// committed box otherwise (no dual-source ambiguity: one
+    /// accessor, one answer). Settled tracks read `None` (the drive
+    /// drops them before paint, so the fallback already agrees).
+    pub fn resolve_box(
+        &self,
+        node: NodeId,
+        now: f64,
+        dpr: f32,
+    ) -> Option<crate::layout::LayoutBox> {
+        let t = self.layout.get(&node)?;
+        if t.settled(now) {
+            return None;
+        }
+        Some(t.sample(now, dpr))
+    }
+
+    /// Live layout track specs for registry-persistent presenters
+    /// (decision 522 — the backend owns interpolation on its own
+    /// clock, the exit-twin precedent: host-side settle must never
+    /// freeze a ghost mid-flight on a lagging backend). Plain data,
+    /// sampled backend-side through [`LayoutAnimSpec`] — published
+    /// per frame, replacing backend state wholesale (settled tracks
+    /// simply stop appearing; no lifecycle, no leak).
+    pub fn layout_track_specs(&self) -> Vec<LayoutAnimSpec> {
+        let mut out = Vec::new();
+        for (id, f) in &self.flips {
+            let (fx, fy) = f
+                .xf_legs
+                .first()
+                .map(|(from, _, _, _)| (from.dx.get(), from.dy.get()))
+                .unwrap_or((0.0, 0.0));
+            out.push(LayoutAnimSpec {
+                id: *id,
+                kind: crate::layout::LayoutMoveKind::Flip,
+                from: [fx, fy, 0.0, 0.0],
+                to: [0.0, 0.0, 0.0, 0.0],
+                start: f.start,
+                dur_ms: (f.total * 1000.0).round() as u32,
+                delay_ms: (f.delay * 1000.0).round() as u32,
+                ease: f
+                    .xf_legs
+                    .first()
+                    .map(|(_, _, _, e)| *e)
+                    .unwrap_or(Ease::Linear),
+            });
+        }
+        for (id, b) in &self.layout {
+            out.push(LayoutAnimSpec {
+                id: *id,
+                kind: crate::layout::LayoutMoveKind::Fence,
+                from: b.from,
+                to: b.to,
+                start: b.start,
+                dur_ms: (b.dur * 1000.0).round() as u32,
+                delay_ms: (b.delay * 1000.0).round() as u32,
+                ease: b.ease,
+            });
+        }
+        out.sort_by_key(|s| (s.id.index(), s.id.generation()));
+        out
+    }
+
     /// Tracks ever created (test instrument — snapshot around a
     /// sweep; a stamped sweep must show a zero delta).
     pub fn created(&self) -> u64 {
@@ -609,8 +1000,10 @@ impl TransitionEvaluator {
 
     /// Live track count, exits included (decision 520 — a fading
     /// ghost is scheduled work; quiescence reads zero here).
+    /// Decisions 521–522 fold flips and fences into the same number
+    /// (any live interpolation is scheduled work).
     pub fn active_count(&self) -> usize {
-        self.active.len() + self.exits.len()
+        self.active.len() + self.exits.len() + self.flips.len() + self.layout.len()
     }
 
     /// Nodes with a live track (the repaint drive: the host's
@@ -619,22 +1012,30 @@ impl TransitionEvaluator {
     /// of freezing on the first interpolated frame). Deferred exits
     /// ride along (harmless: retired ids skip the arena dirty walk —
     /// ghosts repaint through the builder's exit layer, not dirt).
+    /// Flips and fences ride along too (live arena ids — the dirty
+    /// walk marks them like any track).
     pub fn live_nodes(&self) -> Vec<NodeId> {
         let mut out: Vec<NodeId> = self
             .active
             .keys()
             .chain(self.exits.keys())
+            .chain(self.flips.keys())
+            .chain(self.layout.keys())
             .copied()
             .collect();
         out.sort_by_key(|id| (id.index(), id.generation()));
         out
     }
 
-    /// True when `node` has no live track and no live exit (a stamped
+    /// True when `node` holds no live track of any kind (a stamped
     /// recycle must read settled at every tick — the phantom-flash
-    /// probe; a deferred ghost reads unsettled until its fade lands).
+    /// probe; a deferred ghost reads unsettled until its fade lands;
+    /// a flipping or fenced node reads unsettled until it lands).
     pub fn is_settled(&self, node: NodeId) -> bool {
-        !self.active.contains_key(&node) && !self.exits.contains_key(&node)
+        !self.active.contains_key(&node)
+            && !self.exits.contains_key(&node)
+            && !self.flips.contains_key(&node)
+            && !self.layout.contains_key(&node)
     }
 
     /// Tracked node count (leak instrument beside `prune_dead`).
@@ -1708,5 +2109,167 @@ mod tests {
         assert_eq!(live.resolve_opacity(id, 1.0, 1.0), 0.0, "lands exact");
         assert_eq!(live.settle(1.0), 0, "exit retires like any Once");
         assert!(live.is_settled(id), "settled reads settled");
+    }
+
+    /// Decision 521: FLIP synthesizes a Once translate from the
+    /// offset to zero, samples interior mid-flight, lands exact,
+    /// retires quiet — and retargets add onto the live offset
+    /// instead of jumping (`live + residual`).
+    #[test]
+    fn flip_offsets_decay_to_zero_and_retarget_adds() {
+        let mut ev = TransitionEvaluator::new();
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let v: crate::vnode::VNode = Div("a").style(Style::new().size(10, 10)).build();
+        let d = rec.reconcile(&rt, &mut styles, false, v);
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let id = rec.root().expect("root");
+        ev.synthesize_flip(id, 40.0, 0.0, 200, Ease::Out, 0, 0.0);
+        let mid = ev.resolve_transform(id, None, 0.1);
+        assert!(
+            mid.dx.get() > 0.0 && mid.dx.get() < 40.0,
+            "flip decays mid-flight, got {}",
+            mid.dx.get()
+        );
+        // Retarget mid-flight: the residual adds onto the live
+        // offset (continuity — never recomputed from committed
+        // boxes alone).
+        ev.synthesize_flip(id, 20.0, 0.0, 200, Ease::Out, 0, 0.1);
+        let right_after = ev.resolve_transform(id, None, 0.1).dx.get();
+        assert!(
+            (right_after - (mid.dx.get() + 20.0)).abs() < 1e-3,
+            "retarget adds the residual, got {right_after} vs {}",
+            mid.dx.get() + 20.0
+        );
+        assert_eq!(
+            ev.resolve_transform(id, None, 1.0),
+            Transform::identity(),
+            "lands exact"
+        );
+        assert_eq!(ev.settle(1.0), 0, "flip retires like any Once");
+        assert!(ev.is_settled(id), "settled reads settled");
+        // Zero offsets and zero durations snap (no track).
+        ev.synthesize_flip(id, 0.0, 0.0, 200, Ease::Out, 0, 2.0);
+        assert_eq!(ev.active_count(), 0, "zero offset snaps");
+    }
+
+    /// Decision 521: flips compose outermost over user transforms
+    /// (parent-space offset outside node-local motion) and serve the
+    /// stepped path while live (plain-tween nodes included).
+    #[test]
+    fn flip_composes_outermost_and_steps() {
+        let mut ev = TransitionEvaluator::new();
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let v: crate::vnode::VNode = Div("a")
+            .style(
+                Style::new()
+                    .size(10, 10)
+                    .transform(Transform::translate(5.0, 0.0)),
+            )
+            .build();
+        let d = rec.reconcile(&rt, &mut styles, false, v);
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let id = rec.root().expect("root");
+        // Retained user transform alone (no flip): exact passthrough.
+        assert_eq!(
+            ev.resolve_transform(id, None, 0.0).dx.get(),
+            5.0,
+            "no flip means no composition dust"
+        );
+        assert!(
+            ev.resolve_keyframe(id, 0.0).is_none(),
+            "plain nodes keep the CSS mapping"
+        );
+        ev.synthesize_flip(id, 40.0, 0.0, 200, Ease::Linear, 0, 0.0);
+        let mid = ev.resolve_transform(id, None, 0.1);
+        assert!(
+            (mid.dx.get() - 25.0).abs() < 1e-3,
+            "flip adds outside the user transform, got {}",
+            mid.dx.get()
+        );
+        assert!(
+            ev.resolve_keyframe(id, 0.1).is_some(),
+            "live flips step inline"
+        );
+        assert_eq!(ev.settle(1.0), 0);
+        assert_eq!(
+            ev.resolve_transform(id, None, 1.0).dx.get(),
+            5.0,
+            "settle returns the user transform alone"
+        );
+        assert!(
+            ev.resolve_keyframe(id, 1.0).is_none(),
+            "settled flips step nothing"
+        );
+    }
+
+    /// Decision 522: the fence interpolates boxes from the previous
+    /// committed box to the target, restarts from the live box on
+    /// retarget, lands exact, and drops no-op spans.
+    #[test]
+    fn fence_interpolates_boxes_and_restarts_live() {
+        let mut ev = TransitionEvaluator::new();
+        let dpr = 1.0;
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let v: crate::vnode::VNode = Div("a").style(Style::new().size(10, 10)).build();
+        let d = rec.reconcile(&rt, &mut styles, false, v);
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let id = rec.root().expect("root");
+        assert!(
+            ev.resolve_box(id, 0.0, dpr).is_none(),
+            "no fence reads no box"
+        );
+        ev.synthesize_fence(
+            id,
+            [0.0, 0.0, 10.0, 10.0],
+            [0.0, 0.0, 100.0, 10.0],
+            200,
+            Ease::Linear,
+            0,
+            0.0,
+            dpr,
+        );
+        let mid = ev.resolve_box(id, 0.1, dpr).expect("fence live mid-flight");
+        assert!(
+            (mid.w - 55.0).abs() < 1e-3 && mid.h == 10.0,
+            "box interpolates mid-flight, got {mid:?}"
+        );
+        // Retarget mid-flight restarts from the live box (55 wide),
+        // not from the stale start (10 wide).
+        ev.synthesize_fence(
+            id,
+            [0.0, 0.0, 10.0, 10.0],
+            [0.0, 0.0, 200.0, 10.0],
+            200,
+            Ease::Linear,
+            0,
+            0.1,
+            dpr,
+        );
+        let right_after = ev
+            .resolve_box(id, 0.1, dpr)
+            .expect("fence live after retarget");
+        assert!(
+            (right_after.w - 55.0).abs() < 1e-3,
+            "retarget continues from the live box, got {right_after:?}"
+        );
+        let near = ev
+            .resolve_box(id, 0.299, dpr)
+            .expect("fence live approaching settle");
+        assert!(
+            near.w > 190.0 && near.w < 200.0,
+            "approach is continuous (no snap to target), got {near:?}"
+        );
+        assert_eq!(ev.settle(1.0), 0, "fence retires like any Once");
+        assert!(
+            ev.resolve_box(id, 1.0, dpr).is_none(),
+            "settled fences read no box (the committed fallback already agrees)"
+        );
+        assert!(ev.is_settled(id), "settled reads settled");
     }
 }

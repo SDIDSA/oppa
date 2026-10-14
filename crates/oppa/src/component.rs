@@ -471,6 +471,11 @@ struct HostInner {
     /// and need nothing, but registry-persistent presenters (DOM)
     /// drop the kept ghosts explicitly through this drain.
     cancelled_exits: RefCell<Vec<NodeId>>,
+    /// Last-seen scroll offsets per container (decisions 521-522):
+    /// FLIP capture suppresses for subtrees under scroll containers
+    /// whose offset changed (a flagged row never eases wheel input).
+    /// Keyed by container node; pruned with the feed tables.
+    scroll_offsets_seen: RefCell<HashMap<NodeId, (f32, f32)>>,
     /// Component-requested close (Round 26.2, decision 342):
     /// `Ctx::request_close` sets it; desktop runners drain it per
     /// pump iteration through the veto consult (`take_close_request`).

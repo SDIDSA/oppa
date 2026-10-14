@@ -169,6 +169,12 @@ pub struct DomBackend {
     /// these — descendants ride the ancestor keep; sync exempts them
     /// from the retired-shell sweep).
     exit_ids: HashSet<NodeId>,
+    /// Live layout track specs (decisions 521-522): published per
+    /// frame by the presenter, sampled on the backend clock
+    /// (`kf_now`) during derive — the exit-twin precedent (host-side
+    /// settle must never freeze a lagging backend mid-flight).
+    /// Empty for animation-free frames (derive byte-identical).
+    layout_anim: Vec<oppa::LayoutAnimSpec>,
 }
 
 /// One kept ghost (decision 520): a pinned removal root plus its
@@ -215,6 +221,7 @@ impl DomBackend {
             kf_now: 0.0,
             exit_kept: Vec::new(),
             exit_ids: HashSet::new(),
+            layout_anim: Vec::new(),
         }
     }
 
