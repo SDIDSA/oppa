@@ -78,9 +78,42 @@ impl DomBackend {
             }
         }
         // Drop shells for retired nodes (commit drives removals; this is
-        // the belt-and-braces for direct-sync callers).
-        self.elements.retain(|id, _| live.contains(id));
+        // the belt-and-braces for direct-sync callers) — kept ghosts
+        // exempt (they paint past removal through the pass below).
+        // Decision 520 exit pass first: settled exits drop, live ones
+        // step their inline values (every change counts touched work
+        // — exit frames must emit patches, never read quiet).
+        self.sync_exits(&mut touched);
+        self.elements
+            .retain(|id, _| live.contains(id) || self.exit_ids.contains(id));
         self.roots = rec.root().into_iter().collect();
+        // Re-home kept ghosts (parents re-derive rec-side every sync
+        // — kept children absent there): parentless ghosts keep a
+        // top-level slot, nested ones restore at their recorded
+        // index (clamped — concurrent live edits never panic). A
+        // retired parent top-levels its ghost instead.
+        for keep in self.exit_kept.clone() {
+            match keep.parent {
+                None => {
+                    if !self.roots.contains(&keep.root) {
+                        self.roots.push(keep.root);
+                    }
+                }
+                Some(p) => match self.elements.get_mut(&p) {
+                    Some(el) => {
+                        if !el.children.contains(&keep.root) {
+                            let pos = keep.index.min(el.children.len());
+                            el.children.insert(pos, keep.root);
+                        }
+                    }
+                    None => {
+                        if !self.roots.contains(&keep.root) {
+                            self.roots.push(keep.root);
+                        }
+                    }
+                },
+            }
+        }
         // Theme contract round: a flipped page chrome is real sync
         // work (the body-style stanza) even when no element
         // re-derived — without this a bare toggle on an unthemed
@@ -94,6 +127,48 @@ impl DomBackend {
             touched,
             elements: self.elements.len(),
         })
+    }
+
+    /// Steps kept ghosts (decision 520): settled exits drop (registry
+    /// delete like the Remove arm), live ones re-declare stepped
+    /// values inline (the keyframe path — ghosts have no CSS mapping)
+    /// plus click-through (ghosts paint, never take input). Every
+    /// change counts touched work (exit frames must emit patches,
+    /// never read quiet).
+    fn sync_exits(&mut self, touched: &mut usize) {
+        if self.exit_kept.is_empty() {
+            return;
+        }
+        let mut dropped = Vec::new();
+        for keep in &self.exit_kept {
+            let mut ids = vec![keep.root];
+            let mut i = 0;
+            while i < ids.len() {
+                let cur = ids[i];
+                i += 1;
+                if let Some(el) = self.elements.get(&cur) {
+                    ids.extend(el.children.iter().copied());
+                }
+            }
+            if ids.iter().all(|id| self.kf_eval.is_settled(*id)) {
+                dropped.push(keep.root);
+                continue;
+            }
+            for id in ids {
+                let kf = exit_inline(self.kf_eval.resolve_keyframe(id, self.kf_now));
+                if let Some(el) = self.elements.get_mut(&id) {
+                    if el.inline_kf != kf {
+                        el.inline_kf = kf;
+                        *touched += 1;
+                    }
+                }
+            }
+        }
+        for root in dropped {
+            // Settle deletion is real patch work (a pure deletion
+            // still emits removes — see `drop_exit`).
+            *touched += self.drop_exit(root);
+        }
     }
 
     fn dfs_ids(&self, rec: &Reconciler) -> Vec<NodeId> {
@@ -363,21 +438,7 @@ impl DomBackend {
         // otherwise — unkeyframed markup byte-identical). Decision
         // 511 extends the re-declaration to the transform leg (same
         // rule — tweens keep the CSS `transition:` mapping).
-        let inline_kf = match self.kf_eval.resolve_keyframe(id, self.kf_now) {
-            Some((bg, op, xf)) => {
-                let mut s = String::new();
-                if let Some(c) = bg {
-                    s.push_str(&format!("background-color:{};", dom_hex(c)));
-                }
-                s.push_str(&format!("opacity:{};", css_num(op)));
-                let v = crate::css::transform_value(xf);
-                if !v.is_empty() {
-                    s.push_str(&format!("transform:{v};"));
-                }
-                s
-            }
-            None => String::new(),
-        };
+        let inline_kf = stepped_inline(self.kf_eval.resolve_keyframe(id, self.kf_now));
         DomElement {
             node: id,
             kind,
@@ -401,4 +462,31 @@ impl DomBackend {
             inline_kf,
         }
     }
+}
+
+/// Stepped keyframe inline values (the derive rule above, extracted
+/// so the exit pass shares it — never a quieter fork).
+fn stepped_inline(kf: Option<(Option<oppa::Color>, f32, oppa::Transform)>) -> String {
+    match kf {
+        Some((bg, op, xf)) => {
+            let mut s = String::new();
+            if let Some(c) = bg {
+                s.push_str(&format!("background-color:{};", dom_hex(c)));
+            }
+            s.push_str(&format!("opacity:{};", css_num(op)));
+            let v = crate::css::transform_value(xf);
+            if !v.is_empty() {
+                s.push_str(&format!("transform:{v};"));
+            }
+            s
+        }
+        None => String::new(),
+    }
+}
+
+/// Stepped exit inline (decision 520): the twin's evaluated paint
+/// re-declared per frame (shared rule above) plus click-through —
+/// ghosts paint, never take input.
+fn exit_inline(kf: Option<(Option<oppa::Color>, f32, oppa::Transform)>) -> String {
+    format!("pointer-events:none;{}", stepped_inline(kf))
 }

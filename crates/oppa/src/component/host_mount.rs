@@ -36,6 +36,8 @@ impl ComponentHost {
             diag: RefCell::new(crate::diag::RingLog::default_log()),
             trans_anim: Cell::new(false),
             settle_observers: RefCell::new(Vec::new()),
+            deferred: RefCell::new(Vec::new()),
+            cancelled_exits: RefCell::new(Vec::new()),
             close_requested_flag: Cell::new(false),
             system_bars_request: Cell::new(None),
             selection_handles_visible: Cell::new(true),
@@ -384,6 +386,18 @@ impl ComponentHost {
             .evaluator
             .borrow_mut()
             .prune_dead(&self.inner.rec.borrow());
+        // Decision 520: deferred exits — pinned snapshots outlive the
+        // removal commit (paint past removal + evaluator drive).
+        // Stamped commits snap (pins ignored everywhere, owners sweep
+        // normally); re-showed subtrees cancel (fresh paint owns the
+        // slot before the sweep below runs).
+        if !diff.suppress_transitions && !diff.exits.is_empty() {
+            self.inner
+                .deferred
+                .borrow_mut()
+                .extend(diff.exits.iter().cloned());
+        }
+        self.cancel_superseded_exits(&diff);
         // Same hygiene for the U8 text feeds (decision 188).
         {
             let rec = self.inner.rec.borrow();
@@ -484,7 +498,13 @@ impl ComponentHost {
             return;
         }
         // Live-owner census over surviving nodes only (dead instances
-        // own zero — that is the eviction predicate).
+        // own zero — that is the eviction predicate), plus deferred
+        // owners (decision 520 — pinned ghosts keep their instances
+        // past removal; the post-exit orphan sweep collects them),
+        // plus in-flight gesture owners (decision 520 — a Down whose
+        // effects unmount its own subtree must still clear its
+        // pressed flag on the Up; captures pin owners for exactly one
+        // gesture, then the next sweep collects).
         let live: HashSet<u64> = {
             let rec = self.inner.rec.borrow();
             let mut live = HashSet::new();
@@ -492,6 +512,14 @@ impl ComponentHost {
                 if let Some(owner) = rec.get(id).and_then(|n| n.owner) {
                     live.insert(owner);
                 }
+            }
+            for pin in self.inner.deferred.borrow().iter() {
+                for owner in pin.root.owners().into_iter().flatten() {
+                    live.insert(owner);
+                }
+            }
+            for inst in self.inner.input.borrow().capture_instances.values() {
+                live.insert(*inst);
             }
             live
         };
@@ -506,15 +534,161 @@ impl ComponentHost {
             return;
         }
         dead.sort_unstable();
-        for instance in &dead {
-            self.evict_instance(*instance);
+        self.evict_all(dead);
+    }
+
+    /// Evicts `dead` (sorted by caller) one record at a time
+    /// ([`evict_single`](Self::evict_single) — live children keep
+    /// their records, rows, and timers; only dead links go).
+    fn evict_all(&self, mut dead: Vec<u64>) {
+        dead.sort_unstable();
+        for instance in dead {
+            self.evict_single(instance);
         }
-        let dead_set: HashSet<u64> = dead.into_iter().collect();
-        self.inner
-            .timers
-            .borrow_mut()
-            .retain(|t| !dead_set.contains(&t.owner));
-        self.inner.rt.prune_handler_owners(&dead_set);
+    }
+
+    /// Pinned exit snapshots for paint layers (decision 520): cloned
+    /// per repaint for the builder/DOM exit layers (exit pins are
+    /// overlay-small by adoption).
+    pub fn exit_snapshots(&self) -> Vec<crate::reconciler::ExitPin> {
+        self.inner.deferred.borrow().clone()
+    }
+
+    /// Cancels deferred exits superseded by this commit's additions
+    /// (decision 520): an `(owner, debug)` add matching a live pin's
+    /// root means the same instance re-rendered the same-labeled
+    /// subtree — fresh paint owns the slot, the ghost releases and
+    /// its tracks forget. Same-commit replace-exits cancel instantly
+    /// (re-show reads as snap, never a crossfade — stated).
+    fn cancel_superseded_exits(&self, diff: &TreeDiff) {
+        if self.inner.deferred.borrow().is_empty() {
+            return;
+        }
+        let rec = self.inner.rec.borrow();
+        let mut added: Vec<(Option<u64>, String)> = Vec::new();
+        for op in &diff.ops {
+            if let DiffOp::Add { id, .. } = op {
+                if let Some(node) = rec.get(*id) {
+                    added.push((node.owner, node.debug.clone()));
+                }
+            }
+        }
+        if added.is_empty() {
+            return;
+        }
+        let mut cancelled: Vec<NodeId> = Vec::new();
+        {
+            let mut deferred = self.inner.deferred.borrow_mut();
+            let mut kept = Vec::with_capacity(deferred.len());
+            for pin in deferred.drain(..) {
+                let superseded = added
+                    .iter()
+                    .any(|(owner, debug)| pin.root.owner == *owner && pin.root.debug == *debug);
+                if superseded {
+                    cancelled.extend(pin.root.ids());
+                } else {
+                    kept.push(pin);
+                }
+            }
+            *deferred = kept;
+        }
+        if !cancelled.is_empty() {
+            self.inner.evaluator.borrow_mut().forget_exits(&cancelled);
+            self.inner.cancelled_exits.borrow_mut().extend(cancelled);
+        }
+    }
+
+    /// Takes node ids whose deferred exits were cancelled by re-show
+    /// (decision 520 — registry-persistent presenters, i.e. DOM, drop
+    /// the kept ghosts through this drain; plan-built backends rebuild
+    /// from the host table and never call it).
+    pub fn drain_cancelled_exits(&self) -> Vec<NodeId> {
+        std::mem::take(&mut *self.inner.cancelled_exits.borrow_mut())
+    }
+
+    /// Releases deferred exits whose every node settled (decision
+    /// 520): drops the snapshots, forgets the tracks, then sweeps
+    /// newly orphaned instances (their owners outlived removal only
+    /// through the exemption — without this they would linger, with
+    /// live timers, to the next unrelated removal). Returns the
+    /// released pin count. Runs inside the settle drive before
+    /// observer-fire, so completion chains see the post-exit world.
+    fn finalize_settled_exits(&self) -> usize {
+        let released: Vec<crate::reconciler::ExitPin> = {
+            let mut deferred = self.inner.deferred.borrow_mut();
+            if deferred.is_empty() {
+                return 0;
+            }
+            let ev = self.inner.evaluator.borrow();
+            let (done, live): (Vec<_>, Vec<_>) = deferred
+                .drain(..)
+                .partition(|pin| pin.root.ids().iter().all(|id| ev.is_settled(*id)));
+            *deferred = live;
+            done
+        };
+        if released.is_empty() {
+            return 0;
+        }
+        let mut ids = Vec::new();
+        let mut owners = HashSet::new();
+        for pin in &released {
+            ids.extend(pin.root.ids());
+            for owner in pin.root.owners().into_iter().flatten() {
+                owners.insert(owner);
+            }
+        }
+        self.inner.evaluator.borrow_mut().forget_exits(&ids);
+        self.sweep_orphans(&owners);
+        released.len()
+    }
+
+    /// Evicts just-released exit owners left nodeless (decision 520 —
+    /// post-exit collection for exactly the instances this exit
+    /// orphaned; the commit sweep already retires removal-driven
+    /// dead globally, so this pass never garbage-collects unrelated
+    /// nodeless instances — slot reserves, conditional branches, and
+    /// timer-only controllers keep their records until their own
+    /// removals name them). Roots, live owners, still-deferred owners,
+    /// and in-flight gesture owners never collect here.
+    fn sweep_orphans(&self, released: &HashSet<u64>) {
+        if released.is_empty() {
+            return;
+        }
+        let (live, deferred_owners): (HashSet<u64>, HashSet<u64>) = {
+            let rec = self.inner.rec.borrow();
+            let mut live = HashSet::new();
+            for id in rec.retained_ids() {
+                if let Some(owner) = rec.get(id).and_then(|n| n.owner) {
+                    live.insert(owner);
+                }
+            }
+            for inst in self.inner.input.borrow().capture_instances.values() {
+                live.insert(*inst);
+            }
+            let mut deferred_owners = HashSet::new();
+            for pin in self.inner.deferred.borrow().iter() {
+                for owner in pin.root.owners().into_iter().flatten() {
+                    deferred_owners.insert(owner);
+                }
+            }
+            (live, deferred_owners)
+        };
+        let effects = self.inner.effects.borrow();
+        let dead: Vec<u64> = released
+            .iter()
+            .copied()
+            .filter(|inst| {
+                !live.contains(inst)
+                    && !deferred_owners.contains(inst)
+                    && !effects.contains_key(inst)
+                    && self.inner.instances.borrow().contains_key(inst)
+            })
+            .collect();
+        drop(effects);
+        if dead.is_empty() {
+            return;
+        }
+        self.evict_all(dead);
     }
 
     /// Arms the shared TIME settle drain unless already armed
@@ -532,6 +706,14 @@ impl ComponentHost {
                 return false;
             };
             let live = inner.evaluator.borrow_mut().settle(now);
+            // Decision 520: completed exits release before observer
+            // fire (completion chains see the post-exit world) and
+            // sweep their orphaned instances (no leak through the
+            // 519 retirement — proven headless).
+            ComponentHost {
+                inner: inner.clone(),
+            }
+            .finalize_settled_exits();
             if live == 0 {
                 inner.trans_anim.set(false);
             } else {

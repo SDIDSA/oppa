@@ -180,6 +180,9 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
             oppa::Transform::translate(0, crate::motion::ENTER_RISE_PX)
         })
         .transition(oppa::Transition::enter())
+        // Decision 520: dismissal fade safety (the backdrop below
+        // pins as the removed root; this rides frozen while nested).
+        .exit(oppa::Transition::exit())
         .build();
     // (No width-only builder — the explicit card width patches the
     // built style, decision-238 precedent.)
@@ -205,6 +208,10 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
             // veil is the settled value).
             .opacity(Some(if shown.get() { 0.5 } else { 0.0 }))
             .transition(oppa::Transition::enter())
+            // Decision 520: dismissal fades the whole overlay out
+            // (the card rides frozen under this envelope — one pin
+            // per dismiss, no double-paint).
+            .exit(oppa::Transition::exit())
             .justify_content(JustifyContent::Center)
             .align_items(AlignItems::Center),
     );
@@ -215,5 +222,13 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
     } else {
         backdrop
     };
-    Portal("modal-portal").child(backdrop.child(card))
+    Portal("modal-portal")
+        .style(
+            Style::new()
+                // Decision 520: dismissal fade safety (the backdrop
+                // above pins as the removed root; this rides only if
+                // the structure inverts).
+                .exit(oppa::Transition::exit()),
+        )
+        .child(backdrop.child(card))
 }

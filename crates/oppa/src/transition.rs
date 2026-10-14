@@ -30,7 +30,7 @@
 //! omission (the decision-120 lock stays — keyframes add stops, never
 //! properties; 511 adds one CSS-expressible property, never layout).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::arena::NodeId;
 use crate::interner::Interner;
@@ -266,10 +266,16 @@ impl Interp {
 pub struct TransitionEvaluator {
     targets: HashMap<NodeId, Target>,
     active: HashMap<NodeId, Interp>,
+    /// Deferred-exit tracks (decision 520): one Once fade per pinned
+    /// node, keyed by retired id. Separate from `active` so
+    /// arena-liveness pruning never touches them — the host releases
+    /// them explicitly at exit completion or re-show cancel (stale
+    /// generations never collide: recycled slots mint fresh ids).
+    exits: HashMap<NodeId, Interp>,
     /// Tracks ever created (the §9.4 instrument: a stamped sweep
     /// must show a zero delta here — counted, not inferred). One per
-    /// node per delta (tweens and keyframe tracks alike — a track is
-    /// a track, never per-property).
+    /// node per delta (tweens, keyframe tracks, and exit fades alike —
+    /// a track is a track, never per-property).
     created: u64,
     /// Stamped style deltas honored (snapped, no track).
     suppressed: u64,
@@ -293,7 +299,15 @@ impl TransitionEvaluator {
     ///   counts them — the Q5 default, never a restart); deltas with
     ///   no declaration (or zero duration) snap.
     /// - `Remove`: forgets the subtree root (descendants go through
-    ///   [`prune_dead`](Self::prune_dead)).
+    ///   [`prune_dead`](Self::prune_dead)) — unless the diff pins a
+    ///   deferred exit over it (decision 520: pinned ids synthesize
+    ///   fade tracks in the pre-pass below and skip the drop).
+    /// - `diff.exits` (decision 520, pre-pass): each pinned node gets
+    ///   one Once fade from its frozen evaluated values (opacity → 0;
+    ///   bg/transform pinned; delay honored). Stamped commits snap
+    ///   (no deferral — the Q5 rule covers exits); zero-duration
+    ///   exits snap; live Loop/PingPong tracks refuse loudly (loops
+    ///   never defer); live Once tracks freeze mid-flight and fade.
     /// - Anything else (moves, non-style updates, first sight): records,
     ///   never interpolates.
     pub fn track_commit(
@@ -303,6 +317,64 @@ impl TransitionEvaluator {
         styles: &Interner<Style>,
         now: f64,
     ) {
+        // Decision 520 pre-pass: deferred exits synthesize before the
+        // op walk consumes the removed entries (frozen starts sample
+        // the live state — tracks and targets the `Remove` arm below
+        // would otherwise drop first).
+        let mut pinned: HashSet<NodeId> = HashSet::new();
+        if !diff.suppress_transitions {
+            // Loop gate first (read-only over every pin): a live
+            // Loop/PingPong track on any pinned node refuses the whole
+            // deferral loudly — loops never defer, never silently.
+            for pin in &diff.exits {
+                for id in pin.root.ids() {
+                    if let Some(track) = self.active.get(&id) {
+                        if track.mode != KeyframeMode::Once {
+                            panic!(
+                                "transition: exit-deferral refused on node {id:?} — a live {:?} track never defers \
+                                 (cancel it first or drop the Style.exit declaration — never a silent snap)",
+                                track.mode,
+                            );
+                        }
+                    }
+                }
+            }
+            for pin in &diff.exits {
+                let dur = f64::from(pin.exit.dur_ms) / 1000.0;
+                if dur <= 0.0 {
+                    continue; // Zero-duration exits snap.
+                }
+                let ease = pin.exit.ease;
+                let delay = f64::from(pin.exit.delay_ms) / 1000.0;
+                for id in pin.root.ids() {
+                    let Some((fbg, fop, fxf)) = self.frozen_exit_start(&id, now) else {
+                        continue; // Untracked: nothing to fade from.
+                    };
+                    self.targets.remove(&id);
+                    self.active.remove(&id);
+                    self.exits.insert(
+                        id,
+                        Interp {
+                            bg_legs: vec![(fbg, fbg, dur, ease)],
+                            op_legs: vec![(fop, 0.0, dur, ease)],
+                            xf_legs: vec![(fxf, fxf, dur, ease)],
+                            ends: vec![dur],
+                            total: dur,
+                            delay,
+                            start: now,
+                            mode: KeyframeMode::Once,
+                            // Stepped everywhere (decision 520): no CSS
+                            // spelling exists for ghosts — the DOM exit
+                            // layer samples these per frame like
+                            // keyframes.
+                            keyframed: true,
+                        },
+                    );
+                    self.created += 1;
+                    pinned.insert(id);
+                }
+            }
+        }
         for op in &diff.ops {
             match op {
                 DiffOp::Add { id, .. } => {
@@ -311,6 +383,9 @@ impl TransitionEvaluator {
                     }
                 }
                 DiffOp::Remove { id, .. } => {
+                    if pinned.contains(id) {
+                        continue; // Deferred: the pre-pass owns this id.
+                    }
                     self.targets.remove(id);
                     self.active.remove(id);
                 }
@@ -391,11 +466,36 @@ impl TransitionEvaluator {
         }
     }
 
+    /// Frozen exit start for `node` at `now` (decision 520): the live
+    /// track's evaluated values while one runs (mid-flight freeze),
+    /// else the last-known target. `None` for untracked nodes (no
+    /// committed values — nothing to fade from).
+    fn frozen_exit_start(
+        &self,
+        node: &NodeId,
+        now: f64,
+    ) -> Option<(Option<Color>, f32, Transform)> {
+        if let Some(track) = self.active.get(node) {
+            return Some((
+                track.sample_bg(now),
+                track.sample_op(now),
+                track.sample_xf(now),
+            ));
+        }
+        self.targets
+            .get(node)
+            .map(|t| (t.bg, t.opacity, t.transform))
+    }
+
     /// Evaluated background for `node` at `now` (what backends paint):
-    /// the live track while one runs, else the last-known target,
-    /// else the retained style value (untracked nodes).
+    /// the live track while one runs, else the deferred exit while
+    /// one fades, else the last-known target, else the retained style
+    /// value (untracked nodes).
     pub fn resolve_bg(&self, node: NodeId, style_bg: Option<Color>, now: f64) -> Option<Color> {
         if let Some(i) = self.active.get(&node) {
+            return i.sample_bg(now);
+        }
+        if let Some(i) = self.exits.get(&node) {
             return i.sample_bg(now);
         }
         if let Some(t) = self.targets.get(&node) {
@@ -409,6 +509,9 @@ impl TransitionEvaluator {
     /// retained value, defaulting to 1.0).
     pub fn resolve_opacity(&self, node: NodeId, style_opacity: f32, now: f64) -> f32 {
         if let Some(i) = self.active.get(&node) {
+            return i.sample_op(now);
+        }
+        if let Some(i) = self.exits.get(&node) {
             return i.sample_op(now);
         }
         if let Some(t) = self.targets.get(&node) {
@@ -429,6 +532,9 @@ impl TransitionEvaluator {
         if let Some(i) = self.active.get(&node) {
             return i.sample_xf(now);
         }
+        if let Some(i) = self.exits.get(&node) {
+            return i.sample_xf(now);
+        }
         if let Some(t) = self.targets.get(&node) {
             return t.transform;
         }
@@ -439,13 +545,15 @@ impl TransitionEvaluator {
     /// path): `Some` exactly while a track runs unsettled that the
     /// CSS path cannot serve — keyframe tracks (never plain tweens,
     /// those keep the CSS mapping) plus spring tweens (decision 513:
-    /// no CSS spelling exists, so the stepped values own the motion).
+    /// no CSS spelling exists, so the stepped values own the motion)
+    /// plus deferred exits (decision 520: ghosts have no CSS mapping
+    /// either — always keyframed, always stepped).
     pub fn resolve_keyframe(
         &self,
         node: NodeId,
         now: f64,
     ) -> Option<(Option<Color>, f32, Transform)> {
-        let i = self.active.get(&node)?;
+        let i = self.active.get(&node).or_else(|| self.exits.get(&node))?;
         if !i.needs_stepping() || i.settled(now) {
             return None;
         }
@@ -454,17 +562,38 @@ impl TransitionEvaluator {
 
     /// Retires settled tracks at `now` (the TIME-phase drive:
     /// register as a `TIME` animation while it returns non-zero — static
-    /// UI idles). Returns the live count after retiring.
+    /// UI idles). Once exits retire exactly like Once tweens, so a
+    /// faded ghost goes quiet through the same gate. Returns the live
+    /// count after retiring.
     pub fn settle(&mut self, now: f64) -> usize {
         self.active.retain(|_, i| !i.settled(now));
-        self.active.len()
+        self.exits.retain(|_, i| !i.settled(now));
+        self.active.len() + self.exits.len()
     }
 
     /// Drops targets/tracks for retired nodes (call after commits
-    /// that remove subtrees — `Remove` forgets roots only).
+    /// that remove subtrees — `Remove` forgets roots only). Deferred
+    /// exits are never pruned here (decision 520 — arena liveness
+    /// cannot judge ghosts; the host releases them explicitly at
+    /// completion or re-show cancel).
     pub fn prune_dead(&mut self, rec: &Reconciler) {
         self.targets.retain(|id, _| rec.get(*id).is_some());
         self.active.retain(|id, _| rec.get(*id).is_some());
+    }
+
+    /// Releases deferred-exit tracks for `ids` (decision 520: exit
+    /// completion and re-show cancel — the host owns the lifecycle,
+    /// the evaluator just forgets).
+    pub fn forget_exits(&mut self, ids: &[NodeId]) {
+        for id in ids {
+            self.exits.remove(id);
+        }
+    }
+
+    /// Live deferred-exit count (drive + paint layers consult this —
+    /// ghosts keep frames flowing exactly while they fade).
+    pub fn exit_count(&self) -> usize {
+        self.exits.len()
     }
 
     /// Tracks ever created (test instrument — snapshot around a
@@ -478,25 +607,34 @@ impl TransitionEvaluator {
         self.suppressed
     }
 
-    /// Live track count.
+    /// Live track count, exits included (decision 520 — a fading
+    /// ghost is scheduled work; quiescence reads zero here).
     pub fn active_count(&self) -> usize {
-        self.active.len()
+        self.active.len() + self.exits.len()
     }
 
     /// Nodes with a live track (the repaint drive: the host's
     /// TIME animation marks exactly these PAINT-dirty every frame, so
     /// interpolation progress re-enters the damage discipline instead
-    /// of freezing on the first interpolated frame).
+    /// of freezing on the first interpolated frame). Deferred exits
+    /// ride along (harmless: retired ids skip the arena dirty walk —
+    /// ghosts repaint through the builder's exit layer, not dirt).
     pub fn live_nodes(&self) -> Vec<NodeId> {
-        let mut out: Vec<NodeId> = self.active.keys().copied().collect();
+        let mut out: Vec<NodeId> = self
+            .active
+            .keys()
+            .chain(self.exits.keys())
+            .copied()
+            .collect();
         out.sort_by_key(|id| (id.index(), id.generation()));
         out
     }
 
-    /// True when `node` has no live track (a stamped recycle must
-    /// read settled at every tick — the phantom-flash probe).
+    /// True when `node` has no live track and no live exit (a stamped
+    /// recycle must read settled at every tick — the phantom-flash
+    /// probe; a deferred ghost reads unsettled until its fade lands).
     pub fn is_settled(&self, node: NodeId) -> bool {
-        !self.active.contains_key(&node)
+        !self.active.contains_key(&node) && !self.exits.contains_key(&node)
     }
 
     /// Tracked node count (leak instrument beside `prune_dead`).
@@ -1488,5 +1626,87 @@ mod tests {
             ev.resolve_keyframe(a, 0.3).is_none(),
             "settled springs step nothing"
         );
+    }
+
+    /// Decision 520: deferred exits synthesize Once fades from frozen
+    /// values (opacity → 0, keyframed for the stepped path) and
+    /// stamped commits snap them (no synthesis under the stamp).
+    #[test]
+    fn exit_fades_frozen_values_and_stamps_snap() {
+        use crate::reconciler::{ExitNode, ExitPin};
+        let rt = Runtime::new();
+        let mut styles = Interner::new();
+        let mut rec = Reconciler::new();
+        let mut ev = TransitionEvaluator::new();
+        let v: crate::vnode::VNode = Div("a")
+            .style(
+                Style::new()
+                    .size(10, 10)
+                    .bg(Color(1))
+                    .transition(Transition::new(120.ms(), Ease::Out)),
+            )
+            .build();
+        let d = rec.reconcile(&rt, &mut styles, false, v);
+        ev.track_commit(&d, &rec, &styles, 0.0);
+        let id = rec.root().expect("root");
+        let style_id = rec.get(id).expect("node").style;
+        let pin = ExitPin {
+            exit: Transition::exit(),
+            parent: None,
+            root: ExitNode {
+                id,
+                tag: crate::vnode::Tag::Div,
+                debug: "a".to_string(),
+                style: style_id,
+                owner: None,
+                layout: crate::layout::LayoutBox::default(),
+                text: None,
+                text_hint: None,
+                rich_text: None,
+                image: None,
+                path: None,
+                canvas: None,
+                children: vec![],
+            },
+        };
+        // Stamped removal snaps (the Q5 rule covers exits).
+        let stamped = TreeDiff {
+            ops: vec![DiffOp::Remove { id, owner: None }],
+            suppress_transitions: true,
+            displaced_owners: vec![],
+            exits: vec![pin.clone()],
+        };
+        ev.track_commit(&stamped, &rec, &styles, 0.0);
+        assert_eq!(ev.exit_count(), 0, "stamped exits snap");
+        assert_eq!(ev.active_count(), 0, "nothing live under the stamp");
+        // Unstamped removal fades from the frozen target (opacity 1).
+        let mut live = TransitionEvaluator::new();
+        let d = rec.reconcile(
+            &rt,
+            &mut styles,
+            false,
+            Div("a").style(Style::new().size(10, 10)).build(),
+        );
+        live.track_commit(&d, &rec, &styles, 0.0);
+        let faded = TreeDiff {
+            ops: vec![DiffOp::Remove { id, owner: None }],
+            suppress_transitions: false,
+            displaced_owners: vec![],
+            exits: vec![pin],
+        };
+        live.track_commit(&faded, &rec, &styles, 0.0);
+        assert_eq!(live.exit_count(), 1, "exit pinned");
+        let mid = live.resolve_opacity(id, 1.0, 0.09);
+        assert!(
+            mid > 0.0 && mid < 1.0,
+            "mid-exit opacity strictly interior, got {mid}"
+        );
+        assert!(
+            live.resolve_keyframe(id, 0.09).is_some(),
+            "exits serve the stepped path"
+        );
+        assert_eq!(live.resolve_opacity(id, 1.0, 1.0), 0.0, "lands exact");
+        assert_eq!(live.settle(1.0), 0, "exit retires like any Once");
+        assert!(live.is_settled(id), "settled reads settled");
     }
 }

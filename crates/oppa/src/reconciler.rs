@@ -145,6 +145,71 @@ impl DiffOp {
     }
 }
 
+/// One pinned node of a deferred exit (decision 520): everything the
+/// paint paths need after the arena retires the ids — by value, so
+/// arena generation recycling can never alias a live node
+/// ("generation-pinned"). Handlers and semantics ride no exit
+/// (ghosts take no input and announce nothing).
+#[derive(Clone, Debug)]
+pub struct ExitNode {
+    /// The retired id. Evaluator exit tracks key on this; recycled
+    /// arena slots mint fresh generations, so keys never collide
+    /// with live nodes.
+    pub id: NodeId,
+    pub tag: Tag,
+    /// Debug label (re-show cancel matches `(owner, debug)` — the
+    /// same instance rendering the same-labeled root supersedes its
+    /// live exit; collisions over-cancel benignly toward live paint).
+    pub debug: String,
+    pub style: StyleId,
+    pub owner: Option<u64>,
+    /// Pinned committed box (layout closes ranks without the removed
+    /// subtree — the ghost paints where it was, never where layout
+    /// would put it now).
+    pub layout: LayoutBox,
+    pub text: Option<std::sync::Arc<str>>,
+    pub text_hint: Option<TextClass>,
+    pub rich_text: Option<Vec<crate::vnode::TextSpan>>,
+    pub image: Option<crate::vnode::ImageId>,
+    pub path: Option<crate::vnode::PathSpec>,
+    pub canvas: Option<crate::vnode::CanvasSpec>,
+    pub children: Vec<ExitNode>,
+}
+
+impl ExitNode {
+    /// Every pinned id in preorder (track synthesis + release).
+    pub fn ids(&self) -> Vec<NodeId> {
+        let mut out = vec![self.id];
+        for child in &self.children {
+            out.extend(child.ids());
+        }
+        out
+    }
+
+    /// Every pinned owner (the 519 sweep exemption).
+    pub fn owners(&self) -> Vec<Option<u64>> {
+        let mut out = vec![self.owner];
+        for child in &self.children {
+            out.extend(child.owners());
+        }
+        out
+    }
+}
+
+/// One deferred exit (decision 520): the pinned subtree of an
+/// outermost declaring removed root. The host stores these past
+/// removal (paint past removal + evaluator drive); paint, hit-test,
+/// and layout each treat them per the decision-520 contract.
+#[derive(Clone, Debug)]
+pub struct ExitPin {
+    /// Exit timing from the declaring style.
+    pub exit: crate::style::Transition,
+    /// The live parent at removal (ink-seed for paint walks; `None`
+    /// for whole-tree removal).
+    pub parent: Option<NodeId>,
+    pub root: ExitNode,
+}
+
 /// Per-commit edit script: payload deltas plus, for exactly one commit, the
 /// binding-edge stamp.
 #[derive(Clone, Debug, Default)]
@@ -158,6 +223,11 @@ pub struct TreeDiff {
     /// `Remove` owners when hunting dead instances (a displaced owner
     /// with no other live node is dead too).
     pub displaced_owners: Vec<u64>,
+    /// Deferred exits pinned by this commit (decision 520): one per
+    /// outermost declaring removed root, in removal order. The host
+    /// evaluator synthesizes the fade tracks from these (same diffs,
+    /// same order — deterministic twins on every backend).
+    pub exits: Vec<ExitPin>,
 }
 
 impl TreeDiff {
@@ -211,6 +281,7 @@ impl Reconciler {
             ops: Vec::new(),
             suppress_transitions: binding_fired,
             displaced_owners: Vec::new(),
+            exits: Vec::new(),
         };
         match (old, new) {
             (None, VNode::Hole) => {
@@ -224,14 +295,14 @@ impl Reconciler {
             }
             (Some(_), VNode::Hole) => {
                 if let Some(root) = self.root.take() {
-                    self.remove_subtree(root, &mut diff);
+                    self.remove_subtree(styles, root, &mut diff);
                 }
                 self.current = Some(VNode::Hole);
             }
             (Some(o), n) => {
                 if !compatible(&o, &n) {
                     if let Some(root) = self.root.take() {
-                        self.remove_subtree(root, &mut diff);
+                        self.remove_subtree(styles, root, &mut diff);
                     }
                     let id = self.build_subtree(rt, styles, None, &n, &mut diff);
                     self.root = Some(id);
@@ -583,10 +654,63 @@ impl Reconciler {
         parent.and_then(|p| self.arena.try_get(p.gen()).ok().and_then(|n| n.owner))
     }
 
-    fn remove_subtree(&mut self, id: NodeId, diff: &mut TreeDiff) {
+    fn remove_subtree(&mut self, styles: &Interner<Style>, id: NodeId, diff: &mut TreeDiff) {
+        // Decision 520: exit-deferral is per outermost declaring
+        // removed root — when this entry node declares `Style.exit`,
+        // the whole entry pins and fades (declaring descendants ride
+        // frozen under the one envelope; a declaring node nested in a
+        // non-declaring entry snaps with it, never ghosts over new
+        // content). The snapshot lands before any retire below.
+        if let Some(pin) = self.snapshot_exit(styles, id) {
+            diff.exits.push(pin);
+        }
+        self.remove_one(id, diff);
+    }
+
+    /// Snapshots one exit pin (decision 520): `Some` exactly when
+    /// `id` declares `Style.exit` and holds a committed box (unlaid
+    /// nodes skip quietly — nothing ever painted, so fading is a
+    /// no-op, never a snap of visible content).
+    fn snapshot_exit(&self, styles: &Interner<Style>, id: NodeId) -> Option<ExitPin> {
+        let node = self.arena.try_get(id.gen()).ok()?;
+        let exit = styles.get(node.style).and_then(|s| s.exit)?;
+        let parent = node.parent;
+        let root = self.snapshot_node(id)?;
+        Some(ExitPin { exit, parent, root })
+    }
+
+    /// Snapshots one pinned node plus its laid descendants (`None`
+    /// for unlaid nodes — the branch prunes there).
+    fn snapshot_node(&self, id: NodeId) -> Option<ExitNode> {
+        let node = self.arena.try_get(id.gen()).ok()?;
+        let layout = node.layout.clone()?;
+        let mut children = Vec::with_capacity(node.children.len());
+        for child in node.children.clone() {
+            if let Some(snap) = self.snapshot_node(child) {
+                children.push(snap);
+            }
+        }
+        Some(ExitNode {
+            id,
+            tag: node.tag,
+            debug: node.debug.clone(),
+            style: node.style,
+            owner: node.owner,
+            layout,
+            text: node.text.clone(),
+            text_hint: node.text_hint,
+            rich_text: node.rich_text.clone(),
+            image: node.image,
+            path: node.path.clone(),
+            canvas: node.canvas.clone(),
+            children,
+        })
+    }
+
+    fn remove_one(&mut self, id: NodeId, diff: &mut TreeDiff) {
         let children = std::mem::take(&mut self.arena.get_mut(id.gen()).children);
         for child in children {
-            self.remove_subtree(child, diff);
+            self.remove_one(child, diff);
         }
         let parent = self.arena.get(id.gen()).parent;
         if let Some(p) = parent {
@@ -827,7 +951,7 @@ impl Reconciler {
                             new_ids.push(*rid);
                         } else {
                             // Same slot key, incompatible content: replace.
-                            self.remove_subtree(*rid, diff);
+                            self.remove_subtree(styles, *rid, diff);
                             let nid = self.build_subtree(rt, styles, Some(parent), nv, diff);
                             new_ids.push(nid);
                         }
@@ -846,7 +970,7 @@ impl Reconciler {
                             self.diff_node(rt, styles, rid, old_children[oi], nv, diff);
                             new_ids.push(rid);
                         } else {
-                            self.remove_subtree(rid, diff);
+                            self.remove_subtree(styles, rid, diff);
                             let nid = self.build_subtree(rt, styles, Some(parent), nv, diff);
                             new_ids.push(nid);
                         }
@@ -860,7 +984,7 @@ impl Reconciler {
         // Leftovers: old subtrees with no new counterpart are removed.
         for (i, rid) in retained_old.iter().enumerate() {
             if !used_old.contains(&i) {
-                self.remove_subtree(*rid, diff);
+                self.remove_subtree(styles, *rid, diff);
             }
         }
         // Keyed reorder without add/remove still moves retained slots.

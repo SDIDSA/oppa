@@ -867,9 +867,10 @@ fn MicroRoom(ctx: &Ctx, _props: &()) -> VNode {
         ])
 }
 
-/// Live overlay room (decision 514): Modal, Toast, and Menu
-/// entrances (fade + rise through the shared enter policy) with
-/// dismiss paths. Exits snap by specified contract (appear-first).
+/// Live overlay room (decision 514 entrances + decision 520 exits):
+/// Modal, Toast, and Menu fade + rise through the shared enter
+/// policy with dismiss paths, and dismissals fade out past removal
+/// (no snap) before releasing to zero work.
 fn OverlayRoom(ctx: &Ctx, _props: &()) -> VNode {
     let modal_open = ctx.signal(false);
     let toast_open = ctx.signal(false);

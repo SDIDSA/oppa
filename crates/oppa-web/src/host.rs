@@ -51,12 +51,28 @@ impl DomPresenter {
 impl ScenePresenter for DomPresenter {
     /// Replays the scene diffs the session has not committed here
     /// yet (one committed diff cursor). Backend failures are loud
-    /// (the old `expect` wording, behavior unchanged).
+    /// (the old `expect` wording, behavior unchanged). Decision 520:
+    /// the keyframe twin eats the same diffs in the same order at
+    /// the frame clock (the headless hook rig's contract — stepped
+    /// keyframes, springs, and exit fades sample it during sync, so
+    /// production web matches the rig instead of freezing them).
     fn commit(&mut self, host: &ComponentHost) -> Result<(), String> {
-        for diff in host.diffs_from(self.cursor) {
-            self.dom.commit(&diff).expect("dom commit failed");
-        }
+        let diffs = host.diffs_from(self.cursor);
+        let now = host.runtime().now_secs();
+        host.with_retained_mut(|rec, styles| {
+            for diff in &diffs {
+                self.dom.commit(diff).expect("dom commit failed");
+            }
+            self.dom.track_animation(&diffs, rec, styles, now);
+        });
         self.cursor = host.diff_count();
+        // Decision 520: re-showed exits cancel on the pixel legs
+        // through the host table rebuild — the DOM registry drops the
+        // kept ghosts explicitly through this drain instead.
+        let cancelled = host.drain_cancelled_exits();
+        if !cancelled.is_empty() {
+            self.dom.cancel_kept_exits(&cancelled);
+        }
         Ok(())
     }
 
@@ -131,8 +147,14 @@ impl ScenePresenter for DomPresenter {
     /// The present step: sync the DOM against the committed scene
     /// (the touched-work count a patch frame reports) and paint the
     /// plan. Backend failures are loud (unchanged `expect` wording).
+    /// Decision 520: the twin settles + samples at the frame clock on
+    /// every paint (diff-less animation frames still retire tracks
+    /// and step ghosts — the hook rig's contract; without this the
+    /// twin goes stale between commits and fades freeze).
     fn paint(&mut self, host: &ComponentHost, plan: &oppa::FramePlan) -> Result<usize, String> {
+        let now = host.runtime().now_secs();
         let stats = host.with_retained_mut(|rec, styles| {
+            self.dom.track_animation(&[], rec, styles, now);
             self.dom
                 .sync(rec, styles, &mut self.sheet)
                 .expect("dom sync failed")

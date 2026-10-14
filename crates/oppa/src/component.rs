@@ -460,6 +460,17 @@ struct HostInner {
     /// [`SettleObserver`]; drained take-then-extend by the TIME
     /// settle drive; core-side residence like every pump table).
     settle_observers: RefCell<Vec<SettleObserver>>,
+    /// Deferred exits (decision 520): pinned removal snapshots that
+    /// keep painting past removal while their fade tracks run. Stored
+    /// past the removal commit (arena ids retired — snapshots are
+    /// by-value, generation-pinned); released at exit completion or
+    /// re-show cancel. Core-side residence like every pump table.
+    deferred: RefCell<Vec<crate::reconciler::ExitPin>>,
+    /// Cancelled exit node sets (decision 520): re-show supersedes
+    /// live exits — plan-built backends rebuild from the host table
+    /// and need nothing, but registry-persistent presenters (DOM)
+    /// drop the kept ghosts explicitly through this drain.
+    cancelled_exits: RefCell<Vec<NodeId>>,
     /// Component-requested close (Round 26.2, decision 342):
     /// `Ctx::request_close` sets it; desktop runners drain it per
     /// pump iteration through the veto consult (`take_close_request`).

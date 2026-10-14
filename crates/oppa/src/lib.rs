@@ -90,7 +90,7 @@ pub use layout::{
 pub use nav::{NavError, NavStack, PopOutcome, ReplaceOutcome, Route};
 pub use pass_mask::PassMask;
 pub use reactive::{untrack, BatchGuard, Effect, Memo, Phase, Runtime, Signal, Stats};
-pub use reconciler::{DiffOp, Reconciler, RetainedNode, TreeDiff};
+pub use reconciler::{DiffOp, ExitNode, ExitPin, Reconciler, RetainedNode, TreeDiff};
 pub use reload::{AdoptPropsFn, ComponentDesc, DrainPropsFn, DrainedProps, ManifestView};
 pub use render::{
     compute_semantics_diff, BackendError, Caps, CaretPaint, DamageRect, DrawOp, FontRun, FramePlan,

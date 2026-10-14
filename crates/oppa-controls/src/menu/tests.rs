@@ -163,7 +163,13 @@ fn move_to_clocked(host: &ComponentHost, clock: &oppa::MockClock, x: f32, y: f32
     }
 }
 
-fn release(host: &ComponentHost, x: f32, y: f32) {
+/// Release on a clocked host (decision 520): invoking closes the
+/// menu, and the dismissal now fades (the exit track is live) —
+/// pump once so the close commits (exits start at the current
+/// instant), then advance past the 180ms exit with bounded pumps (a
+/// frozen idle pump would spin on it forever, the entrance-track
+/// rule above).
+fn release_clocked(host: &ComponentHost, clock: &oppa::MockClock, x: f32, y: f32) {
     host.inject_input(InputEvent::Pointer {
         id: Some(0),
         action: PointerAction::Up {
@@ -173,7 +179,11 @@ fn release(host: &ComponentHost, x: f32, y: f32) {
         y,
         modifiers: Modifiers::NONE,
     });
-    host.run_until_idle();
+    host.run_once();
+    clock.advance(0.3);
+    for _ in 0..5 {
+        host.run_once();
+    }
 }
 
 /// Center of row `i` in menu instance `inst` (device px).
@@ -521,9 +531,13 @@ fn press_drag_release_invokes_row_and_closes() {
     press_down(&host, 10.0, 10.0);
     move_to_clocked(&host, &clock, px, py);
     clock.advance(0.6);
-    release(&host, px, py);
+    release_clocked(&host, &clock, px, py);
     assert!(fired[3].get(), "drag-release invokes Paste");
     assert!(!popup_present(&host, inst), "invoke closes");
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "dismissal exit retires");
+    });
+    assert!(!host.has_demand(), "quiet after the exit");
     // List path: standalone two-row menu, Down on row 0, slow
     // drag to row 1, Up invokes row 1 only (same swipe-window
     // rule as above).
@@ -565,8 +579,12 @@ fn press_drag_release_invokes_row_and_closes() {
     press_down(&host, ax, ay);
     move_to_clocked(&host, &clock, bx, by);
     clock.advance(0.6);
-    release(&host, bx, by);
+    release_clocked(&host, &clock, bx, by);
     assert!(!f0.get(), "dragged-off row stays quiet");
     assert!(f1.get(), "release row invokes");
     assert!(!popup_present(&host, inst), "invoke closes");
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "dismissal exit retires");
+    });
+    assert!(!host.has_demand(), "quiet after the exit");
 }

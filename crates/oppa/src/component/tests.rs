@@ -1748,3 +1748,315 @@ fn recycled_slot_retires_displaced_instance() {
     assert_eq!(b_fired.get(), 1, "surviving timer fires exactly once");
     assert!(!host.has_demand(), "flip leaves zero scheduled work");
 }
+
+// ---------------------------------------------------------------------------
+// Decision 520: exit-deferral (dismissals fade instead of snapping)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct ExitBranchProps {
+    cleaned: Rc<Cell<bool>>,
+    interval_fired: Rc<Cell<usize>>,
+    pressed: Rc<Cell<usize>>,
+}
+impl Props for ExitBranchProps {}
+
+fn exit_branch_comp(ctx: &Ctx, props: &ExitBranchProps) -> VNode {
+    let c = props.cleaned.clone();
+    ctx.on_cleanup(move || {
+        c.set(true);
+    });
+    let iv = props.interval_fired.clone();
+    ctx.use_interval(50.0, move || {
+        iv.set(iv.get() + 1);
+    });
+    let p = props.pressed.clone();
+    // Non-black fill (pure 0x000000 reads TRANSPARENT and skips paint
+    // — never a tween/fill endpoint, by doctrine).
+    crate::vnode::Div("exit-branch")
+        .style(
+            Style::new()
+                .size(100, 40)
+                .bg(crate::style::Color(0x22_66_CC))
+                .exit(Transition::exit()),
+        )
+        .on_press(move || {
+            p.set(p.get() + 1);
+        })
+        .build()
+}
+
+#[derive(Clone)]
+struct ExitToggleProps {
+    show: Signal<bool>,
+    branch: ExitBranchProps,
+}
+impl Props for ExitToggleProps {}
+
+fn exit_toggle_comp(ctx: &Ctx, props: &ExitToggleProps) -> VNode {
+    let mut kids = Vec::new();
+    if props.show.get() {
+        kids.push(ctx.child("ExitBranch", 1, &props.branch, exit_branch_comp));
+    }
+    crate::vnode::Div("exit-root").children(kids)
+}
+
+struct ExitRig {
+    host: ComponentHost,
+    clock: Rc<MockClock>,
+    show: Signal<bool>,
+    cleaned: Rc<Cell<bool>>,
+    interval_fired: Rc<Cell<usize>>,
+    pressed: Rc<Cell<usize>>,
+}
+
+fn exit_host() -> ExitRig {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let show = host.runtime().signal(true);
+    let cleaned = Rc::new(Cell::new(false));
+    let interval_fired = Rc::new(Cell::new(0));
+    let pressed = Rc::new(Cell::new(0));
+    host.mount(
+        "ExitToggle",
+        ExitToggleProps {
+            show: show.clone(),
+            branch: ExitBranchProps {
+                cleaned: cleaned.clone(),
+                interval_fired: interval_fired.clone(),
+                pressed: pressed.clone(),
+            },
+        },
+        exit_toggle_comp,
+    );
+    host.run_until_idle();
+    ExitRig {
+        host,
+        clock,
+        show,
+        cleaned,
+        interval_fired,
+        pressed,
+    }
+}
+
+/// Dismissal pins the removed subtree and fades it (mid-exit opacity
+/// strictly interior on the retired id), then releases to zero work —
+/// while the branch instance and its timers outlive the removal
+/// through the exit (no leak through the 519 retirement) and retire
+/// at exit end.
+#[test]
+fn exit_defers_fade_then_releases_and_sweeps() {
+    let rig = exit_host();
+    let (host, clock, show, cleaned, interval_fired) = (
+        rig.host,
+        rig.clock,
+        rig.show,
+        rig.cleaned,
+        rig.interval_fired,
+    );
+    let card = crate::find_retained_by_debug(&host, "exit-branch")
+        .into_iter()
+        .next()
+        .expect("branch retained while shown");
+    show.set(false);
+    host.run_once();
+    // Pinned past removal: the arena dropped the node but the exit
+    // tracks it.
+    assert!(
+        crate::find_retained_by_debug(&host, "exit-branch").is_empty(),
+        "branch unmounts on hide"
+    );
+    host.with_evaluator(|ev| {
+        assert!(ev.exit_count() >= 1, "exit pinned");
+    });
+    // Mid-exit: the ghost fades (frozen clock + bounded pumps only —
+    // an idle pump would spin on the live exit, the M8 rule).
+    clock.advance(0.09);
+    host.run_once();
+    let now = clock.get();
+    host.with_evaluator(|ev| {
+        let op = ev.resolve_opacity(card, 1.0, now);
+        assert!(op > 0.0 && op < 1.0, "ghost fades mid-exit, got {op}");
+    });
+    // The branch instance outlives its removal through the exit (its
+    // timer fires — the 519 sweep exempts deferred owners).
+    assert_eq!(
+        host.tick_timers(host.now_ms()),
+        1,
+        "branch timer fires mid-exit"
+    );
+    assert_eq!(interval_fired.get(), 1);
+    assert!(!cleaned.get(), "cleanups wait for exit end");
+    // Past the 180ms exit: release + orphan sweep to zero work.
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(cleaned.get(), "cleanups run at exit end");
+    assert_eq!(
+        host.next_timer_due_ms(host.now_ms()),
+        None,
+        "dead timers leave no horizon"
+    );
+    assert_eq!(host.tick_timers(host.now_ms()), 0, "dead timers never fire");
+    assert_eq!(interval_fired.get(), 1, "interval silenced after exit");
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.exit_count(), 0, "exits released");
+        assert_eq!(ev.active_count(), 0, "zero scheduled tracks");
+    });
+    assert!(!host.has_demand(), "quiet after the exit");
+}
+
+/// The fading ghost takes no input: presses at its old button box
+/// fall through without invoking (hit-test walks the live arena —
+/// retired ids never hit, by construction).
+#[test]
+fn exit_ghost_takes_no_input() {
+    let rig = exit_host();
+    let (host, clock, show, pressed) = (rig.host, rig.clock, rig.show, rig.pressed);
+    let card = crate::find_retained_by_debug(&host, "exit-branch")
+        .into_iter()
+        .next()
+        .expect("branch retained while shown");
+    let b = host.committed_box(card).expect("branch laid out");
+    let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+    show.set(false);
+    host.run_once();
+    clock.advance(0.09);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert!(ev.exit_count() >= 1, "exit live");
+    });
+    // Press squarely where the button painted: the ghost ignores it.
+    host.inject_input(crate::input::InputEvent::pointer_down(cx, cy));
+    host.inject_input(crate::input::InputEvent::pointer_up(cx, cy));
+    clock.advance(0.09);
+    host.run_once();
+    assert_eq!(pressed.get(), 0, "ghost press never invokes");
+    assert!(host.focused_node().is_none(), "ghost press focuses nothing");
+    // The exit still completes to quiet afterwards.
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after the exit");
+}
+
+/// Re-showing while the exit is live cancels the ghost: fresh paint
+/// owns the slot (same owner, same label), the snapshot releases,
+/// and the live subtree paints full opacity with its timers re-armed.
+#[test]
+fn exit_reshow_cancels_ghost() {
+    let rig = exit_host();
+    let (host, clock, show) = (rig.host, rig.clock, rig.show);
+    show.set(false);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert!(ev.exit_count() >= 1, "exit live");
+    });
+    // Re-show before the fade lands: cancel, never crossfade.
+    show.set(true);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.exit_count(), 0, "re-show releases the ghost");
+        assert_eq!(ev.active_count(), 0, "no tracks left");
+    });
+    assert!(
+        host.exit_snapshots().is_empty(),
+        "snapshots released on cancel"
+    );
+    let card = crate::find_retained_by_debug(&host, "exit-branch")
+        .into_iter()
+        .next()
+        .expect("branch live again");
+    let now = clock.get();
+    host.with_evaluator(|ev| {
+        assert_eq!(
+            ev.resolve_opacity(card, 0.0, now),
+            1.0,
+            "live subtree paints full opacity"
+        );
+    });
+    assert!(
+        host.next_timer_due_ms(host.now_ms()).is_some(),
+        "re-shown branch re-arms its timer"
+    );
+    // Settles quiet afterwards (no half-released ghost).
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after re-show");
+}
+
+/// Loops never defer: removing a subtree with a live loop track and
+/// an exit declaration refuses loudly (cancel first or drop the
+/// declaration — never a silent snap).
+#[test]
+#[should_panic(expected = "never defers")]
+fn exit_loop_refuses_loudly() {
+    use crate::style::{KeyframeMode, KeyframeStop};
+    use crate::vnode::Div;
+    #[derive(Clone)]
+    struct LoopExitProps {
+        on: Signal<bool>,
+        show: Signal<bool>,
+    }
+    impl Props for LoopExitProps {}
+    fn loop_exit_branch(_ctx: &Ctx, _: &LoopExitProps) -> VNode {
+        Div("loop-exit-branch").build()
+    }
+    fn loop_exit_root(ctx: &Ctx, props: &LoopExitProps) -> VNode {
+        if !props.show.get() {
+            // Incompatible root (Hole, never a diffable Element) so
+            // hiding removes the whole wrapper subtree with the loop
+            // track live on its declaring entry root.
+            return VNode::Hole;
+        }
+        // Live loop (keyframes Loop mode) under an exit
+        // declaration: the deferral must refuse, never fade.
+        let spinning = Style::new()
+            .size(40, 40)
+            .opacity(Some(if props.on.get() { 1.0 } else { 0.35 }))
+            .transition(Transition::new(400, Ease::InOut))
+            .keyframes(
+                Keyframes::new(vec![
+                    KeyframeStop::new(200, Ease::Linear).opacity(Some(0.2)),
+                    KeyframeStop::new(200, Ease::Linear).opacity(Some(1.0)),
+                ])
+                .mode(KeyframeMode::Loop),
+            )
+            .exit(Transition::exit());
+        // The style rides the wrapper (the removed entry root
+        // declares the exit): render it around the child.
+        let inner = ctx.child(
+            "LoopExit",
+            3,
+            &LoopExitProps {
+                on: props.on.clone(),
+                show: props.show.clone(),
+            },
+            loop_exit_branch,
+        );
+        Div("loop-exit-wrap").style(spinning).child(inner)
+    }
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let on = host.runtime().signal(false);
+    let show = host.runtime().signal(true);
+    host.mount(
+        "LoopExit",
+        LoopExitProps {
+            on: on.clone(),
+            show: show.clone(),
+        },
+        loop_exit_root,
+    );
+    host.run_until_idle();
+    on.set(true);
+    clock.advance(1.0 / 60.0);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "loop track live");
+    });
+    // Dismiss with the loop running: loud refusal, never a fade.
+    show.set(false);
+    host.run_once();
+}

@@ -91,8 +91,8 @@ pub fn install_dom_paint_hook(
 mod tests {
     use super::*;
     use oppa::{
-        Color, ComponentHost, Ctx, Div, Ease, KeyframeStop, Keyframes, Props, Style, Transition,
-        VNode,
+        Color, ComponentHost, Ctx, Div, Ease, KeyframeStop, Keyframes, Props, Signal, Style,
+        Transition, VNode,
     };
 
     #[derive(Clone)]
@@ -118,14 +118,16 @@ mod tests {
 
     /// Drives one hook-style frame: commit diffs, track animation at
     /// `now`, sync. Mirrors `install_dom_paint_hook` without the
-    /// runtime (deterministic clock — no MockClock needed).
+    /// runtime (deterministic clock — no MockClock needed). Returns
+    /// the frame's touched work (exit frames must report work, never
+    /// quiet — the patch gate).
     fn drive(
         host: &ComponentHost,
         backend: &std::rc::Rc<RefCell<DomBackend>>,
         sheet: &mut StyleSheet,
         cursor: &mut usize,
         now: f64,
-    ) {
+    ) -> usize {
         let diffs = host.diffs_from(*cursor);
         {
             let mut be = backend.borrow_mut();
@@ -134,11 +136,21 @@ mod tests {
             }
         }
         *cursor = host.diff_count();
+        // Decision 520: re-showed exits cancel through the host drain
+        // on the presenter leg (`DomPresenter::commit` owns this in
+        // production) — the rig mirrors it before sync so the twin
+        // never steps a superseded ghost.
+        {
+            let cancelled = host.drain_cancelled_exits();
+            if !cancelled.is_empty() {
+                backend.borrow_mut().cancel_kept_exits(&cancelled);
+            }
+        }
         host.with_retained_mut(|rec, styles| {
             let mut be = backend.borrow_mut();
             be.track_animation(&diffs, rec, styles, now);
-            be.sync(rec, styles, sheet).expect("sync");
-        });
+            be.sync(rec, styles, sheet).expect("sync").touched
+        })
     }
 
     /// Phase 36 PR4 (decision 357): the DOM stepped path re-declares
@@ -235,6 +247,147 @@ mod tests {
             be.element(box_id).expect("el").inline_kf,
             "",
             "tweens never step inline"
+        );
+    }
+
+    /// Reads the stepped `opacity:` out of an inline style (the exit
+    /// fade probe — parses the declaration the backend wrote).
+    fn stepped_opacity(inline: &str) -> f32 {
+        let (_, rest) = inline
+            .split_once("opacity:")
+            .expect("stepped inline carries opacity");
+        rest.split(';')
+            .next()
+            .expect("opacity terminated")
+            .parse()
+            .expect("opacity parses")
+    }
+
+    #[derive(Clone)]
+    struct ExitProps {
+        open: Signal<bool>,
+    }
+    impl Props for ExitProps {}
+
+    /// Dismissable card: open renders the exit-declaring plate,
+    /// closed renders nothing (the overlay dismiss shape).
+    fn exit_scene(_ctx: &Ctx, props: &ExitProps) -> VNode {
+        if !props.open.get() {
+            return VNode::Hole;
+        }
+        Div("card")
+            .style(
+                Style::new()
+                    .size(100, 50)
+                    .bg(Color(0x22_66_CC))
+                    .exit(Transition::exit()),
+            )
+            .build()
+    }
+
+    /// Decision 520: dismissal keeps the ghost past removal (stepped
+    /// inline fade + click-through + frozen CSS transitions, with
+    /// touched work on every fading frame), then drops it at settle;
+    /// re-showing mid-exit cancels through the drain.
+    #[test]
+    fn exit_keeps_ghost_then_drops_at_settle() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let open = host.runtime().signal(true);
+        host.mount("X", ExitProps { open: open.clone() }, exit_scene);
+        host.run_until_idle();
+        let backend = Rc::new(RefCell::new(DomBackend::new(1.0)));
+        let mut sheet = StyleSheet::new(1.0);
+        let mut cursor = 0;
+        drive(&host, &backend, &mut sheet, &mut cursor, 0.0);
+        let id = host
+            .with_retained_mut(|rec, _| rec.find_by_debug("card"))
+            .into_iter()
+            .next()
+            .expect("card node");
+        // Dismiss: the host settles its own exit in real time; the
+        // backend below replays the removal at explicit twin times
+        // (deterministic ghost, no wall clock).
+        open.set(false);
+        host.run_until_idle();
+        // Removal frame at twin t=0: ghost kept, click-through,
+        // transitions frozen, first stepped values live.
+        let touched = drive(&host, &backend, &mut sheet, &mut cursor, 0.0);
+        assert!(touched > 0, "keep frame reports work");
+        {
+            let be = backend.borrow();
+            let el = be.element(id).expect("ghost kept past removal");
+            assert!(el.no_transition, "stepped fade owns the motion");
+            assert!(
+                el.inline_kf.contains("pointer-events:none"),
+                "ghosts never take input, got {:?}",
+                el.inline_kf
+            );
+            assert!(
+                el.inline_kf.contains("opacity:"),
+                "first stepped values live, got {:?}",
+                el.inline_kf
+            );
+        }
+        // Mid-exit: strictly interior opacity, still stepping work.
+        let touched = drive(&host, &backend, &mut sheet, &mut cursor, 0.09);
+        assert!(touched > 0, "fading frames report work");
+        let mid = {
+            let be = backend.borrow();
+            be.element(id).expect("ghost mid-exit").inline_kf.clone()
+        };
+        let op = stepped_opacity(&mid);
+        assert!(op > 0.0 && op < 1.0, "ghost fades mid-exit, got {op}");
+        // Settle: the ghost drops (deletion is work too).
+        let touched = drive(&host, &backend, &mut sheet, &mut cursor, 5.0);
+        assert!(touched > 0, "drop frame reports work");
+        assert!(
+            backend.borrow().element(id).is_none(),
+            "ghost drops at settle"
+        );
+        // Settled frames go quiet again.
+        let touched = drive(&host, &backend, &mut sheet, &mut cursor, 6.0);
+        assert_eq!(touched, 0, "quiet after the exit");
+    }
+
+    /// Decision 520: re-showing mid-exit cancels the ghost through
+    /// the host drain (pixel-backend cancel parity — no crossfade
+    /// over fresh paint).
+    #[test]
+    fn exit_reshow_cancels_ghost() {
+        let host = ComponentHost::new();
+        host.set_viewport(800.0, 600.0);
+        let open = host.runtime().signal(true);
+        host.mount("X", ExitProps { open: open.clone() }, exit_scene);
+        host.run_until_idle();
+        let backend = Rc::new(RefCell::new(DomBackend::new(1.0)));
+        let mut sheet = StyleSheet::new(1.0);
+        let mut cursor = 0;
+        drive(&host, &backend, &mut sheet, &mut cursor, 0.0);
+        let id = host
+            .with_retained_mut(|rec, _| rec.find_by_debug("card"))
+            .into_iter()
+            .next()
+            .expect("card node");
+        open.set(false);
+        // Bounded frames, never idle (production lockstep: the
+        // backend pins the same commit the host tracks — idling
+        // here would settle+finalize host-side first, evicting the
+        // instance the cancel key needs).
+        host.run_once();
+        drive(&host, &backend, &mut sheet, &mut cursor, 0.0);
+        assert!(
+            backend.borrow().element(id).is_some(),
+            "ghost kept on dismiss"
+        );
+        // Re-show before the fade lands: the kept ghost releases and
+        // the live subtree paints (fresh mount jumps, no track).
+        open.set(true);
+        host.run_once();
+        drive(&host, &backend, &mut sheet, &mut cursor, 0.0);
+        assert!(
+            backend.borrow().element(id).is_none(),
+            "re-show cancels the ghost"
         );
     }
 }

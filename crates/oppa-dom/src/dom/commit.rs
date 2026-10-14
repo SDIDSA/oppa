@@ -102,8 +102,186 @@ impl RendererBackend for DomBackend {
     /// diff arms the one-commit transition suppression the next `sync`
     /// consumes (M8, §9.4).
     fn commit(&mut self, diff: &TreeDiff) -> Result<(), BackendError> {
-        use oppa::DiffOp;
         self.suppress_armed |= diff.suppress_transitions;
+        // Decision 520: keep pinned removal roots past deletion (paint
+        // past removal through stepped inline values). Stamped commits
+        // snap (no keep — mirrors the evaluator, which skips synthesis
+        // under the stamp).
+        if !diff.suppress_transitions {
+            for pin in &diff.exits {
+                self.keep_exit(pin);
+            }
+        }
+        self.commit_ops(diff)
+    }
+
+    fn paint(
+        &mut self,
+        surface: SurfaceId,
+        plan: &oppa::FramePlan,
+    ) -> Result<PaintStats, BackendError> {
+        if !self.surfaces.contains_key(&surface) {
+            return Err(BackendError::UnknownSurface(surface));
+        }
+        self.paints += 1;
+        let ops = std::mem::replace(&mut self.pending_touched, 0);
+        Ok(PaintStats {
+            ops_executed: ops,
+            paints: self.paints,
+            skipped_empty: plan.is_empty() && ops == 0,
+        })
+    }
+}
+
+impl DomBackend {
+    /// Records one kept ghost (decision 520): idempotent (commit
+    /// replay re-fires old removals — settled-away roots are gone
+    /// and live-kept roots re-record nothing).
+    fn keep_exit(&mut self, pin: &oppa::ExitPin) {
+        let root = pin.root.id;
+        if self.exit_kept.iter().any(|k| k.root == root) {
+            return;
+        }
+        if !self.elements.contains_key(&root) {
+            return;
+        }
+        let mut parent = None;
+        let mut index = 0;
+        for (p, el) in &self.elements {
+            if let Some(pos) = el.children.iter().position(|c| *c == root) {
+                parent = Some(*p);
+                index = pos;
+                break;
+            }
+        }
+        if parent.is_none() {
+            index = self
+                .roots
+                .iter()
+                .position(|r| *r == root)
+                .unwrap_or(self.roots.len());
+        }
+        // Collect the kept subtree, then freeze CSS transitions on it
+        // (stepped values own the fade — a CSS transition would smooth
+        // each 16ms step into mush).
+        let mut ids = vec![root];
+        let mut i = 0;
+        while i < ids.len() {
+            let cur = ids[i];
+            i += 1;
+            if let Some(el) = self.elements.get(&cur) {
+                ids.extend(el.children.iter().copied());
+            }
+        }
+        for id in &ids {
+            if let Some(el) = self.elements.get_mut(id) {
+                el.no_transition = true;
+            }
+            self.exit_ids.insert(*id);
+        }
+        self.exit_kept.push(ExitKeep {
+            root,
+            parent,
+            index,
+        });
+    }
+
+    /// Deletes one subtree from the registry (the Remove-arm worker).
+    /// Kept ghosts skip deletion here (their ids ride `exit_ids`);
+    /// explicit drops (settle, re-show cancel) go through
+    /// [`drop_exit`](Self::drop_exit) instead.
+    fn delete_subtree(&mut self, id: NodeId) {
+        let mut stack = vec![id];
+        while let Some(cur) = stack.pop() {
+            if self.exit_ids.contains(&cur) {
+                continue;
+            }
+            if let Some(el) = self.elements.remove(&cur) {
+                stack.extend(el.children);
+            }
+            self.absorbed.remove(&cur);
+            self.scroll_tops.remove(&cur);
+        }
+        for el in self.elements.values_mut() {
+            if let Some(pos) = el.children.iter().position(|c| *c == id) {
+                el.children.remove(pos);
+            }
+        }
+        self.roots.retain(|r| *r != id);
+    }
+
+    /// Drops one kept ghost (decision 520: twin-settle and re-show
+    /// cancel share this — bookkeeping scrubs first so the forced
+    /// delete below never trips the kept guard, then the twin forgets
+    /// the tracks). Returns the deleted element count (settle frames
+    /// count it as touched work — a pure deletion still patches).
+    pub(super) fn drop_exit(&mut self, root: NodeId) -> usize {
+        let mut ids = vec![root];
+        let mut i = 0;
+        while i < ids.len() {
+            let cur = ids[i];
+            i += 1;
+            if let Some(el) = self.elements.get(&cur) {
+                ids.extend(el.children.iter().copied());
+            }
+        }
+        for id in &ids {
+            self.exit_ids.remove(id);
+        }
+        self.exit_kept.retain(|k| k.root != root);
+        let mut stack = vec![root];
+        let mut deleted = 0;
+        while let Some(cur) = stack.pop() {
+            if let Some(el) = self.elements.remove(&cur) {
+                deleted += 1;
+                stack.extend(el.children);
+            }
+            self.absorbed.remove(&cur);
+            self.scroll_tops.remove(&cur);
+        }
+        for el in self.elements.values_mut() {
+            if let Some(pos) = el.children.iter().position(|c| *c == root) {
+                el.children.remove(pos);
+            }
+        }
+        self.roots.retain(|r| *r != root);
+        deleted
+    }
+
+    /// Drops kept ghosts intersecting `ids` (decision 520: re-show
+    /// cancel — the host publishes superseded exit node sets; ghosts
+    /// intersecting them release immediately instead of fading over
+    /// fresh paint, the pixel-backend cancel parity).
+    pub fn cancel_kept_exits(&mut self, ids: &[NodeId]) {
+        if ids.is_empty() || self.exit_kept.is_empty() {
+            return;
+        }
+        let doomed: Vec<NodeId> = self
+            .exit_kept
+            .iter()
+            .map(|k| k.root)
+            .filter(|root| {
+                let mut stack = vec![*root];
+                while let Some(cur) = stack.pop() {
+                    if ids.contains(&cur) {
+                        return true;
+                    }
+                    if let Some(el) = self.elements.get(&cur) {
+                        stack.extend(el.children.iter().copied());
+                    }
+                }
+                false
+            })
+            .collect();
+        for root in doomed {
+            self.drop_exit(root);
+        }
+        self.kf_eval.forget_exits(ids);
+    }
+    /// Applies one diff's op list to the registry ([`commit`] keeps
+    /// exits first, then lands here).
+    fn commit_ops(&mut self, diff: &TreeDiff) -> Result<(), BackendError> {
+        use oppa::DiffOp;
         for op in &diff.ops {
             match op {
                 DiffOp::Add {
@@ -155,20 +333,11 @@ impl RendererBackend for DomBackend {
                     }
                 }
                 DiffOp::Remove { id, .. } => {
-                    let mut stack = vec![*id];
-                    while let Some(cur) = stack.pop() {
-                        if let Some(el) = self.elements.remove(&cur) {
-                            stack.extend(el.children);
-                        }
-                        self.absorbed.remove(&cur);
-                        self.scroll_tops.remove(&cur);
+                    // Decision 520: kept ghosts ride past deletion.
+                    if self.exit_ids.contains(id) {
+                        continue;
                     }
-                    for el in self.elements.values_mut() {
-                        if let Some(pos) = el.children.iter().position(|c| c == id) {
-                            el.children.remove(pos);
-                        }
-                    }
-                    self.roots.retain(|r| r != id);
+                    self.delete_subtree(*id);
                     self.mutations += 1;
                 }
                 DiffOp::Move { id, new_index } => {
@@ -209,23 +378,6 @@ impl RendererBackend for DomBackend {
             }
         }
         Ok(())
-    }
-
-    fn paint(
-        &mut self,
-        surface: SurfaceId,
-        plan: &oppa::FramePlan,
-    ) -> Result<PaintStats, BackendError> {
-        if !self.surfaces.contains_key(&surface) {
-            return Err(BackendError::UnknownSurface(surface));
-        }
-        self.paints += 1;
-        let ops = std::mem::replace(&mut self.pending_touched, 0);
-        Ok(PaintStats {
-            ops_executed: ops,
-            paints: self.paints,
-            skipped_empty: plan.is_empty() && ops == 0,
-        })
     }
 }
 
