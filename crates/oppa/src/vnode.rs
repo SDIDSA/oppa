@@ -163,12 +163,46 @@ pub fn stamp_handler_owner(vnode: &VNode, owner: u64) {
     }
 }
 
+/// Stamps the creating instance on every unstamped element in
+/// `vnode` (decision 519 — the node-ownership twin of
+/// [`stamp_handler_owner`]). Inner children stamp first (their
+/// `Ctx::child` return passes through the outer render), so outer
+/// runs only fill `None`s — nesting composes, innermost wins.
+/// Text leaves carry no stamp (they inherit the parent owner at
+/// build time); fragments recurse; holes hold nothing.
+pub fn stamp_node_owner(vnode: &VNode, owner: u64) {
+    match vnode {
+        VNode::Element(e) => {
+            if e.owner.get().is_none() {
+                e.owner.set(Some(owner));
+            }
+            for child in &e.children {
+                stamp_node_owner(child, owner);
+            }
+        }
+        VNode::Fragment(fs) => {
+            for child in fs {
+                stamp_node_owner(child, owner);
+            }
+        }
+        VNode::Text(_) | VNode::RichText(_) | VNode::Hole => {}
+    }
+}
+
 /// Ephemeral element: what component bodies assemble.
+///
+/// `owner` (decision 519) is the component instance whose run built this
+/// element, stamped by `Ctx::child`/`run_instance` at render time
+/// (innermost wins, like the handler stamp above — the reconciler
+/// retains it per node so subtree removal can identify dead
+/// instances). `None` = unstamped (hand-built VNodes — the
+/// reconciler inherits the parent owner for those).
 #[derive(Debug)]
 pub struct Element {
     pub tag: Tag,
     pub debug: String,
     pub key: Option<u64>,
+    pub owner: std::cell::Cell<Option<u64>>,
     pub style: Style,
     /// Leaf-class hint carried by `Text` conversions (title vs body); diffed
     /// like style. `None` for non-text elements.

@@ -322,6 +322,7 @@ fn bad_canvas_scene(ctx: &Ctx, _: &CanvasProps) -> VNode {
         tag: oppa::Tag::Canvas,
         debug: "bad-canvas".to_string(),
         key: None,
+        owner: std::cell::Cell::new(None),
         style: oppa::Style::new().size(100, 50).build(),
         text_hint: None,
         image: None,
@@ -532,6 +533,138 @@ fn evaluated_mid_flight_transform_bakes_live_geometry() {
     );
 }
 
+/// Decision 520: dismissal fades through the exit layer — the
+/// retired card repaints mid-exit at partial opacity over its pinned
+/// box, then releases to a clean plan (no ghost ops, zero work).
+/// The undeclared twin snaps (byte-identical pre/post plans).
+#[test]
+fn exit_layer_fades_ghost_then_releases_clean() {
+    #[derive(Clone)]
+    struct CardProps {
+        show: Signal<bool>,
+        exit: bool,
+    }
+    impl Props for CardProps {}
+    fn card_scene(_ctx: &Ctx, props: &CardProps) -> VNode {
+        if !props.show.get() {
+            return VNode::Hole;
+        }
+        // Non-black fill (pure 0x000000 reads TRANSPARENT and skips
+        // paint — never a fill endpoint, by doctrine).
+        let mut style = Style::new().size(100, 50).bg(oppa::Color(0x22_66_CC));
+        if props.exit {
+            style = style.exit(oppa::Transition::exit());
+        }
+        Div("card").style(style).build()
+    }
+    // Declared exit: mid-exit ghost at partial opacity, pinned box.
+    let clock = Rc::new(oppa::MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let show = host.runtime().signal(true);
+    host.mount(
+        "Card",
+        CardProps {
+            show: show.clone(),
+            exit: true,
+        },
+        card_scene,
+    );
+    host.run_until_idle();
+    let id = oppa::find_retained_by_debug(&host, "card")[0];
+    let pre = host.committed_box(id).expect("card laid out");
+    show.set(false);
+    host.run_once();
+    assert!(
+        oppa::find_retained_by_debug(&host, "card").is_empty(),
+        "card unmounts on hide"
+    );
+    // Mid-exit frame: the ghost repaints through the exit layer.
+    clock.advance(0.09);
+    host.run_once();
+    let now = clock.get();
+    let builder = FramePlanBuilder::new(1.0);
+    builder.set_exits(host.exit_snapshots());
+    let plan = host.with_retained_mut(|rec, styles| {
+        host.with_evaluator(|ev| builder.build_full_evaluated(rec, styles, ev, now))
+    });
+    let (op, bx, by, bw, bh) = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            DrawOp::Rect {
+                node,
+                x,
+                y,
+                w,
+                h,
+                opacity,
+                ..
+            } if *node == id => Some((*opacity, *x, *y, *w, *h)),
+            _ => None,
+        })
+        .expect("ghost rect op mid-exit");
+    assert!(
+        op > 0.0 && op < 1.0,
+        "ghost fades mid-exit, got opacity {op}"
+    );
+    assert_eq!(
+        (bx, by, bw, bh),
+        (pre.x, pre.y, pre.w, pre.h),
+        "ghost paints its pinned box"
+    );
+    assert!(
+        plan.damage.iter().any(|d| d.w > 0.0 && d.h > 0.0),
+        "exit frames carry damage"
+    );
+    // Settled: the plan releases the ghost, zero work left.
+    clock.advance(1.0);
+    host.run_until_idle();
+    let builder = FramePlanBuilder::new(1.0);
+    builder.set_exits(host.exit_snapshots());
+    let now = clock.get();
+    let plan = host.with_retained_mut(|rec, styles| {
+        host.with_evaluator(|ev| builder.build_full_evaluated(rec, styles, ev, now))
+    });
+    assert!(
+        plan.ops.iter().all(|op| op.node() != Some(id)),
+        "settled plan carries no ghost ops"
+    );
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "exit retires to zero work");
+    });
+    assert!(!host.has_demand(), "quiet after the exit");
+    // Undeclared twin: removal snaps (no ghost ops at any frame).
+    let clock = Rc::new(oppa::MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let show = host.runtime().signal(true);
+    host.mount(
+        "Card",
+        CardProps {
+            show: show.clone(),
+            exit: false,
+        },
+        card_scene,
+    );
+    host.run_until_idle();
+    show.set(false);
+    clock.advance(0.09);
+    host.run_once();
+    let builder = FramePlanBuilder::new(1.0);
+    builder.set_exits(host.exit_snapshots());
+    let after = host.with_retained_mut(|rec, styles| {
+        host.with_evaluator(|ev| builder.build_full_evaluated(rec, styles, ev, clock.get()))
+    });
+    assert!(
+        after.ops.iter().all(|op| !matches!(
+            op,
+            DrawOp::Rect { w, h, .. } if *w == 100.0 && *h == 50.0
+        )),
+        "undeclared removal snaps — no ghost rect"
+    );
+}
+
 /// Decision 517: rotation stamps a per-op residual while ST geometry
 /// stays baked (a 90° turn keeps the axis-aligned rect numbers and
 /// carries the turn to the backends; damage covers the rotated AABB).
@@ -663,4 +796,82 @@ fn text_bake_translates_and_scales_glyph_geometry() {
     assert!((sa - pa * 2.0).abs() < 1e-6, "advances scale by sx");
     assert!((se - pe * 2.0).abs() < 1e-6, "em scales by sy");
     assert!((sg1 - pg1 * 2.0).abs() < 1e-6, "cell offsets scale by sx");
+}
+
+/// Decisions 521-522: the fence paints the interpolated box
+/// mid-flight (interior width, pinned damage), lands exact on the
+/// committed target, and retires quiet. The builder samples the
+/// evaluator directly — no publish step, no backend changes.
+#[test]
+fn fence_paints_interpolated_box_then_lands_exact() {
+    use oppa::{Ease, MockClock, Transition};
+    #[derive(Clone)]
+    struct FenceProps {
+        wide: Signal<bool>,
+    }
+    impl Props for FenceProps {}
+    fn fence_scene(ctx: &Ctx, props: &FenceProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        let w = if props.wide.get() { 200.0 } else { 100.0 };
+        Div("fence-card")
+            .style(
+                Style::new()
+                    .size(w, 50.0)
+                    .bg(oppa::Color(0x22_66_CC))
+                    .layout_anim(Transition::new(200, Ease::Linear)),
+            )
+            .build()
+    }
+    fn rect_of(plan: &FramePlan, id: oppa::NodeId) -> (f32, f32, f32, f32) {
+        plan.ops
+            .iter()
+            .find_map(|op| match op {
+                DrawOp::Rect {
+                    node, x, y, w, h, ..
+                } if *node == id => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .expect("fence card rect op")
+    }
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    host.mount("Fence", FenceProps { wide: wide.clone() }, fence_scene);
+    host.run_until_idle();
+    let id = oppa::find_retained_by_debug(&host, "fence-card")[0];
+    wide.set(true);
+    host.run_once();
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    let builder = FramePlanBuilder::new(1.0);
+    let plan = host.with_retained_mut(|rec, styles| {
+        host.with_evaluator(|ev| builder.build_full_evaluated(rec, styles, ev, now))
+    });
+    let (_, _, w, _) = rect_of(&plan, id);
+    assert!(
+        w > 100.0 && w < 200.0,
+        "fence paints interior width mid-flight, got {w}"
+    );
+    assert!(
+        plan.damage.iter().any(|d| d.w > 0.0 && d.h > 0.0),
+        "fence frames carry damage"
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    let builder = FramePlanBuilder::new(1.0);
+    let now = clock.get();
+    let plan = host.with_retained_mut(|rec, styles| {
+        host.with_evaluator(|ev| builder.build_full_evaluated(rec, styles, ev, now))
+    });
+    assert_eq!(
+        rect_of(&plan, id),
+        (0.0, 0.0, 200.0, 50.0),
+        "settled fence paints the committed target"
+    );
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "fence retires to zero work");
+    });
+    assert!(!host.has_demand(), "quiet after the fence");
 }

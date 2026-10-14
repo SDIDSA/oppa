@@ -596,6 +596,18 @@ impl Transition {
             delay_ms: 0,
         }
     }
+
+    /// Standard exit (decision 520): 180ms Out — the `enter` mirror
+    /// for `Style::exit` (dismissals fade over the same timing the
+    /// entrances rose through; endpoints are fade-only, never a
+    /// rise-back).
+    pub fn exit() -> Self {
+        Self {
+            dur_ms: 180,
+            ease: Ease::Out,
+            delay_ms: 0,
+        }
+    }
 }
 
 /// One keyframe waypoint (Phase 36 PR4, decision 357 — the
@@ -979,6 +991,20 @@ pub struct Style {
     /// Multi-stop keyframe track (Phase 36 PR4, decision 357 —
     /// paint-only like `transition`, never layout-affecting).
     pub keyframes: Option<Keyframes>,
+    /// Exit-deferral timing (decision 520 — paint-only like
+    /// `transition`, never layout-affecting): when a subtree rooted
+    /// at this node is removed, it pins and fades out (opacity → 0
+    /// over this timing) instead of snapping. Opt-in only — nodes
+    /// without it unmount instantly exactly as before.
+    pub exit: Option<Transition>,
+    /// Layout-animation timing (decisions 521–522 — paint- and
+    /// layout-observing, never layout-affecting: the declaration
+    /// itself changes no box): position-only moves FLIP through the
+    /// transform machinery (521) and explicit-px size changes run
+    /// the fenced box interpolator (522), both over this one spec.
+    /// Opt-in only — undeclared layout changes apply instantly
+    /// exactly as before.
+    pub layout_anim: Option<Transition>,
     /// Pointer cursor while hovering this node (Round 8.3; paint-only,
     /// never layout-affecting — see [`CursorIcon`]).
     pub cursor: Option<CursorIcon>,
@@ -1490,6 +1516,23 @@ impl StyleBuilder {
 
     pub fn transition(mut self, t: Transition) -> Self {
         self.inner.transition = Some(t);
+        self
+    }
+
+    /// Exit-deferral timing (decision 520 — opt-in removal fade;
+    /// `Transition::exit` is the standard 180ms Out mirror of
+    /// `enter`). Any `Transition` serves (tween-only by type —
+    /// keyframes cannot spell an exit).
+    pub fn exit(mut self, t: Transition) -> Self {
+        self.inner.exit = Some(t);
+        self
+    }
+
+    /// Layout-animation timing (decisions 521–522 — opt-in FLIP for
+    /// position moves plus the fenced box interpolator for
+    /// explicit-px size changes, both over this one spec).
+    pub fn layout_anim(mut self, t: Transition) -> Self {
+        self.inner.layout_anim = Some(t);
         self
     }
 

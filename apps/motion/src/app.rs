@@ -36,13 +36,14 @@ use oppa::{
 use oppa_controls::{Button, ButtonProps, Checkbox, Tooltip};
 
 /// Room tabs in bar order: `(key, label)`.
-pub const TABS: [(&str, &str); 6] = [
+pub const TABS: [(&str, &str); 7] = [
     ("entrance", "Entrance"),
     ("transforms", "Transforms"),
     ("springs", "Springs"),
     ("micro", "Micro"),
     ("overlays", "Overlays"),
     ("ambient", "Ambient"),
+    ("layout", "Layout"),
 ];
 
 /// Easing names in cycle order (maps through [`ease_of`]).
@@ -97,6 +98,7 @@ pub fn room_need(key: &str) -> &'static str {
         "micro" => "Press/hover tweens — live since decision 514 (Button, Checkbox, menu rows, tooltip fade).",
         "overlays" => "Modal/Toast/Menu entrances — live since decision 514 (fade + rise; exits snap by contract).",
         "ambient" => "Loop ambient + chained sequence — live since decisions 512–513 (ping-pong loop, completion-driven chain).",
+        "layout" => "Layout animation — live since decisions 521–522 (FLIP position shifts + fenced size interpolation, shared timeline).",
         _ => "Unknown room — refused by omission, never a silent stub.",
     }
 }
@@ -109,6 +111,7 @@ pub fn room_title(key: &str) -> &'static str {
         "micro" => "Micro-interactions",
         "overlays" => "Overlay motion",
         "ambient" => "Ambient + completion",
+        "layout" => "Layout animation",
         _ => "Unknown room",
     }
 }
@@ -423,6 +426,14 @@ fn room_for(ctx: &Ctx, state: &MotionState, tab: usize, key: &str) -> VNode {
         "micro" => ctx.child_keyed(tab as u64, &(), MicroRoom),
         "overlays" => ctx.child_keyed(tab as u64, &(), OverlayRoom),
         "ambient" => ctx.child_keyed(tab as u64, &(), AmbientRoom),
+        "layout" => ctx.child_keyed(
+            tab as u64,
+            &LayoutRoomProps {
+                duration_ms: state.duration_ms.clone(),
+                ease_idx: state.ease_idx.clone(),
+            },
+            LayoutRoom,
+        ),
         _ => room_stub(key),
     }
 }
@@ -867,9 +878,119 @@ fn MicroRoom(ctx: &Ctx, _props: &()) -> VNode {
         ])
 }
 
-/// Live overlay room (decision 514): Modal, Toast, and Menu
-/// entrances (fade + rise through the shared enter policy) with
-/// dismiss paths. Exits snap by specified contract (appear-first).
+/// Live layout room (decisions 521-522): an expanding card runs
+/// the fenced box interpolator while the sibling below FLIPs down
+/// on the same spec (shared timeline — the card's bottom edge never
+/// crosses the sibling's top), plus a reorder list whose rows FLIP
+/// when an item inserts above them.
+#[derive(Clone)]
+pub struct LayoutRoomProps {
+    pub duration_ms: Signal<f32>,
+    pub ease_idx: Signal<usize>,
+}
+
+impl Props for LayoutRoomProps {}
+
+fn LayoutRoom(ctx: &Ctx, props: &LayoutRoomProps) -> VNode {
+    let expand = ctx.signal(false);
+    let extra = ctx.signal(false);
+    let expand_sig = expand.clone();
+    let extra_sig = extra.clone();
+    // One spec drives both the fence and every FLIP in this room
+    // (siblings share a timeline by declaring equal specs).
+    let spec = Transition::new(
+        props.duration_ms.get().max(0.0) as u32,
+        ease_of(props.ease_idx.get()),
+    );
+    let t = ctx.theme().tokens();
+    let tall = expand.get();
+    // Expanding card (fence) + sibling below (FLIP, same spec):
+    // one trigger grows the card while the sibling rides down.
+    let stack = Column::new().children([
+        Div("motion-layout-card")
+            .key(0)
+            .style(
+                Style::new()
+                    .size(160.0, if tall { 96.0 } else { 48.0 })
+                    .bg(t.primary)
+                    .radius(12)
+                    .layout_anim(spec),
+            )
+            .build(),
+        Div("motion-layout-sib")
+            .key(1)
+            .style(
+                Style::new()
+                    .size(160.0, 28.0)
+                    .bg(t.surface)
+                    .layout_anim(spec),
+            )
+            .build(),
+    ]);
+    // Reorder list: inserting above shifts every flagged row (FLIP).
+    let mut rows: Vec<VNode> = Vec::new();
+    if extra.get() {
+        rows.push(
+            Div("motion-layout-extra")
+                .style(Style::new().size(160.0, 28.0).bg(t.surface))
+                .build(),
+        );
+    }
+    for (i, name) in ["motion-layout-r0", "motion-layout-r1", "motion-layout-r2"]
+        .into_iter()
+        .enumerate()
+    {
+        rows.push(
+            Div(name)
+                .key(i as u64)
+                .style(
+                    Style::new()
+                        .size(160.0, 28.0)
+                        .bg(t.primary)
+                        .layout_anim(spec),
+                )
+                .build(),
+        );
+    }
+    let list = Column::new().children(rows);
+    Div("motion-room-layout")
+        .key(6)
+        .style(
+            Style::new()
+                .fill_width()
+                .fill_height()
+                .pad_x(24)
+                .pad_y(24)
+                .gap(12),
+        )
+        .children([
+            VNode::from(Text::new(room_title("layout")).size(22).bold().build()),
+            Row("motion-layout-row")
+                .style(Style::new().gap(16))
+                .children([
+                    ctx.child_auto(
+                        &ButtonProps::new("Expand", move || expand_sig.set(!expand_sig.get()))
+                            .size(120.0, 40.0)
+                            .debug("motion-layout-expand"),
+                        Button,
+                    ),
+                    ctx.child_auto(
+                        &ButtonProps::new("Insert row", move || extra_sig.set(!extra_sig.get()))
+                            .size(120.0, 40.0)
+                            .debug("motion-layout-add"),
+                        Button,
+                    ),
+                ]),
+            Row("motion-layout-demo")
+                .style(Style::new().gap(32))
+                .children([stack, list]),
+        ])
+}
+
+/// Live overlay room (decision 514 entrances + decision 520 exits):
+/// Modal, Toast, and Menu fade + rise through the shared enter
+/// policy with dismiss paths, and dismissals fade out past removal
+/// (no snap) before releasing to zero work.
 fn OverlayRoom(ctx: &Ctx, _props: &()) -> VNode {
     let modal_open = ctx.signal(false);
     let toast_open = ctx.signal(false);

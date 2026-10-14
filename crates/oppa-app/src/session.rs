@@ -191,6 +191,11 @@ impl SceneSession {
         let handles = self.host.focused_handles_paint();
         pres.set_handles(handles);
         self.builder.set_handles(handles);
+        // Decision 520: deferred exits ride every committed frame —
+        // the builder's exit layer replays pinned snapshots while
+        // their fade tracks run (empty for exit-free trees — the
+        // pre-520 plan, byte-identical).
+        self.builder.set_exits(self.host.exit_snapshots());
         // Theme contract round: the build theme + page chrome follow
         // the host mode every frame, and a toggled page background
         // refits the presenter's surfaces before painting (same

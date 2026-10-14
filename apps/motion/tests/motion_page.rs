@@ -134,7 +134,7 @@ fn motion_tabbar_sits_above_the_room() {
 
 #[test]
 fn motion_pure_helpers_cover_all_rooms() {
-    assert_eq!(TABS.len(), 6, "six rooms, one per goal item");
+    assert_eq!(TABS.len(), 7, "seven rooms — six motion goals plus layout animation");
     assert_eq!(EASE_NAMES.len(), 5, "four cubics plus the spring");
     assert_eq!(
         SharedString::from(motion::room_title("springs")),
@@ -195,6 +195,29 @@ fn hover_at(app: &Harness, x: f32, y: f32) {
 fn box_center(app: &Harness, debug: &str) -> (f32, f32) {
     let b = committed(app, debug);
     (b.x + b.w / 2.0, b.y + b.h / 2.0)
+}
+
+/// Menu row ids top-down (the fade probe needs retired ids —
+/// positions alone cannot resolve evaluator values past removal).
+fn menu_row_ids(app: &Harness) -> Vec<oppa::NodeId> {
+    let mut ids = Vec::new();
+    app.host().with_retained_mut(|rec, _| {
+        for id in rec.retained_ids() {
+            if rec
+                .get(id)
+                .is_some_and(|n| n.debug.starts_with("menu-item-"))
+            {
+                ids.push(id);
+            }
+        }
+    });
+    ids.sort_by_cached_key(|id| {
+        app.host()
+            .committed_box(*id)
+            .map(|b| (b.y * 1_000_000.0) as i64)
+            .unwrap_or(i64::MAX)
+    });
+    ids
 }
 
 /// Menu row centers top-down (decision 514): rows carry
@@ -577,6 +600,11 @@ fn goto_overlays(app: &Harness) {
     app.advance_frames(2.0 / 60.0);
 }
 
+fn goto_layout(app: &Harness) {
+    press(app, "motion-tab-layout");
+    app.advance_frames(2.0 / 60.0);
+}
+
 /// Decision 514: holding a Button tweens pressed-fill in and back
 /// out, boxes unmoved, quiescent at rest.
 #[test]
@@ -753,8 +781,10 @@ fn motion_tooltip_fades_on_hover() {
 }
 
 /// Decision 514: the modal backdrop fades while the card fades +
-/// rises, both settle exact; backdrop dismiss unmounts instantly
-/// (appear-first — no exit tracks linger).
+/// Decision 520: the modal enters (fade + rise), settles exact,
+/// and dismisses through a fade (no snap) — the backdrop tap keeps
+/// the ghost past removal while its exit track runs, then releases
+/// to zero work.
 #[test]
 fn motion_modal_enters_and_dismisses() {
     let (app, _) = mount_clocked();
@@ -788,28 +818,40 @@ fn motion_modal_enters_and_dismisses() {
         assert!(ev.resolve_transform(card, None, 10.0).is_identity());
         assert_eq!(ev.resolve_opacity(back, 0.0, 10.0), 0.5);
     });
-    // Backdrop tap outside the card dismisses (appear-first: the
-    // dialog unmounts with no exit tracks).
+    // Backdrop tap outside the card dismisses (decision 520: the
+    // dialog fades instead of snapping — the ghost paints past
+    // removal while its exit runs).
     let bb = committed(&app, "modal-backdrop");
     let cb = committed(&app, "modal-card");
     assert!(cb.x > bb.x + 5.0, "tap lands outside the card");
     down_at(&app, bb.x + 5.0, bb.y + bb.h / 2.0);
     up_at(&app, bb.x + 5.0, bb.y + bb.h / 2.0);
+    // Mid-exit: the scrim fades from its 0.5 veil on the retired id.
+    app.advance_frames(0.09);
+    let now = app.host().now_ms() / 1000.0;
+    let mid = app
+        .host()
+        .with_evaluator(|ev| ev.resolve_opacity(back, 0.0, now));
+    assert!(
+        mid > 0.0 && mid < 0.5,
+        "scrim fades mid-exit, got {mid}"
+    );
     // Settle past every micro tween (the pointer move unhovers the
-    // open button — its wash tween must retire too).
+    // open button — its wash tween must retire too) and the exit.
     app.advance_frames(0.5);
     assert!(
         oppa::find_retained_by_debug(app.host(), "modal-card").is_empty(),
         "dialog unmounts on dismiss"
     );
     app.host().with_evaluator(|ev| {
-        assert_eq!(ev.active_count(), 0, "no exit tracks linger");
+        assert_eq!(ev.active_count(), 0, "exit retires to zero work");
     });
     assert!(!app.host().has_demand());
 }
 
-/// Decision 514: the toast card fades + rises, settles exact, and
-/// the dismiss button closes it.
+/// Decision 520: the toast card fades + rises, settles exact, and
+/// the dismiss button fades it out (no snap) before releasing to
+/// zero work.
 #[test]
 fn motion_toast_enters_and_dismisses() {
     let (app, _) = mount_clocked();
@@ -834,21 +876,29 @@ fn motion_toast_enters_and_dismisses() {
         assert_eq!(ev.resolve_opacity(id, 0.0, 10.0), 1.0);
     });
     press(&app, "toast-dismiss");
+    // Mid-exit: the card fades from 1 on the retired id.
+    app.advance_frames(0.09);
+    let now = app.host().now_ms() / 1000.0;
+    let mid = app
+        .host()
+        .with_evaluator(|ev| ev.resolve_opacity(id, 0.0, now));
+    assert!(mid > 0.0 && mid < 1.0, "card fades mid-exit, got {mid}");
     // Settle past every micro tween (pointer moves unhover buttons
-    // along the way).
+    // along the way) and the exit.
     app.advance_frames(0.5);
     assert!(
         oppa::find_retained_by_debug(app.host(), "toast-card").is_empty(),
         "dismiss closes"
     );
     app.host().with_evaluator(|ev| {
-        assert_eq!(ev.active_count(), 0, "no exit tracks linger");
+        assert_eq!(ev.active_count(), 0, "exit retires to zero work");
     });
     assert!(!app.host().has_demand());
 }
 
-/// Decision 514: the overlay menu plate fades + rises to its anchor
-/// and settles exact with zero work left.
+/// Decision 520: the overlay menu plate fades + rises to its anchor,
+/// settles exact, and invoking fades it out (no snap) before
+/// settling to zero work.
 #[test]
 fn motion_overlay_menu_enters_settled() {
     let (app, _) = mount_clocked();
@@ -865,12 +915,20 @@ fn motion_overlay_menu_enters_settled() {
     });
     assert!(!app.host().has_demand());
     let (x, y) = rows[0];
+    let row_id = menu_row_ids(&app)[0];
     down_at(&app, x, y);
     up_at(&app, x, y);
+    // Mid-exit: the invoked row fades on its retired id.
+    app.advance_frames(0.09);
+    let now = app.host().now_ms() / 1000.0;
+    let mid = app
+        .host()
+        .with_evaluator(|ev| ev.resolve_opacity(row_id, 0.0, now));
+    assert!(mid > 0.0 && mid < 1.0, "row fades mid-exit, got {mid}");
     app.advance_frames(0.5);
     assert!(menu_row_centers(&app).is_empty(), "invoke closes the menu");
     app.host().with_evaluator(|ev| {
-        assert_eq!(ev.active_count(), 0, "invoke settles to zero work");
+        assert_eq!(ev.active_count(), 0, "exit retires to zero work");
     });
     assert!(!app.host().has_demand());
 }
@@ -1034,4 +1092,105 @@ fn motion_ambient_loops_and_chain_completes() {
         assert_eq!(ev.active_count(), 0, "unmount retires the loop");
     });
     assert!(!app.host().has_demand());
+}
+
+/// Decisions 521-522: expanding the card runs the fence (interior
+/// height mid-flight, committed target already applied), lands
+/// exact, and retires to zero work.
+#[test]
+fn motion_layout_expand_fences_then_settles() {
+    let (app, _) = mount_clocked();
+    goto_layout(&app);
+    let card = app.node("motion-layout-card");
+    press(&app, "motion-layout-expand");
+    app.advance_frames(2.0 / 60.0);
+    let target = committed(&app, "motion-layout-card");
+    assert_eq!((target.w, target.h), (160.0, 96.0), "expand commits");
+    // Mid-flight (default 150ms Out): strictly interior.
+    app.advance_frames(0.06);
+    let now = app.host().now_ms() / 1000.0;
+    let mid = app
+        .host()
+        .effective_box(card, now)
+        .expect("fence interpolates");
+    assert!(
+        mid.h > 48.0 && mid.h < 96.0,
+        "fence runs mid-flight, got {}",
+        mid.h
+    );
+    app.advance_frames(1.0);
+    app.host().with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "fence retires to zero work");
+    });
+    assert_eq!(
+        committed(&app, "motion-layout-card").h,
+        96.0,
+        "settles exact on target"
+    );
+    assert!(!app.host().has_demand(), "quiet after the fence");
+}
+
+/// Decisions 521-522 shared timeline: the expanding card (fence)
+/// and the sibling below (FLIP, same spec, same commit) track each
+/// other every frame — the card's bottom edge never crosses the
+/// sibling's visual top.
+#[test]
+fn motion_layout_shared_timeline_never_overlaps() {
+    let (app, _) = mount_clocked();
+    goto_layout(&app);
+    let card = app.node("motion-layout-card");
+    let sib = app.node("motion-layout-sib");
+    press(&app, "motion-layout-expand");
+    for _ in 0..12 {
+        app.advance_frames(1.0 / 60.0);
+        let now = app.host().now_ms() / 1000.0;
+        // Settled fences read None (the committed fallback already
+        // agrees) — the invariant holds through settle either way.
+        let card_box = app
+            .host()
+            .effective_box(card, now)
+            .or_else(|| app.host().committed_box(card))
+            .expect("card has a box");
+        let sib_box = committed(&app, "motion-layout-sib");
+        let flip_dy = app
+            .host()
+            .with_evaluator(|ev| ev.resolve_transform(sib, None, now).dy.get());
+        let card_bottom = card_box.y + card_box.h;
+        let sib_visual_top = sib_box.y + flip_dy;
+        assert!(
+            card_bottom <= sib_visual_top + 1.0,
+            "shared timeline holds (bottom {card_bottom} vs top {sib_visual_top})"
+        );
+    }
+    app.advance_frames(1.0);
+    assert!(!app.host().has_demand(), "quiet after the shared run");
+}
+
+/// Decision 521: inserting a row shifts every flagged row below it
+/// through FLIP (mid-flight offsets strictly interior), landing
+/// exact and quiet.
+#[test]
+fn motion_layout_insert_flips_rows_then_settles() {
+    let (app, _) = mount_clocked();
+    goto_layout(&app);
+    let r0 = app.node("motion-layout-r0");
+    let y0 = committed(&app, "motion-layout-r0").y;
+    press(&app, "motion-layout-add");
+    app.advance_frames(2.0 / 60.0);
+    let y1 = committed(&app, "motion-layout-r0").y;
+    assert!(y1 > y0, "insert shifts rows down");
+    app.advance_frames(0.06);
+    let now = app.host().now_ms() / 1000.0;
+    let dy = app
+        .host()
+        .with_evaluator(|ev| ev.resolve_transform(r0, None, now).dy.get());
+    assert!(
+        dy < 0.0 && dy > y0 - y1,
+        "flip offsets mid-flight, got {dy}"
+    );
+    app.advance_frames(1.0);
+    app.host().with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "flip retires to zero work");
+    });
+    assert!(!app.host().has_demand(), "quiet after the flip");
 }

@@ -459,7 +459,12 @@ pub fn Menu(ctx: &Ctx, props: &MenuProps) -> VNode {
                 } else {
                     oppa::Transform::translate(0, crate::motion::ENTER_RISE_PX)
                 })
-                .transition(oppa::Transition::enter()),
+                .transition(oppa::Transition::enter())
+                // Decision 520: dismissal fades the plate out (the
+                // portal below carries the same declaration — this
+                // entry root pins; the portal rides only if the
+                // structure inverts).
+                .exit(oppa::Transition::exit()),
         )
         .semantics(oppa::Semantics::default().label("menu"))
         .on_press(move || {
@@ -536,7 +541,16 @@ pub fn Menu(ctx: &Ctx, props: &MenuProps) -> VNode {
         }
     };
     Portal("menu-popup")
-        .style(Style::new().x(origin.0).absolute_y(origin.1).w(props.width))
+        .style(
+            Style::new()
+                .x(origin.0)
+                .absolute_y(origin.1)
+                .w(props.width)
+                // Decision 520: dismissal fade safety (the plate above
+                // pins as the removed root; this rides only if the
+                // structure inverts).
+                .exit(oppa::Transition::exit()),
+        )
         .child(list)
 }
 

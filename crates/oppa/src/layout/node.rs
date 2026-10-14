@@ -118,10 +118,72 @@ impl<'a> LayoutCtx<'a> {
                     n.pass_dirty.set(PassMask::PAINT);
                     self.stats.paint_stamped += 1;
                 }
-                n.layout = Some(want);
+                let old = n.layout.clone();
+                n.layout = Some(want.clone());
                 self.stats.boxes_changed += 1;
+                // Decisions 521-522: record opted-in moves for layout
+                // animation. First commits (`old` is `None`) mark the
+                // mount set and never animate — mounts jump.
+                match old {
+                    Some(old) => self.record_layout_move(id, old),
+                    None => {
+                        self.mounted.insert(id);
+                    }
+                }
             }
         }
+    }
+
+    /// Records one opted-in box change for layout animation (decisions
+    /// 521-522): position-only moves become FLIP candidates, size
+    /// changes become fence candidates — with loud refusals at the
+    /// authoring error. Undeclared nodes and no-op spans never record;
+    /// the host relativizes, scroll-filters, and synthesizes tracks.
+    /// Shared by every box writer (`commit_box`, `reposition`,
+    /// `set_box_h`) — moves are moves no matter which path laid them.
+    fn record_layout_move(&mut self, id: NodeId, old: LayoutBox) {
+        use crate::layout::{LayoutMove, LayoutMoveKind};
+        let style = self.style_of(id);
+        let Some(spec) = style.layout_anim else {
+            return;
+        };
+        let Some(new) = self.rec.get(id).and_then(|n| n.layout.clone()) else {
+            return;
+        };
+        if old == new {
+            return;
+        }
+        debug_assert!(
+            old.x.is_finite() && old.y.is_finite() && new.x.is_finite() && new.y.is_finite(),
+            "layout anim: non-finite box on {id:?} — NaN/Inf never animates silently"
+        );
+        // Sub-pixel equality counts as unchanged for classification
+        // (1-ulp recomputation wobble is not a move — the committed
+        // boxes stay exact either way).
+        let same = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        if same(old.w, new.w) && same(old.h, new.h) {
+            self.engine.moves.push(LayoutMove {
+                id,
+                old,
+                new,
+                spec,
+                kind: LayoutMoveKind::Flip,
+            });
+            return;
+        }
+        // Fence path: a changed axis without explicit-px is an
+        // authoring contradiction — judged on the merged span at
+        // drain time (transients revert; only final truth refuses).
+        // Text likewise refuses the fence there (per-frame shaping
+        // is out of scope — FLIP still covers these nodes' moves,
+        // which never reshape).
+        self.engine.moves.push(LayoutMove {
+            id,
+            old,
+            new,
+            spec,
+            kind: LayoutMoveKind::Fence,
+        });
     }
 
     /// Intrinsic + placed layout of one node. `given_w` is a finite width
@@ -389,14 +451,23 @@ impl<'a> LayoutCtx<'a> {
     /// 237): the subtree stays top-aligned — descendants keep their relative
     /// positions, only the outer `h` changes. Content extents and text lines
     /// are untouched (the parent's content report stays an extent, not the
-    /// container area). Panics loudly on non-finite targets.
+    /// container area). Panics loudly on non-finite targets. Opted-in
+    /// growth records a fence candidate through the shared rule below.
     pub(crate) fn set_box_h(&mut self, id: NodeId, new_h: f32) {
         if !new_h.is_finite() {
             panic!("layout: stretch target h is non-finite ({new_h})");
         }
+        let old = self.rec.get(id).and_then(|n| n.layout.clone());
         if let Some(n) = self.rec.node_mut(id) {
             if let Some(b) = n.layout.as_mut() {
                 b.h = new_h;
+            }
+        }
+        // Fresh mounts jump (the mount set above) — only growth of
+        // previously laid boxes records.
+        if let Some(old) = old {
+            if !self.mounted.contains(&id) {
+                self.record_layout_move(id, old);
             }
         }
     }
@@ -411,6 +482,9 @@ impl<'a> LayoutCtx<'a> {
     /// offsets are parent-relative and keep tracking (dropdown
     /// popups). Containers never reposition a portal directly (they
     /// skip them), so portals are only ever met as descendants here.
+    /// Opted-in nodes record FLIP candidates through the shared rule
+    /// below (position-only by construction here — old boxes snapshot
+    /// before translating, per node).
     pub(crate) fn reposition(&mut self, id: NodeId, x: f32, y: f32) {
         let (dx, dy) = match self.rec.get(id) {
             Some(n) => match &n.layout {
@@ -425,6 +499,32 @@ impl<'a> LayoutCtx<'a> {
         let dy = round_to_device_px(dy, self.dpr);
         if dx == 0.0 && dy == 0.0 {
             return;
+        }
+        // Snapshot pre-translate boxes for opted-in nodes first (the
+        // translate below overwrites them in place). Fresh mounts
+        // jump — the mount set above excludes them.
+        let mut moved: Vec<(NodeId, LayoutBox)> = Vec::new();
+        {
+            let mut stack = vec![id];
+            while let Some(cur) = stack.pop() {
+                if cur != id && self.is_viewport_portal(cur) {
+                    continue;
+                }
+                let Some(n) = self.rec.get(cur) else {
+                    continue;
+                };
+                let opted_in = !self.mounted.contains(&cur)
+                    && self
+                        .styles
+                        .get(n.style)
+                        .is_some_and(|s| s.layout_anim.is_some());
+                if opted_in {
+                    if let Some(b) = n.layout.clone() {
+                        moved.push((cur, b));
+                    }
+                }
+                stack.extend(n.children.iter().copied());
+            }
         }
         let mut stack = vec![id];
         while let Some(cur) = stack.pop() {
@@ -442,6 +542,9 @@ impl<'a> LayoutCtx<'a> {
                 }
             }
             stack.extend(kids);
+        }
+        for (cur, old) in moved {
+            self.record_layout_move(cur, old);
         }
     }
 

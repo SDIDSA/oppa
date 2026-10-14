@@ -120,7 +120,11 @@ pub fn Toast(ctx: &Ctx, props: &ToastProps) -> VNode {
                 } else {
                     oppa::Transform::translate(0, crate::motion::ENTER_RISE_PX)
                 })
-                .transition(oppa::Transition::enter()),
+                .transition(oppa::Transition::enter())
+                // Decision 520: dismissal fades out (the anchor below
+                // carries the same declaration — the removed root pins;
+                // this rides frozen under that envelope while nested).
+                .exit(oppa::Transition::exit()),
         )
         .semantics(Semantics::status().label(&props.message))
         .children([
@@ -143,7 +147,19 @@ pub fn Toast(ctx: &Ctx, props: &ToastProps) -> VNode {
             .fill_height()
             .justify_content(JustifyContent::End)
             .align_items(AlignItems::Center)
-            .pad_bottom(24),
+            .pad_bottom(24)
+            // Decision 520: the dismiss removal roots here (portal
+            // children diff to empty) — this pins the whole overlay;
+            // the card above rides frozen under the one envelope.
+            .exit(oppa::Transition::exit()),
     );
-    Portal("toast-portal").child(anchor.child(card))
+    Portal("toast-portal")
+        .style(
+            Style::new()
+                // Decision 520: dismissal fade safety (the anchor
+                // above pins as the removed root; this rides only if
+                // the structure inverts).
+                .exit(oppa::Transition::exit()),
+        )
+        .child(anchor.child(card))
 }

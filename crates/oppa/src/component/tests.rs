@@ -1444,3 +1444,1165 @@ fn pump_frames_drains_once_worlds_early() {
         assert_eq!(ev.active_count(), 0, "track retired");
     });
 }
+
+// ---------------------------------------------------------------------------
+// Decision 519: subtree-unmount instance retirement
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct RetireBranchProps {
+    cleaned: Rc<Cell<bool>>,
+    timeout_fired: Rc<Cell<usize>>,
+    interval_fired: Rc<Cell<usize>>,
+    /// The branch instance's private signal, read back every render —
+    /// re-seeds to 0 exactly when the instance is fresh (evicted +
+    /// re-allocated), and keeps the timeout-written 1 when it lingered.
+    reseeds: Rc<Cell<u32>>,
+}
+impl Props for RetireBranchProps {}
+
+fn retire_branch_comp(ctx: &Ctx, props: &RetireBranchProps) -> VNode {
+    let sticky = ctx.signal(0u32);
+    props.reseeds.set(sticky.get());
+    let c = props.cleaned.clone();
+    ctx.on_cleanup(move || {
+        c.set(true);
+    });
+    let t = props.timeout_fired.clone();
+    let tw = sticky.clone();
+    ctx.use_timeout(100.0, move || {
+        t.set(t.get() + 1);
+        tw.set(1);
+    });
+    let iv = props.interval_fired.clone();
+    ctx.use_interval(50.0, move || {
+        iv.set(iv.get() + 1);
+    });
+    crate::vnode::Div("retire-branch").build()
+}
+
+#[derive(Clone)]
+struct RetireToggleProps {
+    show: Signal<bool>,
+    branch: RetireBranchProps,
+}
+impl Props for RetireToggleProps {}
+
+fn retire_toggle_comp(ctx: &Ctx, props: &RetireToggleProps) -> VNode {
+    let mut kids = Vec::new();
+    if props.show.get() {
+        kids.push(ctx.child("RetireBranch", 1, &props.branch, retire_branch_comp));
+    }
+    crate::vnode::Div("retire-root").children(kids)
+}
+
+/// Hiding a subtree evicts its instances in the same cut: cleanups run
+/// (cancelling per-render timers), dead timers leave no horizon and
+/// never fire, and re-showing re-seeds instance state fresh.
+#[test]
+fn subtree_unmount_retires_instance_timers_and_cleanups() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let show = host.runtime().signal(true);
+    let cleaned = Rc::new(Cell::new(false));
+    let timeout_fired = Rc::new(Cell::new(0));
+    let interval_fired = Rc::new(Cell::new(0));
+    let reseeds = Rc::new(Cell::new(99));
+    let branch = RetireBranchProps {
+        cleaned: cleaned.clone(),
+        timeout_fired: timeout_fired.clone(),
+        interval_fired: interval_fired.clone(),
+        reseeds: reseeds.clone(),
+    };
+    host.mount(
+        "RetireToggle",
+        RetireToggleProps {
+            show: show.clone(),
+            branch,
+        },
+        retire_toggle_comp,
+    );
+    host.run_until_idle();
+    assert_eq!(reseeds.get(), 0, "fresh branch seeds zero");
+    assert!(
+        host.next_timer_due_ms(host.now_ms()).is_some(),
+        "branch timers armed while shown"
+    );
+    // Prove the timers are alive before hiding (both fire while shown).
+    clock.advance(0.2);
+    assert!(
+        host.tick_timers(host.now_ms()) >= 1,
+        "timers fire while shown"
+    );
+    assert_eq!(timeout_fired.get(), 1, "timeout fired once while shown");
+    assert!(interval_fired.get() >= 1, "interval fired while shown");
+    let interval_at_hide = interval_fired.get();
+    // Hide: the whole branch subtree unmounts.
+    show.set(false);
+    host.run_until_idle();
+    assert!(cleaned.get(), "subtree removal runs branch cleanups");
+    assert_eq!(
+        host.next_timer_due_ms(host.now_ms()),
+        None,
+        "dead timers leave no wake horizon"
+    );
+    clock.advance(10.0);
+    assert_eq!(host.tick_timers(host.now_ms()), 0, "dead timers never fire");
+    assert_eq!(timeout_fired.get(), 1, "timeout never refires");
+    assert_eq!(
+        interval_fired.get(),
+        interval_at_hide,
+        "interval silenced by removal"
+    );
+    assert!(!host.has_demand(), "removal leaves zero scheduled work");
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "no tracks survive removal");
+    });
+    // Re-show: the branch owns a fresh instance (stale state gone).
+    show.set(true);
+    host.run_until_idle();
+    assert_eq!(
+        reseeds.get(),
+        0,
+        "re-shown branch re-seeds — the old instance was evicted"
+    );
+    assert!(
+        host.next_timer_due_ms(host.now_ms()).is_some(),
+        "re-shown branch re-arms its timers"
+    );
+}
+
+#[derive(Clone)]
+struct RetireMotionProps {
+    show: Signal<bool>,
+    lit: Signal<bool>,
+}
+impl Props for RetireMotionProps {}
+
+fn retire_motion_branch(_ctx: &Ctx, props: &RetireMotionProps) -> VNode {
+    // Non-black endpoints (pure 0x000000 reads TRANSPARENT and skips
+    // paint — never a tween endpoint, by doctrine).
+    let bg = if props.lit.get() {
+        crate::style::Color(0x22_66_CC)
+    } else {
+        crate::style::Color(0x22_22_22)
+    };
+    crate::vnode::Div("retire-card")
+        .style(
+            Style::new()
+                .size(100, 40)
+                .bg(bg)
+                .transition(Transition::new(400, Ease::Linear)),
+        )
+        .build()
+}
+
+fn retire_motion_root(ctx: &Ctx, props: &RetireMotionProps) -> VNode {
+    let mut kids = Vec::new();
+    if props.show.get() {
+        kids.push(ctx.child("RetireCard", 7, props, retire_motion_branch));
+    }
+    crate::vnode::Div("retire-motion-root").children(kids)
+}
+
+/// Removing a subtree mid-flight retires its live track: the evaluator
+/// drains to zero scheduled work and nothing restarts once time flows
+/// past the tween (the round-1 retirement the exit-deferral round
+/// builds on — proven here so a leak cannot hide behind it).
+#[test]
+fn subtree_unmount_retires_midflight_track() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let show = host.runtime().signal(true);
+    let lit = host.runtime().signal(false);
+    host.mount(
+        "RetireMotion",
+        RetireMotionProps {
+            show: show.clone(),
+            lit: lit.clone(),
+        },
+        retire_motion_root,
+    );
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "retire-card")
+        .into_iter()
+        .next()
+        .expect("card retained while shown");
+    // Start a tween, then hide on the next commit with the clock frozen
+    // (mid-flight — never tap/run_until_idle near live tracks).
+    lit.set(true);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert!(!ev.is_settled(card), "tween live mid-flight");
+    });
+    show.set(false);
+    host.run_until_idle();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "removal retires the mid-flight track");
+    });
+    assert!(!host.has_demand(), "removal leaves zero scheduled work");
+    assert!(
+        crate::find_retained_by_debug(&host, "retire-card").is_empty(),
+        "card node retired"
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "nothing restarts past the tween");
+    });
+    assert!(!host.has_demand(), "still quiet past the tween");
+}
+
+#[derive(Clone)]
+struct SwapBranchProps {
+    cleaned: Rc<Cell<bool>>,
+    fired: Rc<Cell<usize>>,
+    debug: &'static str,
+}
+impl Props for SwapBranchProps {}
+
+fn swap_branch_comp(ctx: &Ctx, props: &SwapBranchProps) -> VNode {
+    let c = props.cleaned.clone();
+    ctx.on_cleanup(move || {
+        c.set(true);
+    });
+    let f = props.fired.clone();
+    ctx.use_timeout(100.0, move || {
+        f.set(f.get() + 1);
+    });
+    // Same tag, no slot key on either side: the flip recycles this
+    // node in place (no Remove op — ownership transfers instead).
+    crate::vnode::Div(props.debug).build()
+}
+
+#[derive(Clone)]
+struct SwapToggleProps {
+    flipped: Signal<bool>,
+    a: SwapBranchProps,
+    b: SwapBranchProps,
+}
+impl Props for SwapToggleProps {}
+
+fn swap_toggle_comp(ctx: &Ctx, props: &SwapToggleProps) -> VNode {
+    let branch = if props.flipped.get() {
+        ctx.child("SwapB", 2, &props.b, swap_branch_comp)
+    } else {
+        ctx.child("SwapA", 1, &props.a, swap_branch_comp)
+    };
+    crate::vnode::Div("swap-root").child(branch)
+}
+
+/// Slot-keyed recycling that re-homes a survivor under a new owner
+/// (no `Remove` op) still retires the displaced instance: same node
+/// id across the flip, old cleanups run, the old timer never fires
+/// while the new owner's timer does.
+#[test]
+fn recycled_slot_retires_displaced_instance() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let flipped = host.runtime().signal(false);
+    let a_cleaned = Rc::new(Cell::new(false));
+    let a_fired = Rc::new(Cell::new(0));
+    let b_cleaned = Rc::new(Cell::new(false));
+    let b_fired = Rc::new(Cell::new(0));
+    host.mount(
+        "SwapToggle",
+        SwapToggleProps {
+            flipped: flipped.clone(),
+            a: SwapBranchProps {
+                cleaned: a_cleaned.clone(),
+                fired: a_fired.clone(),
+                debug: "swap-a",
+            },
+            b: SwapBranchProps {
+                cleaned: b_cleaned.clone(),
+                fired: b_fired.clone(),
+                debug: "swap-b",
+            },
+        },
+        swap_toggle_comp,
+    );
+    host.run_until_idle();
+    let before = crate::find_retained_by_debug(&host, "swap-a")
+        .into_iter()
+        .next()
+        .expect("side A retained");
+    flipped.set(true);
+    host.run_until_idle();
+    let after = crate::find_retained_by_debug(&host, "swap-b")
+        .into_iter()
+        .next()
+        .expect("side B retained");
+    assert_eq!(
+        before, after,
+        "slot recycled in place — no remove/add across the flip"
+    );
+    assert!(a_cleaned.get(), "displaced instance cleanups run");
+    assert!(!b_cleaned.get(), "surviving instance untouched");
+    clock.advance(10.0);
+    host.tick_timers(host.now_ms());
+    assert_eq!(a_fired.get(), 0, "displaced timer never fires");
+    assert_eq!(b_fired.get(), 1, "surviving timer fires exactly once");
+    assert!(!host.has_demand(), "flip leaves zero scheduled work");
+}
+
+// ---------------------------------------------------------------------------
+// Decision 520: exit-deferral (dismissals fade instead of snapping)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct ExitBranchProps {
+    cleaned: Rc<Cell<bool>>,
+    interval_fired: Rc<Cell<usize>>,
+    pressed: Rc<Cell<usize>>,
+}
+impl Props for ExitBranchProps {}
+
+fn exit_branch_comp(ctx: &Ctx, props: &ExitBranchProps) -> VNode {
+    let c = props.cleaned.clone();
+    ctx.on_cleanup(move || {
+        c.set(true);
+    });
+    let iv = props.interval_fired.clone();
+    ctx.use_interval(50.0, move || {
+        iv.set(iv.get() + 1);
+    });
+    let p = props.pressed.clone();
+    // Non-black fill (pure 0x000000 reads TRANSPARENT and skips paint
+    // — never a tween/fill endpoint, by doctrine).
+    crate::vnode::Div("exit-branch")
+        .style(
+            Style::new()
+                .size(100, 40)
+                .bg(crate::style::Color(0x22_66_CC))
+                .exit(Transition::exit()),
+        )
+        .on_press(move || {
+            p.set(p.get() + 1);
+        })
+        .build()
+}
+
+#[derive(Clone)]
+struct ExitToggleProps {
+    show: Signal<bool>,
+    branch: ExitBranchProps,
+}
+impl Props for ExitToggleProps {}
+
+fn exit_toggle_comp(ctx: &Ctx, props: &ExitToggleProps) -> VNode {
+    let mut kids = Vec::new();
+    if props.show.get() {
+        kids.push(ctx.child("ExitBranch", 1, &props.branch, exit_branch_comp));
+    }
+    crate::vnode::Div("exit-root").children(kids)
+}
+
+struct ExitRig {
+    host: ComponentHost,
+    clock: Rc<MockClock>,
+    show: Signal<bool>,
+    cleaned: Rc<Cell<bool>>,
+    interval_fired: Rc<Cell<usize>>,
+    pressed: Rc<Cell<usize>>,
+}
+
+fn exit_host() -> ExitRig {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let show = host.runtime().signal(true);
+    let cleaned = Rc::new(Cell::new(false));
+    let interval_fired = Rc::new(Cell::new(0));
+    let pressed = Rc::new(Cell::new(0));
+    host.mount(
+        "ExitToggle",
+        ExitToggleProps {
+            show: show.clone(),
+            branch: ExitBranchProps {
+                cleaned: cleaned.clone(),
+                interval_fired: interval_fired.clone(),
+                pressed: pressed.clone(),
+            },
+        },
+        exit_toggle_comp,
+    );
+    host.run_until_idle();
+    ExitRig {
+        host,
+        clock,
+        show,
+        cleaned,
+        interval_fired,
+        pressed,
+    }
+}
+
+/// Dismissal pins the removed subtree and fades it (mid-exit opacity
+/// strictly interior on the retired id), then releases to zero work —
+/// while the branch instance and its timers outlive the removal
+/// through the exit (no leak through the 519 retirement) and retire
+/// at exit end.
+#[test]
+fn exit_defers_fade_then_releases_and_sweeps() {
+    let rig = exit_host();
+    let (host, clock, show, cleaned, interval_fired) = (
+        rig.host,
+        rig.clock,
+        rig.show,
+        rig.cleaned,
+        rig.interval_fired,
+    );
+    let card = crate::find_retained_by_debug(&host, "exit-branch")
+        .into_iter()
+        .next()
+        .expect("branch retained while shown");
+    show.set(false);
+    host.run_once();
+    // Pinned past removal: the arena dropped the node but the exit
+    // tracks it.
+    assert!(
+        crate::find_retained_by_debug(&host, "exit-branch").is_empty(),
+        "branch unmounts on hide"
+    );
+    host.with_evaluator(|ev| {
+        assert!(ev.exit_count() >= 1, "exit pinned");
+    });
+    // Mid-exit: the ghost fades (frozen clock + bounded pumps only —
+    // an idle pump would spin on the live exit, the M8 rule).
+    clock.advance(0.09);
+    host.run_once();
+    let now = clock.get();
+    host.with_evaluator(|ev| {
+        let op = ev.resolve_opacity(card, 1.0, now);
+        assert!(op > 0.0 && op < 1.0, "ghost fades mid-exit, got {op}");
+    });
+    // The branch instance outlives its removal through the exit (its
+    // timer fires — the 519 sweep exempts deferred owners).
+    assert_eq!(
+        host.tick_timers(host.now_ms()),
+        1,
+        "branch timer fires mid-exit"
+    );
+    assert_eq!(interval_fired.get(), 1);
+    assert!(!cleaned.get(), "cleanups wait for exit end");
+    // Past the 180ms exit: release + orphan sweep to zero work.
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(cleaned.get(), "cleanups run at exit end");
+    assert_eq!(
+        host.next_timer_due_ms(host.now_ms()),
+        None,
+        "dead timers leave no horizon"
+    );
+    assert_eq!(host.tick_timers(host.now_ms()), 0, "dead timers never fire");
+    assert_eq!(interval_fired.get(), 1, "interval silenced after exit");
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.exit_count(), 0, "exits released");
+        assert_eq!(ev.active_count(), 0, "zero scheduled tracks");
+    });
+    assert!(!host.has_demand(), "quiet after the exit");
+}
+
+/// The fading ghost takes no input: presses at its old button box
+/// fall through without invoking (hit-test walks the live arena —
+/// retired ids never hit, by construction).
+#[test]
+fn exit_ghost_takes_no_input() {
+    let rig = exit_host();
+    let (host, clock, show, pressed) = (rig.host, rig.clock, rig.show, rig.pressed);
+    let card = crate::find_retained_by_debug(&host, "exit-branch")
+        .into_iter()
+        .next()
+        .expect("branch retained while shown");
+    let b = host.committed_box(card).expect("branch laid out");
+    let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+    show.set(false);
+    host.run_once();
+    clock.advance(0.09);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert!(ev.exit_count() >= 1, "exit live");
+    });
+    // Press squarely where the button painted: the ghost ignores it.
+    host.inject_input(crate::input::InputEvent::pointer_down(cx, cy));
+    host.inject_input(crate::input::InputEvent::pointer_up(cx, cy));
+    clock.advance(0.09);
+    host.run_once();
+    assert_eq!(pressed.get(), 0, "ghost press never invokes");
+    assert!(host.focused_node().is_none(), "ghost press focuses nothing");
+    // The exit still completes to quiet afterwards.
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after the exit");
+}
+
+/// Re-showing while the exit is live cancels the ghost: fresh paint
+/// owns the slot (same owner, same label), the snapshot releases,
+/// and the live subtree paints full opacity with its timers re-armed.
+#[test]
+fn exit_reshow_cancels_ghost() {
+    let rig = exit_host();
+    let (host, clock, show) = (rig.host, rig.clock, rig.show);
+    show.set(false);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert!(ev.exit_count() >= 1, "exit live");
+    });
+    // Re-show before the fade lands: cancel, never crossfade.
+    show.set(true);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.exit_count(), 0, "re-show releases the ghost");
+        assert_eq!(ev.active_count(), 0, "no tracks left");
+    });
+    assert!(
+        host.exit_snapshots().is_empty(),
+        "snapshots released on cancel"
+    );
+    let card = crate::find_retained_by_debug(&host, "exit-branch")
+        .into_iter()
+        .next()
+        .expect("branch live again");
+    let now = clock.get();
+    host.with_evaluator(|ev| {
+        assert_eq!(
+            ev.resolve_opacity(card, 0.0, now),
+            1.0,
+            "live subtree paints full opacity"
+        );
+    });
+    assert!(
+        host.next_timer_due_ms(host.now_ms()).is_some(),
+        "re-shown branch re-arms its timer"
+    );
+    // Settles quiet afterwards (no half-released ghost).
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after re-show");
+}
+
+/// Loops never defer: removing a subtree with a live loop track and
+/// an exit declaration refuses loudly (cancel first or drop the
+/// declaration — never a silent snap).
+#[test]
+#[should_panic(expected = "never defers")]
+fn exit_loop_refuses_loudly() {
+    use crate::style::{KeyframeMode, KeyframeStop};
+    use crate::vnode::Div;
+    #[derive(Clone)]
+    struct LoopExitProps {
+        on: Signal<bool>,
+        show: Signal<bool>,
+    }
+    impl Props for LoopExitProps {}
+    fn loop_exit_branch(_ctx: &Ctx, _: &LoopExitProps) -> VNode {
+        Div("loop-exit-branch").build()
+    }
+    fn loop_exit_root(ctx: &Ctx, props: &LoopExitProps) -> VNode {
+        if !props.show.get() {
+            // Incompatible root (Hole, never a diffable Element) so
+            // hiding removes the whole wrapper subtree with the loop
+            // track live on its declaring entry root.
+            return VNode::Hole;
+        }
+        // Live loop (keyframes Loop mode) under an exit
+        // declaration: the deferral must refuse, never fade.
+        let spinning = Style::new()
+            .size(40, 40)
+            .opacity(Some(if props.on.get() { 1.0 } else { 0.35 }))
+            .transition(Transition::new(400, Ease::InOut))
+            .keyframes(
+                Keyframes::new(vec![
+                    KeyframeStop::new(200, Ease::Linear).opacity(Some(0.2)),
+                    KeyframeStop::new(200, Ease::Linear).opacity(Some(1.0)),
+                ])
+                .mode(KeyframeMode::Loop),
+            )
+            .exit(Transition::exit());
+        // The style rides the wrapper (the removed entry root
+        // declares the exit): render it around the child.
+        let inner = ctx.child(
+            "LoopExit",
+            3,
+            &LoopExitProps {
+                on: props.on.clone(),
+                show: props.show.clone(),
+            },
+            loop_exit_branch,
+        );
+        Div("loop-exit-wrap").style(spinning).child(inner)
+    }
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let on = host.runtime().signal(false);
+    let show = host.runtime().signal(true);
+    host.mount(
+        "LoopExit",
+        LoopExitProps {
+            on: on.clone(),
+            show: show.clone(),
+        },
+        loop_exit_root,
+    );
+    host.run_until_idle();
+    on.set(true);
+    clock.advance(1.0 / 60.0);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "loop track live");
+    });
+    // Dismiss with the loop running: loud refusal, never a fade.
+    show.set(false);
+    host.run_once();
+}
+
+// ---------------------------------------------------------------------------
+// Decisions 521-522: layout animation (FLIP for position, fence for size)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct FenceCardProps {
+    wide: Signal<bool>,
+}
+impl Props for FenceCardProps {}
+
+fn fence_card_comp(ctx: &Ctx, props: &FenceCardProps) -> VNode {
+    let _ = ctx.signal(0u32);
+    // Non-black fill (pure 0x000000 reads TRANSPARENT and skips paint
+    // — never a fill endpoint, by doctrine).
+    let w = if props.wide.get() { 200.0 } else { 100.0 };
+    crate::vnode::Div("fence-card")
+        .style(
+            Style::new()
+                .size(w, 50.0)
+                .bg(crate::style::Color(0x22_66_CC))
+                .layout_anim(Transition::new(200, Ease::Linear)),
+        )
+        .build()
+}
+
+/// Fence interpolates explicit-px size mid-flight, lands exact on
+/// the committed target, and retires to zero work (no new demand
+/// source — quiescence reads the one number).
+#[test]
+fn fence_interpolates_size_then_settles_quiet() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    host.mount(
+        "Fence",
+        FenceCardProps { wide: wide.clone() },
+        fence_card_comp,
+    );
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "fence-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    wide.set(true);
+    host.run_once();
+    // Committed box jumps at once (engine truth); the fence lags it.
+    host.with_evaluator(|ev| {
+        assert!(ev.active_count() >= 1, "fence track live");
+    });
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    let mid = host
+        .effective_box(card, now)
+        .expect("fence interpolates mid-flight");
+    assert!(
+        mid.w > 100.0 && mid.w < 200.0,
+        "fence runs mid-flight, got {}",
+        mid.w
+    );
+    assert!(
+        host.committed_box(card).expect("committed").w == 200.0,
+        "committed box already at target"
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "fence retires to zero work");
+    });
+    assert!(!host.has_demand(), "quiet after the fence");
+}
+
+#[derive(Clone)]
+struct FlipListProps {
+    extra: Signal<bool>,
+}
+impl Props for FlipListProps {}
+
+fn flip_list_comp(ctx: &Ctx, props: &FlipListProps) -> VNode {
+    let _ = ctx.signal(0u32);
+    let anim = Transition::new(200, Ease::Linear);
+    let mut kids = Vec::new();
+    if props.extra.get() {
+        kids.push(
+            crate::vnode::Div("flip-extra")
+                .style(Style::new().size(100.0, 20.0))
+                .build(),
+        );
+    }
+    for (i, name) in ["flip-a", "flip-b"].into_iter().enumerate() {
+        kids.push(
+            crate::vnode::Div(name)
+                .key(i as u64)
+                .style(Style::new().size(100.0, 20.0).layout_anim(anim))
+                .build(),
+        );
+    }
+    crate::vnode::Column::new().children(kids)
+}
+
+/// Inserting a sibling shifts flagged rows down through FLIP
+/// (mid-flight offsets strictly interior), landing exact and quiet.
+#[test]
+fn flip_moves_shifted_rows_then_settles_quiet() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let extra = host.runtime().signal(false);
+    host.mount(
+        "Flip",
+        FlipListProps {
+            extra: extra.clone(),
+        },
+        flip_list_comp,
+    );
+    host.run_until_idle();
+    let a = crate::find_retained_by_debug(&host, "flip-a")
+        .into_iter()
+        .next()
+        .expect("row a retained");
+    let y0 = host.committed_box(a).expect("row laid out").y;
+    extra.set(true);
+    host.run_once();
+    let y1 = host.committed_box(a).expect("row shifted").y;
+    assert!(y1 > y0, "insert shifts the row down");
+    // Mid-flight: the row paints above its committed box (offset
+    // decays to zero — frozen clock + bounded pumps only).
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    let dy = host.with_evaluator(|ev| ev.resolve_transform(a, None, now).dy.get());
+    assert!(
+        dy < 0.0 && dy > y0 - y1,
+        "flip offsets mid-flight, got {dy} for a {}px move",
+        y1 - y0
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "flip retires to zero work");
+    });
+    assert!(!host.has_demand(), "quiet after the flip");
+}
+
+/// A child riding its moving parent records zero (transforms
+/// compose down every backend — absolute deltas would double-apply).
+/// Exactly one flip track exists (the parent's); the child resolves
+/// identity while painting parent-composed.
+#[test]
+fn flip_parent_relative_records_zero_for_riding_child() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let dx = host.runtime().signal(0.0f32);
+    #[derive(Clone)]
+    struct ShiftProps {
+        dx: Signal<f32>,
+    }
+    impl Props for ShiftProps {}
+    fn shift_comp(ctx: &Ctx, props: &ShiftProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        let anim = Transition::new(200, Ease::Linear);
+        let inner = ctx.child(
+            "ShiftKid",
+            1,
+            &ShiftProps {
+                dx: props.dx.clone(),
+            },
+            shift_kid_comp,
+        );
+        // Static root (roots pin at the origin — the moving wrap
+        // nests one level down so `.x()` actually displaces it).
+        let wrap = crate::vnode::Div("shift-wrap")
+            .style(Style::new().x(props.dx.get()).layout_anim(anim))
+            .child(inner);
+        crate::vnode::Div("shift-root").child(wrap)
+    }
+    fn shift_kid_comp(ctx: &Ctx, _: &ShiftProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        crate::vnode::Div("shift-kid")
+            .style(
+                Style::new()
+                    .size(40.0, 20.0)
+                    .layout_anim(Transition::new(200, Ease::Linear)),
+            )
+            .build()
+    }
+    host.mount("Shift", ShiftProps { dx: dx.clone() }, shift_comp);
+    host.run_until_idle();
+    let kid = crate::find_retained_by_debug(&host, "shift-kid")
+        .into_iter()
+        .next()
+        .expect("kid retained");
+    dx.set(50.0);
+    host.run_once();
+    // Exactly the parent's track: the riding child records zero
+    // (zero offsets snap — no track).
+    host.with_evaluator(|ev| {
+        let live = ev.live_nodes();
+        assert_eq!(live.len(), 1, "one flip track, got {live:?}");
+    });
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    host.with_evaluator(|ev| {
+        assert!(
+            ev.resolve_transform(kid, None, now).is_identity(),
+            "child carries no offset of its own"
+        );
+    });
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after the shift");
+}
+
+#[derive(Clone)]
+struct ScrollRowProps {
+    off: Option<crate::ScrollOffset>,
+}
+impl Props for ScrollRowProps {}
+
+fn scroll_area_comp(ctx: &Ctx, _: &ScrollRowProps) -> VNode {
+    let _ = ctx.signal(0u32);
+    // Owner offset (the VirtualList shape — the body owns the
+    // offset, rows position from it, no explicit bind).
+    let off = ctx.scroll_offset();
+    let row = ctx.child(
+        "ScrollRow",
+        1,
+        &ScrollRowProps {
+            off: Some(off.clone()),
+        },
+        scroll_row_comp,
+    );
+    crate::vnode::ScrollArea("scroll-box")
+        .style(Style::new().size(200.0, 200.0))
+        .on_scroll(|| {})
+        .child(row)
+}
+
+fn scroll_row_comp(ctx: &Ctx, props: &ScrollRowProps) -> VNode {
+    let _ = ctx.signal(0u32);
+    let off = props.off.clone().expect("container passes its offset");
+    crate::vnode::Div("scroll-row")
+        .style(
+            Style::new()
+                .size(180.0, 30.0)
+                .absolute_y(10.0 - off.get())
+                .layout_anim(Transition::new(200, Ease::Linear)),
+        )
+        .build()
+}
+
+/// Scroll-driven moves never ease (decision 521): the flagged row
+/// jumps with the offset while recording nothing.
+#[test]
+fn flip_scroll_driven_moves_suppress() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    host.mount("ScrollAnim", ScrollRowProps { off: None }, scroll_area_comp);
+    host.run_until_idle();
+    let row = crate::find_retained_by_debug(&host, "scroll-row")
+        .into_iter()
+        .next()
+        .expect("row retained");
+    let y0 = host.committed_box(row).expect("row laid out").y;
+    // Drive the owner offset directly (same value change a wheel
+    // feed produces — the suppression keys on change, not source).
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "idle has no tracks");
+    });
+    // Reach the owner offset through the instance (the row reads the
+    // container's own signal — bump it like a feed would).
+    let bumped = host.instance_scroll(1).expect("owner offset exists");
+    bumped.set(100.0);
+    host.run_once();
+    let y1 = host.committed_box(row).expect("row scrolled").y;
+    assert!(
+        (y0 - y1 - 100.0).abs() < 1e-3,
+        "offset moves the row, {y0} -> {y1}"
+    );
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "scroll moves record nothing");
+    });
+    assert!(!host.has_demand(), "quiet after the scroll");
+}
+
+/// Mid-flight fences retarget from the live box (decision 522 —
+/// restart-from-current, never cancel, never jump).
+#[test]
+fn fence_mid_flight_retargets_from_live() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    host.mount(
+        "Fence2",
+        FenceCardProps { wide: wide.clone() },
+        fence_card_comp,
+    );
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "fence-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    wide.set(true);
+    host.run_once();
+    clock.advance(0.1);
+    host.run_once();
+    let now = clock.get();
+    let mid = host.effective_box(card, now).expect("fence live").w;
+    assert!(mid > 100.0 && mid < 200.0, "mid-flight, got {mid}");
+    // Retarget mid-flight (same signal shape, new target): shrink
+    // back while the grow is live — continuity, no jump.
+    wide.set(false);
+    host.run_once();
+    clock.advance(0.05);
+    host.run_once();
+    let now = clock.get();
+    let after = host.effective_box(card, now).expect("retarget live").w;
+    assert!(
+        after < mid,
+        "retarget heads back from the live box, {mid} -> {after}"
+    );
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after the retarget");
+    assert_eq!(
+        host.committed_box(card).expect("card").w,
+        100.0,
+        "lands on the latest target"
+    );
+}
+
+/// Mutating a sibling mid-flight retargets without dirt leakage
+/// (decision 522): generation bumps stay bounded to genuine commits
+/// (no per-frame layout churn), the fence lands exact, and the tree
+/// goes quiet.
+#[test]
+fn fence_sibling_mutation_stays_dirt_bounded() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    #[derive(Clone)]
+    struct PairProps {
+        wide_card: Signal<bool>,
+        wide_sib: Signal<bool>,
+    }
+    impl Props for PairProps {}
+    fn pair_comp(ctx: &Ctx, props: &PairProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        let anim = Transition::new(200, Ease::Linear);
+        let card = crate::vnode::Div("dirt-card")
+            .style(
+                Style::new()
+                    .size(if props.wide_card.get() { 200.0 } else { 100.0 }, 50.0)
+                    .layout_anim(anim),
+            )
+            .build();
+        let sib = crate::vnode::Div("dirt-sib")
+            .style(Style::new().size(if props.wide_sib.get() { 150.0 } else { 80.0 }, 50.0))
+            .build();
+        crate::vnode::Column::new().children(vec![card, sib])
+    }
+    let wide_card = host.runtime().signal(false);
+    let wide_sib = host.runtime().signal(false);
+    host.mount(
+        "Pair",
+        PairProps {
+            wide_card: wide_card.clone(),
+            wide_sib: wide_sib.clone(),
+        },
+        pair_comp,
+    );
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "dirt-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    let gen0 = host.layout_generation();
+    wide_card.set(true);
+    host.run_once();
+    let gen1 = host.layout_generation();
+    assert_eq!(gen1, gen0 + 1, "expand commits once");
+    // Idle frames bump nothing (no per-frame layout churn).
+    for _ in 0..3 {
+        clock.advance(1.0 / 60.0);
+        host.run_once();
+    }
+    assert_eq!(
+        host.layout_generation(),
+        gen1,
+        "mid-flight frames run no layout"
+    );
+    // Sibling mutates mid-flight: one more commit, then quiet.
+    wide_sib.set(true);
+    host.run_once();
+    assert_eq!(host.layout_generation(), gen1 + 1, "sibling commits once");
+    clock.advance(1.0);
+    host.run_until_idle();
+    assert!(!host.has_demand(), "quiet after both settle");
+    assert_eq!(
+        host.committed_box(card).expect("card").w,
+        200.0,
+        "fence lands on its target"
+    );
+}
+
+/// An auto-sized box that changes size under a layout_anim
+/// declaration refuses loudly (no defined endpoint rule — the
+/// clamp-panic precedent, judged on final spans).
+#[test]
+#[should_panic(expected = "without explicit h")]
+fn fence_auto_height_refuses_loudly() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let tall = host.runtime().signal(false);
+    #[derive(Clone)]
+    struct AutoProps {
+        tall: Signal<bool>,
+    }
+    impl Props for AutoProps {}
+    fn auto_comp(ctx: &Ctx, props: &AutoProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        // The kid snaps (explicit, undeclared); the inner auto
+        // height follows content — the refusal case. (Nested: mount
+        // roots take the viewport height, so the auto box nests one
+        // level down.)
+        let kid = crate::vnode::Div("auto-kid")
+            .style(Style::new().size(50.0, if props.tall.get() { 60.0 } else { 30.0 }))
+            .build();
+        let inner = crate::vnode::Div("auto-box")
+            .style(
+                Style::new()
+                    .w(200.0)
+                    .layout_anim(Transition::new(200, Ease::Linear)),
+            )
+            .child(kid);
+        crate::vnode::Div("auto-root")
+            .style(Style::new().size(400.0, 400.0))
+            .child(inner)
+    }
+    host.mount("Auto", AutoProps { tall: tall.clone() }, auto_comp);
+    host.run_until_idle();
+    tall.set(true);
+    host.run_once();
+}
+
+/// A size change on a refused node jumps entirely (decision 521 —
+/// mixed move+resize on a refused node never half-animates). This
+/// test documents the jump through an undeclared twin: same tree
+/// without the declaration snaps to the same end state.
+#[test]
+fn mixed_move_resize_without_declaration_snaps() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    #[derive(Clone)]
+    struct PlainProps {
+        wide: Signal<bool>,
+    }
+    impl Props for PlainProps {}
+    fn plain_comp(ctx: &Ctx, props: &PlainProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        // No layout_anim anywhere: every layout change applies
+        // instantly, exactly as before decisions 521-522.
+        let w = if props.wide.get() { 200.0 } else { 100.0 };
+        crate::vnode::Div("plain-card")
+            .style(Style::new().size(w, 50.0))
+            .build()
+    }
+    host.mount("Plain", PlainProps { wide: wide.clone() }, plain_comp);
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "plain-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    wide.set(true);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "undeclared moves create no tracks");
+    });
+    assert_eq!(
+        host.committed_box(card).expect("card").w,
+        200.0,
+        "undeclared resize snaps to target"
+    );
+    assert!(!host.has_demand(), "quiet");
+    let _ = clock;
+}
+
+/// Stamped commits snap layout too (Q5 covers layout like exits
+/// and tweens): a binding edge plus a box move in one commit
+/// creates no tracks — values jump.
+#[test]
+fn stamped_layout_moves_snap() {
+    let clock = Rc::new(MockClock::new());
+    let host = ComponentHost::with_clock(clock.clone());
+    host.set_viewport(800.0, 600.0);
+    let wide = host.runtime().signal(false);
+    #[derive(Clone)]
+    struct StampProps {
+        wide: Signal<bool>,
+    }
+    impl Props for StampProps {}
+    fn stamp_comp(ctx: &Ctx, props: &StampProps) -> VNode {
+        let _ = ctx.signal(0u32);
+        // Binding edge on the same signal that grows the card: one
+        // commit carries both the stamp and the move. The memo must
+        // be READ (unevaluated memos record no dependency edges, so
+        // an unread binding never fires — pull semantics, §9.1).
+        let wide = props.wide.clone();
+        let _ = ctx.binding(move || wide.get()).read();
+        let w = if props.wide.get() { 200.0 } else { 100.0 };
+        crate::vnode::Div("stamp-card")
+            .style(
+                Style::new()
+                    .size(w, 50.0)
+                    .layout_anim(Transition::new(200, Ease::Linear)),
+            )
+            .build()
+    }
+    host.mount("Stamp", StampProps { wide: wide.clone() }, stamp_comp);
+    host.run_until_idle();
+    let card = crate::find_retained_by_debug(&host, "stamp-card")
+        .into_iter()
+        .next()
+        .expect("card retained");
+    wide.set(true);
+    host.run_once();
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "stamped moves create no tracks");
+    });
+    assert_eq!(
+        host.committed_box(card).expect("card").w,
+        200.0,
+        "stamped resize jumps to target"
+    );
+    assert!(!host.has_demand(), "quiet");
+    let _ = clock;
+}

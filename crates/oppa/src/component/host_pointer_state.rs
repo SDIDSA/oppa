@@ -68,7 +68,7 @@ impl ComponentHost {
             .ops
             .iter()
             .filter_map(|op| match op {
-                DiffOp::Remove { id } => Some(*id),
+                DiffOp::Remove { id, .. } => Some(*id),
                 _ => None,
             })
             .collect();
