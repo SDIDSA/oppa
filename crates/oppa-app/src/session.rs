@@ -191,6 +191,11 @@ impl SceneSession {
         let handles = self.host.focused_handles_paint();
         pres.set_handles(handles);
         self.builder.set_handles(handles);
+        // Decision 520: deferred exits ride every committed frame —
+        // the builder's exit layer replays pinned snapshots while
+        // their fade tracks run (empty for exit-free trees — the
+        // pre-520 plan, byte-identical).
+        self.builder.set_exits(self.host.exit_snapshots());
         // Theme contract round: the build theme + page chrome follow
         // the host mode every frame, and a toggled page background
         // refits the presenter's surfaces before painting (same
@@ -212,9 +217,17 @@ impl SceneSession {
             pres.refit(&self.host, w, h, want_bg)?;
         }
         let t_staged = profile.then(std::time::Instant::now);
-        let plan = self
-            .host
-            .with_retained_mut(|rec, styles| self.builder.build_full(rec, styles));
+        // Decision 516: the plan paints TIME-evaluated values (live
+        // interpolations mid-flight — the retained build showed only
+        // targets, so every tween jumped start→end in one present).
+        // Off-interpolation the overlay is the identity (same walk,
+        // same masks, same ops as the raw build — quiet trees paint
+        // byte-identical pixels).
+        let now = self.host.runtime().now_secs();
+        let plan = self.host.with_retained_mut(|rec, styles| {
+            self.host
+                .with_evaluator(|ev| self.builder.build_full_evaluated(rec, styles, ev, now))
+        });
         let t_built = profile.then(std::time::Instant::now);
         self.last_caret_shown = self.builder.caret().is_some();
         self.last_plan = Some(plan.clone());
@@ -255,7 +268,9 @@ impl SceneSession {
     /// when settled-quiet (never a spin — a quiet poll schedules
     /// nothing). Paint failures are loud `Err`s like the loop rule.
     pub fn poll_blink<P: ScenePresenter + ?Sized>(&mut self, pres: &mut P) -> Result<bool, String> {
-        self.host.run_until_idle();
+        // Decision 515: bounded (a live loop elsewhere must never
+        // freeze the blink tick).
+        self.host.pump_frames(crate::PUMP_TICK_FRAMES);
         if self.caret_overlay_dirty() {
             self.repaint(pres)?;
             Ok(true)
@@ -275,7 +290,9 @@ impl SceneSession {
         let now = self.host.now_ms();
         let fired = self.host.tick_timers(now);
         if fired > 0 {
-            self.host.run_until_idle();
+            // Decision 515: bounded (timer callbacks may start
+            // loops — the tick must still return).
+            self.host.pump_frames(crate::PUMP_TICK_FRAMES);
             self.repaint(pres)?;
         }
         Ok(fired)
@@ -303,7 +320,9 @@ impl SceneSession {
         self.host
             .set_viewport(w as f32 / self.dpr, h as f32 / self.dpr);
         pres.refit(&self.host, w, h, self.page_bg)?;
-        self.host.run_until_idle();
+        // Decision 515: bounded (input-path cap — resize reflows
+        // the world, loops keep running).
+        self.host.pump_frames(crate::PUMP_INPUT_FRAMES);
         Ok(())
     }
 
@@ -354,7 +373,9 @@ impl SceneSession {
         let h = (css_h * dpr).round().max(1.0) as u32;
         self.viewport = (w, h);
         pres.refit(&self.host, w, h, self.page_bg)?;
-        self.host.run_until_idle();
+        // Decision 515: bounded (input-path cap — DPR reflows text
+        // everywhere, loops keep running).
+        self.host.pump_frames(crate::PUMP_INPUT_FRAMES);
         Ok(())
     }
 }

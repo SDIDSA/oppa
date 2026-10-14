@@ -12,6 +12,8 @@ struct VertexInput {
     @location(2) color: vec4<f32>,
     @location(3) radii: vec4<f32>,
     @location(4) params: vec4<f32>,
+    @location(5) xf_abcd: vec4<f32>,
+    @location(6) xf_t: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -26,7 +28,15 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    let pos_px = in.rect.xy + in.unit_pos * in.rect.zw;
+    // Baked quad corner, then the residual paint affine (decision
+    // 517 — identity for ST-only chains, so unrotated instances land
+    // on the exact old pixels; the SDF below stays in the unrotated
+    // local frame, so rounded corners rotate rigidly).
+    let baked = in.rect.xy + in.unit_pos * in.rect.zw;
+    let pos_px = vec2<f32>(
+        in.xf_abcd.x * baked.x + in.xf_abcd.y * baked.y + in.xf_t.x,
+        in.xf_abcd.z * baked.x + in.xf_abcd.w * baked.y + in.xf_t.y
+    );
     
     // Convert physical pixels to WebGPU clip space [-1, 1]
     let ndc_x = (pos_px.x / u_viewport.viewport_size.x) * 2.0 - 1.0;

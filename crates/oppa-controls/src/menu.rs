@@ -135,7 +135,13 @@ pub fn MenuItem(ctx: &Ctx, props: &MenuItemProps) -> VNode {
     } else {
         label
     };
-    let mut style = Style::new().fill_width().pad_x(8).pad_y(6);
+    let mut style = Style::new()
+        .fill_width()
+        .pad_x(8)
+        .pad_y(6)
+        // Decision 514: highlight swaps tween (keyboard rove and
+        // pointer hover ride the same cursor).
+        .transition(oppa::Transition::micro());
     if props.highlighted {
         style = style.bg(t.primary);
     }
@@ -221,8 +227,11 @@ fn hit_item(
     for i in 0..items_len {
         let label = format!("menu-item-{menu_inst}-{i}");
         for id in find_retained_by_debug(host, &label) {
+            // Decision 511: test in the row's local space (hit
+            // follows the visual under ancestor transforms).
+            let (lx, ly) = host.local_point(id, x, y);
             if let Some(b) = host.committed_box(id) {
-                if x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h {
+                if lx >= b.x && lx < b.x + b.w && ly >= b.y && ly < b.y + b.h {
                     return Some(i);
                 }
             }
@@ -317,10 +326,12 @@ fn wrapper_release_row(
 /// blur rule owns them).
 fn in_list_box(host: &ComponentHost, menu_inst: u64, x: f32, y: f32) -> bool {
     let label = format!("menu-list-{menu_inst}");
-    find_retained_by_debug(host, &label)
-        .into_iter()
-        .filter_map(|id| host.committed_box(id))
-        .any(|b| x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h)
+    find_retained_by_debug(host, &label).into_iter().any(|id| {
+        // Decision 511: test in the list's local space.
+        let (lx, ly) = host.local_point(id, x, y);
+        host.committed_box(id)
+            .is_some_and(|b| lx >= b.x && lx < b.x + b.w && ly >= b.y && ly < b.y + b.h)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +373,10 @@ pub struct MenuProps {
 /// renders an explicit 0×0 portal (flow containers skip portals —
 /// no phantom spacing, the Modal precedent).
 pub fn Menu(ctx: &Ctx, props: &MenuProps) -> VNode {
+    // Decision 514: appear-fade visibility first (the guarded reset
+    // must run even on the closed path, or the next open would mount
+    // already shown).
+    let shown = crate::motion::enter_shown(ctx, &props.open);
     if !props.open.get() {
         return Portal("menu-closed").style(Style::new().size(0, 0)).build();
     }
@@ -435,7 +450,21 @@ pub fn Menu(ctx: &Ctx, props: &MenuProps) -> VNode {
                 .radius(4)
                 .border(1, t.border)
                 .bg(t.surface)
-                .pad_y(4),
+                .pad_y(4)
+                // Decision 514: the plate fades + rises on open
+                // (appear-first — exits snap, see SPEC).
+                .opacity(Some(if shown.get() { 1.0 } else { 0.0 }))
+                .transform(if shown.get() {
+                    oppa::Transform::identity()
+                } else {
+                    oppa::Transform::translate(0, crate::motion::ENTER_RISE_PX)
+                })
+                .transition(oppa::Transition::enter())
+                // Decision 520: dismissal fades the plate out (the
+                // portal below carries the same declaration — this
+                // entry root pins; the portal rides only if the
+                // structure inverts).
+                .exit(oppa::Transition::exit()),
         )
         .semantics(oppa::Semantics::default().label("menu"))
         .on_press(move || {
@@ -512,7 +541,16 @@ pub fn Menu(ctx: &Ctx, props: &MenuProps) -> VNode {
         }
     };
     Portal("menu-popup")
-        .style(Style::new().x(origin.0).absolute_y(origin.1).w(props.width))
+        .style(
+            Style::new()
+                .x(origin.0)
+                .absolute_y(origin.1)
+                .w(props.width)
+                // Decision 520: dismissal fade safety (the plate above
+                // pins as the removed root; this rides only if the
+                // structure inverts).
+                .exit(oppa::Transition::exit()),
+        )
         .child(list)
 }
 

@@ -798,7 +798,7 @@ impl RendererBackend for GpuBackend {
                 DiffOp::Add { id, .. } => {
                     self.live_nodes.insert(*id);
                 }
-                DiffOp::Remove { id } => {
+                DiffOp::Remove { id, .. } => {
                     self.live_nodes.remove(id);
                     for surface in self.surfaces.values_mut() {
                         surface.retained.retain(|o| o.node() != Some(*id));

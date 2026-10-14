@@ -231,3 +231,149 @@ fn shorthand_builders_equal_longhand_chains() {
     assert_eq!(refined.pad_left, Some(Px::of(8.0)));
     assert_eq!(refined.pad_x, Some(Px::of(25.0)));
 }
+
+/// Decision 511: `Transform` is paint-only data — identity by
+/// default, structural when set, with loud application gates.
+#[test]
+fn transform_identity_default_and_structural() {
+    assert!(Transform::identity().is_identity());
+    let plain: Style = Style::new().size(10, 10).build();
+    assert_eq!(plain.transform, None, "unset stays unset");
+    assert!(plain
+        .transform
+        .unwrap_or(Transform::identity())
+        .is_identity());
+    let moved: Style = Style::new()
+        .size(10, 10)
+        .transform(Transform::translate(8, -4))
+        .build();
+    assert_ne!(moved, plain, "transform participates in identity");
+    assert_eq!(moved.transform.unwrap().dx.get(), 8.0);
+    let scaled: Style = Style::new()
+        .size(10, 10)
+        .transform(Transform::scale(1.5, 2.0))
+        .build();
+    assert_eq!(scaled.transform.unwrap().sy.get(), 2.0);
+    let stop = KeyframeStop::new(120, Ease::Out).transform(Transform::translate(4, 0));
+    assert_eq!(stop.transform.unwrap().dx.get(), 4.0);
+}
+
+/// Decisions 511 + 517: supported = finite translate + positive
+/// finite scale + finite rotate; everything else refuses loudly.
+#[test]
+fn transform_supported_gate_accepts_translate_scale() {
+    Transform::translate(10, -3).require_supported();
+    Transform::scale(0.5, 2.0).require_supported();
+    Transform::identity().require_supported();
+}
+
+/// Decision 517: rotation applies everywhere — finite rotate passes
+/// the gate like translate/scale.
+#[test]
+fn transform_rotate_applies_since_t1b() {
+    Transform::rotate(45).require_supported();
+    Transform::rotate(-90).require_supported();
+    assert!(!Transform::rotate(30).is_identity());
+}
+
+/// Decision 517: the full affine degrades exactly to the ST form for
+/// zero rotation (same floats, same order — the bake fast path stays
+/// bit-exact).
+#[test]
+fn full_affine_degrades_to_st_without_rotation() {
+    for t in [
+        Transform::identity(),
+        Transform::translate(10, -3),
+        Transform::scale(0.5, 2.0),
+    ] {
+        let (cx, cy) = (50.0, 25.0);
+        let full = t.to_full_affine(cx, cy);
+        let st = t.to_local_affine(cx, cy);
+        assert_eq!(
+            full,
+            PaintXf {
+                a: st.sx,
+                b: 0.0,
+                c: 0.0,
+                d: st.sy,
+                tx: st.tx,
+                ty: st.ty,
+            },
+            "zero-rotation full affine is exactly the ST affine"
+        );
+    }
+}
+
+/// Decision 517: a quarter turn about the box center swaps the box
+/// onto itself (100×50 at origin → the AABB is 50×100 centered).
+#[test]
+fn full_affine_quarter_turn_aabb() {
+    let t = Transform::rotate(90);
+    let full = t.to_full_affine(50.0, 25.0);
+    let (x, y, w, h) = full.map_rect_aabb(0.0, 0.0, 100.0, 50.0);
+    assert!((x - 25.0).abs() < 1e-3, "aabb x, got {x}");
+    assert!((y + 25.0).abs() < 1e-3, "aabb y, got {y}");
+    assert!((w - 50.0).abs() < 1e-3, "aabb w, got {w}");
+    assert!((h - 100.0).abs() < 1e-3, "aabb h, got {h}");
+    // The center pins through the turn.
+    assert_eq!(full.map_point(50.0, 25.0), (50.0, 25.0));
+    // Inverse restores (hit direction).
+    let (lx, ly) = full.unmap_point(50.0, 25.0);
+    assert!((lx - 50.0).abs() < 1e-4 && (ly - 25.0).abs() < 1e-4);
+}
+
+/// Decision 517: ST-only residuals are exactly identity (backends
+/// skip them without touching a number).
+#[test]
+fn residual_identity_without_rotation() {
+    let st = AffineST {
+        sx: 2.0,
+        sy: 0.5,
+        tx: 10.0,
+        ty: -4.0,
+    };
+    let full = PaintXf {
+        a: 2.0,
+        b: 0.0,
+        c: 0.0,
+        d: 0.5,
+        tx: 10.0,
+        ty: -4.0,
+    };
+    assert!(PaintXf::residual(full, st).is_identity());
+    assert!(PaintXf::residual(PaintXf::identity(), AffineST::identity()).is_identity());
+}
+
+#[test]
+#[should_panic(expected = "scale must be positive")]
+fn transform_zero_scale_refuses_loudly() {
+    Transform::scale(0, 1).require_supported();
+}
+
+#[test]
+#[should_panic(expected = "scale must be positive")]
+fn transform_negative_scale_refuses_loudly() {
+    Transform::scale(-1, 1).require_supported();
+}
+
+#[test]
+#[should_panic(expected = "non-finite translate")]
+fn transform_nan_translate_refuses_loudly() {
+    Transform::translate(f32::NAN, 0).require_supported();
+}
+
+/// Decision 514: the shared tween constructors (micro 120ms Out,
+/// enter 180ms Out — one feel, no app code).
+#[test]
+fn shared_tween_constructors_carry_the_policy() {
+    let micro = Transition::micro();
+    assert_eq!(
+        (micro.dur_ms, micro.ease, micro.delay_ms),
+        (120, Ease::Out, 0)
+    );
+    let enter = Transition::enter();
+    assert_eq!(
+        (enter.dur_ms, enter.ease, enter.delay_ms),
+        (180, Ease::Out, 0)
+    );
+}

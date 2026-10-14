@@ -12,8 +12,8 @@
 
 use oppa::{
     find_retained_by_debug, Color, ComponentHost, Ctx, Div, Ease, Event, EventKind, HandlerId,
-    InputEvent, KeyState, MsExt, Portal, Props, Semantics, SharedString, Signal, Style, Transition,
-    VNode,
+    InputEvent, KeyState, MsExt, PaintXf, Portal, Props, Semantics, SharedString, Signal, Style,
+    Transform, Transition, VNode,
 };
 use oppa_macros::{component, Props};
 use std::cell::Cell;
@@ -914,4 +914,229 @@ fn handlerless_portal_never_claims_hits() {
     assert_eq!(host.scroll_target_at(60.0, 100.0), Some(list));
     // The veiled chip still wins on its own box (children first).
     assert_eq!(host.hit_test(190.0, 10.0), Some(chip));
+}
+
+// ---------------------------------------------------------------------------
+// Decision 511: transform-aware hit-testing (hit follows the visual)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Props)]
+struct XfHitProps {
+    a: Rc<Cell<u32>>,
+    b: Rc<Cell<u32>>,
+    c: Rc<Cell<u32>>,
+}
+
+/// btn-a (100×40 at (0,0)) rides +200x; btn-b (100×40 at (0,40))
+/// scales 2× about its center (visual −50..150 × 20..100); btn-c
+/// (50×20) nests inside par translated +300y (visual y 380..400).
+fn render_xf_hit(_ctx: &Ctx, p: &XfHitProps) -> VNode {
+    let (a, b, c) = (p.a.clone(), p.b.clone(), p.c.clone());
+    Div("xf-root").style(Style::new().size(800, 600)).children([
+        Div("btn-a")
+            .style(
+                Style::new()
+                    .size(100, 40)
+                    .bg(Color(0x11_11_11))
+                    .transform(Transform::translate(200, 0)),
+            )
+            .on_press(move || a.set(a.get() + 1))
+            .build(),
+        Div("btn-b")
+            .style(
+                Style::new()
+                    .size(100, 40)
+                    .bg(Color(0x22_22_22))
+                    .transform(Transform::scale(2, 2)),
+            )
+            .on_press(move || b.set(b.get() + 1))
+            .build(),
+        Div("par")
+            .style(
+                Style::new()
+                    .size(400, 200)
+                    .transform(Transform::translate(0, 300)),
+            )
+            .child(
+                Div("btn-c")
+                    .style(Style::new().size(50, 20).bg(Color(0x33_33_33)))
+                    .on_press(move || c.set(c.get() + 1))
+                    .build(),
+            ),
+    ])
+}
+
+#[allow(clippy::type_complexity)]
+fn mount_xf_hit() -> (ComponentHost, Rc<Cell<u32>>, Rc<Cell<u32>>, Rc<Cell<u32>>) {
+    let host = ComponentHost::new();
+    host.set_viewport(800.0, 600.0);
+    let (a, b, c) = (
+        Rc::new(Cell::new(0)),
+        Rc::new(Cell::new(0)),
+        Rc::new(Cell::new(0)),
+    );
+    host.mount(
+        "xf",
+        XfHitProps {
+            a: a.clone(),
+            b: b.clone(),
+            c: c.clone(),
+        },
+        render_xf_hit,
+    );
+    host.run_until_idle();
+    (host, a, b, c)
+}
+
+#[test]
+fn transform_hit_follows_visual_not_layout() {
+    let (host, a, b, c) = mount_xf_hit();
+    let root = find_retained_by_debug(&host, "xf-root")[0];
+    let btn_a = find_retained_by_debug(&host, "btn-a")[0];
+    let btn_b = find_retained_by_debug(&host, "btn-b")[0];
+    let btn_c = find_retained_by_debug(&host, "btn-c")[0];
+    // Translated button: visual hit lands, the layout ghost misses
+    // (falls to the root — never the button). (50,10) sits inside
+    // btn-a's layout box but above btn-b's scaled visual, so only
+    // the root can claim it.
+    assert_eq!(host.hit_test(250.0, 20.0), Some(btn_a));
+    assert_eq!(host.hit_test(50.0, 10.0), Some(root));
+    // Scaled button: x=120 is past the layout box but inside the
+    // 2× visual (and the scaled edge still wins over the root).
+    assert_eq!(host.hit_test(120.0, 90.0), Some(btn_b));
+    // Nested button: the parent's +300y composes under the child.
+    assert_eq!(host.hit_test(20.0, 390.0), Some(btn_c));
+    assert_eq!(host.hit_test(20.0, 100.0), Some(root));
+    // Presses route through the same walk: the visual tap fires, the
+    // layout ghost never does.
+    host.inject_input(InputEvent::pointer_down(250.0, 20.0));
+    host.inject_input(InputEvent::pointer_up(250.0, 20.0));
+    host.run_until_idle();
+    assert_eq!((a.get(), b.get(), c.get()), (1, 0, 0));
+    host.inject_input(InputEvent::pointer_down(50.0, 10.0));
+    host.inject_input(InputEvent::pointer_up(50.0, 10.0));
+    host.run_until_idle();
+    assert_eq!(
+        (a.get(), b.get(), c.get()),
+        (1, 0, 0),
+        "ghost tap fires nothing"
+    );
+    host.inject_input(InputEvent::pointer_down(20.0, 390.0));
+    host.inject_input(InputEvent::pointer_up(20.0, 390.0));
+    host.run_until_idle();
+    assert_eq!(c.get(), 1, "nested visual tap fires");
+}
+
+#[test]
+fn transform_accumulation_and_local_points() {
+    let (host, _, _, _) = mount_xf_hit();
+    let root = find_retained_by_debug(&host, "xf-root")[0];
+    let btn_a = find_retained_by_debug(&host, "btn-a")[0];
+    let btn_c = find_retained_by_debug(&host, "btn-c")[0];
+    assert_eq!(
+        host.accumulated_transform(btn_a),
+        PaintXf {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx: 200.0,
+            ty: 0.0
+        }
+    );
+    assert_eq!(
+        host.accumulated_transform(btn_c),
+        PaintXf {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx: 0.0,
+            ty: 300.0
+        }
+    );
+    assert_eq!(host.accumulated_transform(root), PaintXf::identity());
+    assert_eq!(host.local_point(btn_a, 250.0, 20.0), (50.0, 20.0));
+    // Identity chains pass points through bit-exactly.
+    assert_eq!(host.local_point(root, 11.0, 22.0), (11.0, 22.0));
+}
+
+/// Decision 517: hit follows rotation — a 90°-turned 100×40 box
+/// answers at its visual (vertical) footprint and misses its layout
+/// ghost.
+#[test]
+fn transform_hit_follows_rotation() {
+    let host = ComponentHost::new();
+    host.set_viewport(800.0, 600.0);
+    host.mount(
+        "rot",
+        XfHitProps {
+            a: Rc::new(Cell::new(0)),
+            b: Rc::new(Cell::new(0)),
+            c: Rc::new(Cell::new(0)),
+        },
+        |_ctx: &Ctx, _: &XfHitProps| {
+            Div("rot-root").style(Style::new().size(800, 600)).child(
+                Div("rot-box")
+                    .style(Style::new().size(100, 40).transform(Transform::rotate(90)))
+                    .build(),
+            )
+        },
+    );
+    host.run_until_idle();
+    let bx = host
+        .committed_box(find_retained_by_debug(&host, "rot-box")[0])
+        .expect("box laid out");
+    // Layout box is 100×40 at origin; the quarter turn stands it
+    // upright about its center (40×100 AABB: x 30..70, y −30..70).
+    assert_eq!((bx.x, bx.y, bx.w, bx.h), (0.0, 0.0, 100.0, 40.0));
+    let hit = find_retained_by_debug(&host, "rot-box")[0];
+    let root = find_retained_by_debug(&host, "rot-root")[0];
+    // (50, -20) sits inside the upright visual but outside every
+    // layout box (rot-box layout spans y 0..40, root claims misses).
+    assert_eq!(host.hit_test(50.0, -20.0), Some(hit));
+    // (90, 20) sits inside the layout box but outside the upright
+    // visual (x 30..70) — the ghost misses to the root.
+    assert_eq!(host.hit_test(90.0, 20.0), Some(root));
+}
+
+#[test]
+fn transform_hit_portal_resets_accumulation() {
+    #[derive(Clone, Props)]
+    struct PortalXfProps {
+        hits: Rc<Cell<u32>>,
+    }
+    fn render_portal_xf(_ctx: &Ctx, p: &PortalXfProps) -> VNode {
+        let hits = p.hits.clone();
+        Div("wrap")
+            .style(
+                Style::new()
+                    .size(800, 600)
+                    .transform(Transform::translate(200, 0)),
+            )
+            .child(
+                Portal("pp").child(
+                    Div("in-portal")
+                        .style(Style::new().size(50, 20))
+                        .on_press(move || hits.set(hits.get() + 1))
+                        .build(),
+                ),
+            )
+    }
+    let host = ComponentHost::new();
+    host.set_viewport(800.0, 600.0);
+    let hits = Rc::new(Cell::new(0));
+    host.mount(
+        "pxf",
+        PortalXfProps { hits: hits.clone() },
+        render_portal_xf,
+    );
+    host.run_until_idle();
+    let inner = find_retained_by_debug(&host, "in-portal")[0];
+    // The translated ancestor contributes nothing above the portal.
+    assert_eq!(host.accumulated_transform(inner).tx, 0.0);
+    // …and the walk agrees: the child's own center hits with no
+    // ancestor offset leaking in.
+    let b = host.committed_box(inner).expect("portal child laid out");
+    assert_eq!(host.hit_test(b.x + b.w / 2.0, b.y + b.h / 2.0), Some(inner));
 }

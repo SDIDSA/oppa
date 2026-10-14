@@ -159,6 +159,33 @@ pub struct DomBackend {
     /// Frame time of the last tracked commit (the hook's clock —
     /// track and sample share it, never skew).
     kf_now: f64,
+    /// Deferred-exit keeps (decision 520): pinned removal roots the
+    /// commit kept past deletion (paint past removal through stepped
+    /// inline values), with their live parent + index for registry
+    /// fixups (parents re-derive without kept children every sync).
+    /// Released at twin-settle or re-show cancel.
+    exit_kept: Vec<ExitKeep>,
+    /// Every element id under a kept root (commit skips deletion for
+    /// these — descendants ride the ancestor keep; sync exempts them
+    /// from the retired-shell sweep).
+    exit_ids: HashSet<NodeId>,
+    /// Live layout track specs (decisions 521-522): published per
+    /// frame by the presenter, sampled on the backend clock
+    /// (`kf_now`) during derive — the exit-twin precedent (host-side
+    /// settle must never freeze a lagging backend mid-flight).
+    /// Empty for animation-free frames (derive byte-identical).
+    layout_anim: Vec<oppa::LayoutAnimSpec>,
+}
+
+/// One kept ghost (decision 520): a pinned removal root plus its
+/// registry position (parents re-derive rec-side every sync, so the
+/// fixup restores the kept child at its recorded index — clamped,
+/// never panicking on concurrent live edits).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ExitKeep {
+    root: NodeId,
+    parent: Option<NodeId>,
+    index: usize,
 }
 
 impl DomBackend {
@@ -192,6 +219,9 @@ impl DomBackend {
             fonts: Vec::new(),
             kf_eval: oppa::TransitionEvaluator::new(),
             kf_now: 0.0,
+            exit_kept: Vec::new(),
+            exit_ids: HashSet::new(),
+            layout_anim: Vec::new(),
         }
     }
 

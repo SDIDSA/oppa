@@ -106,6 +106,10 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
     // backdrop scrim stays absolute black-with-opacity (a veil holds
     // in both themes — theme-invariant by design, like contrast ink).
     let t = ctx.theme().tokens();
+    // Decision 514: appear-fade visibility first (the guarded reset
+    // must run on the closed path, or the next open would mount
+    // already shown).
+    let shown = crate::motion::enter_shown(ctx, &props.open);
     if !props.open.get() {
         return Portal("modal-closed")
             .style(Style::new().size(0, 0))
@@ -167,6 +171,18 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
         .pad_x(20)
         .pad_y(16)
         .gap(12)
+        // Decision 514: the card fades + rises on open
+        // (appear-first — exits snap, see SPEC).
+        .opacity(Some(if shown.get() { 1.0 } else { 0.0 }))
+        .transform(if shown.get() {
+            oppa::Transform::identity()
+        } else {
+            oppa::Transform::translate(0, crate::motion::ENTER_RISE_PX)
+        })
+        .transition(oppa::Transition::enter())
+        // Decision 520: dismissal fade safety (the backdrop below
+        // pins as the removed root; this rides frozen while nested).
+        .exit(oppa::Transition::exit())
         .build();
     // (No width-only builder — the explicit card width patches the
     // built style, decision-238 precedent.)
@@ -188,7 +204,14 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
             .fill_width()
             .fill_height()
             .bg(Color(0x11_11_11))
-            .opacity(Some(0.5))
+            // Decision 514: the scrim fades with the card (the 0.5
+            // veil is the settled value).
+            .opacity(Some(if shown.get() { 0.5 } else { 0.0 }))
+            .transition(oppa::Transition::enter())
+            // Decision 520: dismissal fades the whole overlay out
+            // (the card rides frozen under this envelope — one pin
+            // per dismiss, no double-paint).
+            .exit(oppa::Transition::exit())
             .justify_content(JustifyContent::Center)
             .align_items(AlignItems::Center),
     );
@@ -199,5 +222,13 @@ pub fn Modal(ctx: &Ctx, props: &ModalProps) -> VNode {
     } else {
         backdrop
     };
-    Portal("modal-portal").child(backdrop.child(card))
+    Portal("modal-portal")
+        .style(
+            Style::new()
+                // Decision 520: dismissal fade safety (the backdrop
+                // above pins as the removed root; this rides only if
+                // the structure inverts).
+                .exit(oppa::Transition::exit()),
+        )
+        .child(backdrop.child(card))
 }

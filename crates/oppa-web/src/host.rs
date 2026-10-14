@@ -51,12 +51,28 @@ impl DomPresenter {
 impl ScenePresenter for DomPresenter {
     /// Replays the scene diffs the session has not committed here
     /// yet (one committed diff cursor). Backend failures are loud
-    /// (the old `expect` wording, behavior unchanged).
+    /// (the old `expect` wording, behavior unchanged). Decision 520:
+    /// the keyframe twin eats the same diffs in the same order at
+    /// the frame clock (the headless hook rig's contract — stepped
+    /// keyframes, springs, and exit fades sample it during sync, so
+    /// production web matches the rig instead of freezing them).
     fn commit(&mut self, host: &ComponentHost) -> Result<(), String> {
-        for diff in host.diffs_from(self.cursor) {
-            self.dom.commit(&diff).expect("dom commit failed");
-        }
+        let diffs = host.diffs_from(self.cursor);
+        let now = host.runtime().now_secs();
+        host.with_retained_mut(|rec, styles| {
+            for diff in &diffs {
+                self.dom.commit(diff).expect("dom commit failed");
+            }
+            self.dom.track_animation(&diffs, rec, styles, now);
+        });
         self.cursor = host.diff_count();
+        // Decision 520: re-showed exits cancel on the pixel legs
+        // through the host table rebuild — the DOM registry drops the
+        // kept ghosts explicitly through this drain instead.
+        let cancelled = host.drain_cancelled_exits();
+        if !cancelled.is_empty() {
+            self.dom.cancel_kept_exits(&cancelled);
+        }
         Ok(())
     }
 
@@ -131,8 +147,19 @@ impl ScenePresenter for DomPresenter {
     /// The present step: sync the DOM against the committed scene
     /// (the touched-work count a patch frame reports) and paint the
     /// plan. Backend failures are loud (unchanged `expect` wording).
+    /// Decision 520: the twin settles + samples at the frame clock on
+    /// every paint (diff-less animation frames still retire tracks
+    /// and step ghosts — the hook rig's contract; without this the
+    /// twin goes stale between commits and fades freeze).
     fn paint(&mut self, host: &ComponentHost, plan: &oppa::FramePlan) -> Result<usize, String> {
+        let now = host.runtime().now_secs();
         let stats = host.with_retained_mut(|rec, styles| {
+            self.dom.track_animation(&[], rec, styles, now);
+            // Decisions 521-522: publish live layout track specs
+            // (the backend samples them on its own clock — host-side
+            // settle must never freeze a lagging backend mid-flight).
+            let specs = host.with_evaluator(|ev| ev.layout_track_specs());
+            self.dom.set_layout_anim(specs);
             self.dom
                 .sync(rec, styles, &mut self.sheet)
                 .expect("dom sync failed")
@@ -367,7 +394,7 @@ impl WasmHost {
     ) -> Self {
         let (clock, host) = Self::boot();
         host.mount(name, props, render);
-        host.run_until_idle();
+        pump_host(&host, &clock, oppa_app::PUMP_INPUT_FRAMES);
         let images = host.images();
         Self::shell(host, clock, images)
     }
@@ -388,7 +415,7 @@ impl WasmHost {
     ) -> Self {
         let (clock, host) = Self::boot_with_fonts(family, faces);
         host.mount(name, props, render);
-        host.run_until_idle();
+        pump_host(&host, &clock, oppa_app::PUMP_INPUT_FRAMES);
         let images = host.images();
         Self::shell_with_fonts(host, clock, images, family, display_bytes)
     }
@@ -412,6 +439,24 @@ impl WasmHost {
         html
     }
 
+    /// Pumps the host with flowing mock time (decision 514): bare
+    /// `run_until_idle` spins forever under a frozen clock while any
+    /// transition lives (micro tweens fire on every press/hover now)
+    /// — real runners advance time between pumps (rAF `tick`), so
+    /// the harness steps 1/60s per demanded frame. Gesture pumps
+    /// drain full input cascades
+    /// ([`PUMP_INPUT_FRAMES`](oppa_app::PUMP_INPUT_FRAMES),
+    /// decision 515 — live loops simply continue instead of
+    /// freezing); idle trees pump zero frames with zero clock drift
+    /// (identical to `run_until_idle` when quiet).
+    pub(crate) fn pump(&mut self) {
+        pump_host(
+            self.session.host(),
+            &self.clock,
+            oppa_app::PUMP_INPUT_FRAMES,
+        );
+    }
+
     /// Syncs the DOM and returns the DOM patch JSON (`None` when
     /// untouched) -- the shared tail of the event bindings.
     pub(crate) fn sync_page(&mut self) -> Option<String> {
@@ -432,7 +477,7 @@ impl WasmHost {
         self.session
             .host()
             .inject_input(oppa::InputEvent::pointer_up(x, y));
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -443,7 +488,7 @@ impl WasmHost {
         self.session
             .host()
             .inject_input(oppa::InputEvent::pointer_move(x, y));
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -460,7 +505,7 @@ impl WasmHost {
             },
             repeat: false,
         });
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -474,7 +519,7 @@ impl WasmHost {
         self.session
             .host()
             .inject_input(oppa::InputEvent::text(target, value));
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -510,7 +555,7 @@ impl WasmHost {
         // Loading is synchronous (the native rule -- first paint
         // already shows it): settle before returning so the next
         // `html()` syncs it.
-        self.session.host().run_until_idle();
+        self.pump();
         gen
     }
 
@@ -538,7 +583,7 @@ impl WasmHost {
         {
             return None;
         }
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -591,14 +636,16 @@ impl WasmHost {
 
     /// rAF tick: advances TIME to `now_ms` and runs the frame.
     /// Returns the DOM patch JSON, or `None` when untouched
-    /// (transition tails settle through these calls).
+    /// (transition tails settle through these calls). Bounded
+    /// (decision 515 — the clock is already set, so frames sample
+    /// `now` without advancing; live loops continue next tick).
     pub fn tick(&mut self, now_ms: f64) -> Option<String> {
         self.clock.set(now_ms / 1000.0);
         // Round 21.1 (decision 328): due component timers fire on
         // the frame clock before the settle (callbacks schedule --
         // the settle below runs them -- then the sync renders).
         self.session.host().tick_timers(now_ms);
-        self.session.host().run_until_idle();
+        self.session.host().pump_frames(oppa_app::PUMP_TICK_FRAMES);
         self.sync_page()
     }
 
@@ -619,7 +666,7 @@ impl WasmHost {
             return None;
         }
         self.session.host().set_theme(mode);
-        self.session.host().run_until_idle();
+        self.pump();
         self.sync_page()
     }
 
@@ -678,13 +725,25 @@ impl WasmHost {
                 ..config
             });
         }
-        host.run_until_idle();
+        pump_host(host, &self.clock, oppa_app::PUMP_INPUT_FRAMES);
         let bg = host.theme_tokens().background;
         self.pres
             .refit(host, w as u32, h as u32, bg)
             .expect("dom presenter refit failed");
-        self.session.host().run_until_idle();
+        self.pump();
         Some(full_reload(&mut self.pres))
+    }
+}
+
+/// Static flowing pump for boot paths holding host + clock directly
+/// (same contract as [`WasmHost::pump`], with an explicit frame
+/// budget — decision 515).
+pub(crate) fn pump_host(host: &ComponentHost, clock: &MockClock, max_frames: usize) {
+    for _ in 0..max_frames {
+        if !host.run_once() {
+            return;
+        }
+        clock.advance(1.0 / 60.0);
     }
 }
 

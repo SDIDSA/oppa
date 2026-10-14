@@ -145,7 +145,11 @@ fn press_down(host: &ComponentHost, x: f32, y: f32) {
     host.run_until_idle();
 }
 
-fn move_to(host: &ComponentHost, x: f32, y: f32) {
+/// Hover-move on a clocked host (decision 514): the move starts a
+/// highlight tween, so time must flow past it — a frozen idle pump
+/// would spin on the live track forever. Advances past any
+/// micro-tween, then pumps bounded frames.
+fn move_to_clocked(host: &ComponentHost, clock: &oppa::MockClock, x: f32, y: f32) {
     host.inject_input(InputEvent::Pointer {
         id: Some(0),
         action: PointerAction::Move,
@@ -153,10 +157,19 @@ fn move_to(host: &ComponentHost, x: f32, y: f32) {
         y,
         modifiers: Modifiers::NONE,
     });
-    host.run_until_idle();
+    clock.advance(0.3);
+    for _ in 0..5 {
+        host.run_once();
+    }
 }
 
-fn release(host: &ComponentHost, x: f32, y: f32) {
+/// Release on a clocked host (decision 520): invoking closes the
+/// menu, and the dismissal now fades (the exit track is live) —
+/// pump once so the close commits (exits start at the current
+/// instant), then advance past the 180ms exit with bounded pumps (a
+/// frozen idle pump would spin on it forever, the entrance-track
+/// rule above).
+fn release_clocked(host: &ComponentHost, clock: &oppa::MockClock, x: f32, y: f32) {
     host.inject_input(InputEvent::Pointer {
         id: Some(0),
         action: PointerAction::Up {
@@ -166,7 +179,11 @@ fn release(host: &ComponentHost, x: f32, y: f32) {
         y,
         modifiers: Modifiers::NONE,
     });
-    host.run_until_idle();
+    host.run_once();
+    clock.advance(0.3);
+    for _ in 0..5 {
+        host.run_once();
+    }
 }
 
 /// Center of row `i` in menu instance `inst` (device px).
@@ -190,6 +207,30 @@ fn popup_present(host: &ComponentHost, inst: u64) -> bool {
     // updates (reconciler never rewrites `debug`), so presence
     // reads the list plate, not the portal.
     !find_retained_by_debug(host, &format!("menu-list-{inst}")).is_empty()
+}
+
+/// Fires the appear-flip (decision 514): runners tick timers per
+/// pump, so the entrance plays a frame after mount; headless rigs
+/// tick explicitly before pointer-meeting the freshly opened plate
+/// (hit follows the painted visual — an unflipped list paints risen
+/// and taps miss it, correctly). Bounded pumps only — the flip's own
+/// entrance tracks stay live (frozen clocks never retire them), so
+/// an idle pump here would spin forever.
+fn flip_open(host: &ComponentHost) {
+    host.tick_timers(host.now_ms());
+    for _ in 0..5 {
+        host.run_once();
+    }
+}
+
+/// Settles the entrance in real time (decision 514): system-clock
+/// hosts retire the 180ms entrance only as wall time passes — sleep
+/// past it, then pump quiet. MockClock rigs advance instead
+/// (deterministic); system rigs sleep (loud on starvation — a
+/// translated plate misses taps, never silently).
+fn settle_entrance_realtime(host: &ComponentHost) {
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    host.run_until_idle();
 }
 
 /// Round 17.1: right-click mounts the menu at the cursor.
@@ -271,6 +312,8 @@ fn outside_click_dismisses_without_invoking() {
 fn disabled_row_ignores_taps_and_stays_open() {
     let (host, fired, inst) = menu_harness();
     right_click(&host, 50.0, 60.0);
+    flip_open(&host);
+    settle_entrance_realtime(&host);
     let label = format!("menu-item-{inst}-1");
     let id = find_retained_by_debug(&host, &label)
         .into_iter()
@@ -290,6 +333,8 @@ fn disabled_row_ignores_taps_and_stays_open() {
 fn row_tap_invokes_and_closes() {
     let (host, fired, inst) = menu_harness();
     right_click(&host, 50.0, 60.0);
+    flip_open(&host);
+    settle_entrance_realtime(&host);
     let label = format!("menu-item-{inst}-3");
     let id = find_retained_by_debug(&host, &label)
         .into_iter()
@@ -335,6 +380,8 @@ fn standalone_menu_is_author_controlled() {
     assert!(!popup_present(&host, inst), "controlled closed");
     open.set(true);
     host.run_until_idle();
+    flip_open(&host);
+    settle_entrance_realtime(&host);
     let list = find_retained_by_debug(&host, &format!("menu-list-{inst}"));
     assert_eq!(list.len(), 1, "author open shows");
     let b = host.committed_box(list[0]).expect("laid list");
@@ -349,6 +396,7 @@ fn standalone_menu_is_author_controlled() {
     assert!(popup_present(&host, inst), "standalone survives Escape");
     // Row tap invokes and clears `open` (Menu writes the
     // controlled signal like Select does).
+    settle_entrance_realtime(&host);
     let label = format!("menu-item-{inst}-0");
     let id = find_retained_by_debug(&host, &label)
         .into_iter()
@@ -390,6 +438,8 @@ fn highlight_math_covers_edges() {
 fn hover_highlight_follows_pointer_and_unifies_with_arrows() {
     let (host, fired, inst) = menu_harness();
     right_click(&host, 50.0, 60.0);
+    flip_open(&host);
+    settle_entrance_realtime(&host);
     // Hover Paste (row 3): Enter invokes it with no arrow keys.
     let (px, py) = row_center(&host, inst, 3);
     hover_at(&host, px, py);
@@ -400,6 +450,8 @@ fn hover_highlight_follows_pointer_and_unifies_with_arrows() {
     // there — Enter still invokes Cut (row 0).
     let (host, fired, inst) = menu_harness();
     right_click(&host, 50.0, 60.0);
+    flip_open(&host);
+    settle_entrance_realtime(&host);
     let (cx, cy) = row_center(&host, inst, 1);
     hover_at(&host, cx, cy);
     key(&host, keys::ENTER);
@@ -467,14 +519,25 @@ fn press_drag_release_invokes_row_and_closes() {
     let clock = Rc::new(oppa::MockClock::new());
     let (host, fired, inst) = menu_harness_on(ComponentHost::with_clock(clock.clone()));
     right_click(&host, 50.0, 60.0);
+    flip_open(&host);
+    // Clocked rigs settle deterministically (advance past the
+    // 180ms entrance — a frozen idle pump would spin on it forever).
+    clock.advance(0.3);
+    for _ in 0..5 {
+        host.run_once();
+    }
     assert!(popup_present(&host, inst));
     let (px, py) = row_center(&host, inst, 3);
     press_down(&host, 10.0, 10.0);
-    move_to(&host, px, py);
+    move_to_clocked(&host, &clock, px, py);
     clock.advance(0.6);
-    release(&host, px, py);
+    release_clocked(&host, &clock, px, py);
     assert!(fired[3].get(), "drag-release invokes Paste");
     assert!(!popup_present(&host, inst), "invoke closes");
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "dismissal exit retires");
+    });
+    assert!(!host.has_demand(), "quiet after the exit");
     // List path: standalone two-row menu, Down on row 0, slow
     // drag to row 1, Up invokes row 1 only (same swipe-window
     // rule as above).
@@ -504,13 +567,24 @@ fn press_drag_release_invokes_row_and_closes() {
     let inst = handle.root_instance();
     open.set(true);
     host.run_until_idle();
+    flip_open(&host);
+    // MockClock rigs settle deterministically (advance past the
+    // 180ms entrance — no wall sleeps in clocked tests).
+    clock.advance(0.3);
+    for _ in 0..5 {
+        host.run_once();
+    }
     let (ax, ay) = row_center(&host, inst, 0);
     let (bx, by) = row_center(&host, inst, 1);
     press_down(&host, ax, ay);
-    move_to(&host, bx, by);
+    move_to_clocked(&host, &clock, bx, by);
     clock.advance(0.6);
-    release(&host, bx, by);
+    release_clocked(&host, &clock, bx, by);
     assert!(!f0.get(), "dragged-off row stays quiet");
     assert!(f1.get(), "release row invokes");
     assert!(!popup_present(&host, inst), "invoke closes");
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "dismissal exit retires");
+    });
+    assert!(!host.has_demand(), "quiet after the exit");
 }

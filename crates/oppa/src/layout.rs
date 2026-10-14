@@ -69,7 +69,10 @@ pub(crate) use engine::{LayoutCtx, Margin, Pad, Size};
 pub use engine::{LayoutEngine, LayoutLedger};
 pub(crate) use measure::{measure_key, measure_key_rich, needs_measure, FRAME_DIRT};
 pub use measure::{LayoutStats, MeasuredText};
-pub use primitives::{LaidCluster, LaidGlyph, LaidLine, LaidRun, LayoutBox, LayoutTextConfig};
+pub use primitives::{
+    LaidCluster, LaidGlyph, LaidLine, LaidRun, LayoutBox, LayoutMove, LayoutMoveKind,
+    LayoutTextConfig,
+};
 pub use scrollbar::{
     scrollbar_max_offset, scrollbar_thumb, scrollbar_thumb_x, ScrollbarThumb, ScrollbarThumbX,
     SCROLLBAR_HIT_PX, SCROLLBAR_MIN_THUMB_PX, SCROLLBAR_TRACK_PX,
@@ -146,7 +149,10 @@ fn resolve_margin(style: &Style, dpr: f32) -> Margin {
     }
 }
 
-fn resolve_explicit(style: &Style, dpr: f32) -> (Option<f32>, Option<f32>) {
+/// Explicit-px extents in device px (decisions 521-522: the host
+/// enforces the fence's explicitness rule on final spans, so this
+/// leaves the module).
+pub(crate) fn resolve_explicit(style: &Style, dpr: f32) -> (Option<f32>, Option<f32>) {
     let w = style.w.map(|p| {
         let v = p.get();
         check_layout_px("w", v, false);

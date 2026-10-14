@@ -17,6 +17,8 @@ struct VertexInput {
     @location(1) rect: vec4<f32>,
     @location(2) uv: vec4<f32>,
     @location(3) color: vec4<f32>,
+    @location(5) xf_abcd: vec4<f32>,
+    @location(6) xf_t: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -28,7 +30,13 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    let pos_px = in.rect.xy + in.unit_pos * in.rect.zw;
+    // Residual paint affine (decision 517 — same rule as the quad
+    // shader; UVs stay unrotated so images rotate as rigid quads).
+    let baked = in.rect.xy + in.unit_pos * in.rect.zw;
+    let pos_px = vec2<f32>(
+        in.xf_abcd.x * baked.x + in.xf_abcd.y * baked.y + in.xf_t.x,
+        in.xf_abcd.z * baked.x + in.xf_abcd.w * baked.y + in.xf_t.y
+    );
     
     let ndc_x = (pos_px.x / u_viewport.viewport_size.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (pos_px.y / u_viewport.viewport_size.y) * 2.0;

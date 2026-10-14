@@ -267,6 +267,85 @@ pub(super) fn rasterize_glyphs(
     done
 }
 
+/// Effective fill alpha (style opacity × color alpha, decision 505
+/// rule): the single number the blit applies.
+pub(super) fn effective_alpha(color: oppa::Color, a: f32) -> f32 {
+    a.clamp(0.0, 1.0) * f32::from(color.alpha_u8()) / 255.0
+}
+
+/// The same color fully opaqued (scratch paint for the single-blend
+/// route below — overlaps stay invisible while opaque).
+pub(super) fn opaque_rgb(color: oppa::Color) -> oppa::Color {
+    oppa::Color(0xFF00_0000 | (color.0 & 0x00FF_FFFF))
+}
+
+/// Rounded-rect fill with single-blend translucency (decision 518):
+/// the bands+discs pieces overlap each other, so translucent fills
+/// through [`fill_rounded`]/[`fill_rounded_corners`] double-blend
+/// every overlap (the pane-grid artifact — invisible at opacity 1,
+/// which is why no oracle caught it). Opaque fills keep the legacy
+/// path exactly (byte-identical oracles); translucent fills paint
+/// opaque into a scratch and blit once with the effective alpha
+/// (uniform fill — the same math as a direct single blend).
+/// `radii: None` is the uniform-`radius` shape (all-zero radii take
+/// the plain-rect fast path in both modes — a single rect never
+/// overlaps itself).
+pub(super) fn fill_rrect(
+    pixmap: &mut Pixmap,
+    rect: (f32, f32, f32, f32),
+    radius: f32,
+    radii: Option<[f32; 4]>,
+    color: oppa::Color,
+    a: f32,
+    mask: Option<&Mask>,
+) {
+    let (x, y, w, h) = rect;
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let rs = radii.unwrap_or([radius, radius, radius, radius]);
+    if rs.iter().all(|r| *r <= 0.0) {
+        if let Some(rc) = rect_of(x, y, w, h) {
+            pixmap.fill_rect(rc, &paint_of(color, a), Transform::identity(), mask);
+        }
+        return;
+    }
+    let eff = effective_alpha(color, a);
+    if eff >= 1.0 {
+        let paint = paint_of(color, a);
+        match radii {
+            Some(rs) => fill_rounded_corners(pixmap, rect, rs, &paint, mask),
+            None => fill_rounded(pixmap, rect, radius, &paint, mask),
+        }
+        return;
+    }
+    if eff <= 0.0 {
+        return;
+    }
+    // 1px scratch pad for the AA fringe + an integer scratch origin;
+    // content lands texel-to-texel (integer shifts are exact), so the
+    // blit below is a pure alpha scale with no resampling drift.
+    const PAD: f32 = 1.0;
+    let (ox, oy) = (x.floor() - PAD, y.floor() - PAD);
+    let (tw, th) = ((x + w - ox).ceil() as u32, (y + h - oy).ceil() as u32);
+    let Some(mut scratch) = Pixmap::new(tw.max(1), th.max(1)) else {
+        return;
+    };
+    let solid = paint_of(opaque_rgb(color), 1.0);
+    fill_rounded_corners(&mut scratch, (x - ox, y - oy, w, h), rs, &solid, None);
+    pixmap.draw_pixmap(
+        ox as i32,
+        oy as i32,
+        scratch.as_ref(),
+        &PixmapPaint {
+            opacity: eff,
+            ..PixmapPaint::default()
+        },
+        Transform::identity(),
+        mask,
+    );
+}
+
 pub(super) fn fill_disc(
     pixmap: &mut Pixmap,
     cx: f32,

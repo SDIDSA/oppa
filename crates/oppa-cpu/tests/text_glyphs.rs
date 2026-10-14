@@ -6,7 +6,8 @@
 
 use ab_glyph::{Font, FontRef};
 use oppa::{
-    Color, DrawOp, FontId, FontRun, FramePlan, NodeId, PlacedGlyph, RendererBackend, SurfaceDesc,
+    Color, DrawOp, FontId, FontRun, FramePlan, NodeId, PaintXf, PlacedGlyph, RendererBackend,
+    SurfaceDesc, Transform,
 };
 use oppa_cpu::CpuBackend;
 
@@ -49,6 +50,7 @@ fn hi_plan_ink(ink: Color) -> FramePlan {
             }],
             ink,
             opacity: 1.0,
+            xf: PaintXf::identity(),
         }],
         full_repaint: true,
         ..Default::default()
@@ -135,6 +137,66 @@ fn faceless_run_keeps_legacy_bars() {
 #[test]
 fn raster_is_deterministic() {
     assert_eq!(paint_hi(true), paint_hi(true));
+}
+
+/// Decision 517: real glyph coverage rotates through the temp-layer
+/// detour — the "Hi" run turns 90° about its box center (19, 20), so
+/// the unrotated darkest pixel vacates its footprint (background)
+/// while its rotated image inks (axis-aligned coverage in-temp, then
+/// the residual blit — count preserved in band, bbox moved).
+#[test]
+fn rotated_run_moves_real_coverage_through_detour() {
+    let plain = paint_hi(true);
+    let (di, _) = plain
+        .chunks_exact(4)
+        .enumerate()
+        .min_by_key(|(_, c)| c[0])
+        .expect("inked pixels");
+    let (dx, dy) = ((di % 60) as f32, (di / 60) as f32);
+    // 90° image about the run-box center (19, 20).
+    let (ix, iy) = (19.0 - (dy - 20.0), 20.0 + (dx - 19.0));
+    let mut plan = hi_plan();
+    plan.ops.iter_mut().for_each(|op| {
+        op.set_xf(Transform::rotate(90).to_full_affine(19.0, 20.0));
+    });
+    let mut be = CpuBackend::new();
+    be.set_font_for(FID, DEJAVU.into(), 0);
+    let s = be
+        .create_surface(SurfaceDesc {
+            width_px: 60,
+            height_px: 40,
+            background: Color(0xFF_FF_FF),
+        })
+        .expect("surface");
+    be.paint(s, &plan).expect("paint");
+    let px = be.pixmap(s).expect("pixmap").data().to_vec();
+    let at = |x: u32, y: u32| px[(y as usize * 60 + x as usize) * 4];
+    assert!(
+        at(ix as u32, iy as u32) < 160,
+        "rotated image of the darkest pixel inks ({ix}, {iy}), got {}",
+        at(ix as u32, iy as u32)
+    );
+    assert!(
+        at(dx as u32, dy as u32) > 200,
+        "old footprint vacates ({dx}, {dy}), got {}",
+        at(dx as u32, dy as u32)
+    );
+    let inked = inked_positions(&px);
+    let (a, b, c, d) = inked
+        .iter()
+        .fold((u32::MAX, 0, u32::MAX, 0), |(a, b, c, d), &(x, y)| {
+            (a.min(x), b.max(x), c.min(y), d.max(y))
+        });
+    assert!(
+        a >= 11 && b <= 26 && c >= 11 && d <= 27,
+        "ink bbox moved with the turn, got x {a}..{b} y {c}..{d}"
+    );
+    let plain_n = inked_positions(&plain).len();
+    assert!(
+        (plain_n / 2..=plain_n * 2).contains(&inked.len()),
+        "coverage count preserved in band ({} vs {plain_n})",
+        inked.len()
+    );
 }
 
 #[test]

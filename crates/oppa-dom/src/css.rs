@@ -64,38 +64,112 @@ pub(crate) fn fmt_color(c: oppa::Color) -> String {
     )
 }
 
-/// CSS easing name for an evaluator [`Ease`](oppa::Ease) (the v1
-/// animatables are the CSS-expressible ones, so the mapping is total —
-/// every easing has a CSS spelling).
+/// CSS easing name for an evaluator [`Ease`](oppa::Ease): every
+/// cubic has a CSS spelling; [`Spring`](oppa::Ease::Spring) falls
+/// back to `linear` (reached only inside mixed keyframe+transition
+/// declarations — spring tweens declare no CSS `transition:` at all
+/// and step inline instead, so the fallback never owns a motion).
 pub fn ease_name(ease: oppa::Ease) -> &'static str {
     match ease {
         oppa::Ease::Out => "ease-out",
         oppa::Ease::In => "ease-in",
         oppa::Ease::InOut => "ease-in-out",
         oppa::Ease::Linear => "linear",
+        oppa::Ease::Spring => "linear",
     }
 }
 
+/// CSS `transform:` value for a framework [`Transform`](oppa::Transform)
+/// (decisions 511 + 517): `translate(dx,dy)` outer, `rotate(deg)`
+/// middle, `scale(sx,sy)` inner — all about the default center origin,
+/// exactly the canonical `p' = c + R·S·(p − c) + t` the pixel backends
+/// bake (CSS applies the rightmost first, so this spelling scales,
+/// then rotates, then translates — the same product; raster
+/// interpolation stays browser-owned, stated tolerance). Style
+/// translate rides authoring px, which ARE CSS px (device scaling
+/// cancels out — see [`fmt_px`]). Empty for identity (identity
+/// declares nothing — untransformed rules stay byte-identical).
+pub fn transform_value(t: oppa::Transform) -> String {
+    if t.is_identity() {
+        return String::new();
+    }
+    t.require_supported();
+    let (dx, dy, sx, sy, deg) = (
+        t.dx.get(),
+        t.dy.get(),
+        t.sx.get(),
+        t.sy.get(),
+        t.rotate_deg.get(),
+    );
+    let mut out = String::new();
+    if dx != 0.0 || dy != 0.0 {
+        out.push_str(&format!("translate({}px,{}px)", fmt_num(dx), fmt_num(dy)));
+    }
+    if deg != 0.0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("rotate({}deg)", fmt_num(deg)));
+    }
+    if sx != 1.0 || sy != 1.0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("scale({},{})", fmt_num(sx), fmt_num(sy)));
+    }
+    out
+}
+
 /// CSS `transition:` declaration block for one resolved style (M8, §9.4):
-/// one `<property> <dur>ms <easing>` item per v1 animatable the style
-/// actually carries (`bg` → `background-color`, `opacity` → `opacity`).
+/// one `<property> <dur>ms <easing>[ <delay>ms]` item per v1 animatable
+/// the style actually carries (`bg` → `background-color`,
+/// `opacity` → `opacity`, `transform` → `transform` — decision 511;
+/// whole-track delays ride the CSS `transition-delay` spelling —
+/// decision 512). Spring tweens declare nothing (decision 513 — no
+/// CSS spelling exists; the per-frame stepped values own the motion
+/// alone, never fighting a browser transition).
 /// Empty string when there is nothing animatable to declare — a bare
-/// `transition` with no `bg`/`opacity` declares no CSS (stated: the
+/// `transition` with no `bg`/`opacity`/`transform` declares no CSS (stated: the
 /// evaluator has no target to interpolate toward, on either backend).
 pub fn transition_decls(style: &Style, _dpr: f32) -> String {
     let Some(tr) = style.transition else {
         return String::new();
     };
+    if tr.ease == oppa::Ease::Spring {
+        return String::new();
+    }
+    let delay = if tr.delay_ms > 0 {
+        format!(" {}ms", tr.delay_ms)
+    } else {
+        String::new()
+    };
     let mut items: Vec<String> = Vec::new();
     if style.bg.is_some() {
         items.push(format!(
-            "background-color {}ms {}",
+            "background-color {}ms {}{}",
             tr.dur_ms,
-            ease_name(tr.ease)
+            ease_name(tr.ease),
+            delay
         ));
     }
     if style.opacity.is_some() {
-        items.push(format!("opacity {}ms {}", tr.dur_ms, ease_name(tr.ease)));
+        items.push(format!(
+            "opacity {}ms {}{}",
+            tr.dur_ms,
+            ease_name(tr.ease),
+            delay
+        ));
+    }
+    if let Some(t) = style.transform {
+        // Same gate as the value (finite components, positive scale —
+        // decision 517 paints rotation, so this only rejects garbage).
+        t.require_supported();
+        items.push(format!(
+            "transform {}ms {}{}",
+            tr.dur_ms,
+            ease_name(tr.ease),
+            delay
+        ));
     }
     if items.is_empty() {
         return String::new();
@@ -168,6 +242,15 @@ pub fn declarations(style: &Style, dpr: f32) -> String {
     }
     if let Some(o) = style.opacity {
         out.push_str(&format!("opacity:{};", fmt_num(o.get())));
+    }
+    // Decision 511: paint transforms ride the stylesheet like every
+    // other static declaration (identity declares nothing —
+    // untransformed rules stay byte-identical).
+    if let Some(t) = style.transform {
+        let v = transform_value(t);
+        if !v.is_empty() {
+            out.push_str(&format!("transform:{v};"));
+        }
     }
     // Inset border ring (M5 semantics: paint-only, never layout): an
     // inset box-shadow ring, never the `border` property (which would
@@ -531,6 +614,154 @@ mod tests {
             declarations(&r, 1.0)
                 .contains("background:radial-gradient(circle 50px at 30px 70px,#ff0000,#0000ff);"),
             "{r:?}"
+        );
+    }
+
+    #[test]
+    fn transform_declares_css_and_transitions() {
+        // Decision 511: translate + scale map to `transform:` (center
+        // origin by default — the canonical order), identity declares
+        // nothing, and a carried transform joins the `transition:` set.
+        let t: Style = Style::new()
+            .size(10, 10)
+            .transform(oppa::Transform::translate(30, -10))
+            .build();
+        assert!(
+            declarations(&t, 1.0).contains("transform:translate(30px,-10px);"),
+            "{t:?}"
+        );
+        let s: Style = Style::new()
+            .size(10, 10)
+            .transform(oppa::Transform::scale(2, 0.5))
+            .build();
+        assert!(
+            declarations(&s, 1.0).contains("transform:scale(2,0.5);"),
+            "{s:?}"
+        );
+        let both: Style = Style::new()
+            .size(10, 10)
+            .transform(oppa::Transform {
+                dx: oppa::Px::of(4.0),
+                dy: oppa::Px::of(0.0),
+                sx: oppa::Px::of(1.5),
+                sy: oppa::Px::of(1.5),
+                rotate_deg: oppa::Px::of(0.0),
+            })
+            .build();
+        assert!(
+            declarations(&both, 2.0).contains("transform:translate(4px,0px) scale(1.5,1.5);"),
+            "style units are CSS px — DPR cancels by construction: {both:?}"
+        );
+        let plain: Style = Style::new().size(10, 10).build();
+        assert!(!declarations(&plain, 1.0).contains("transform"));
+        let ident: Style = Style::new()
+            .size(10, 10)
+            .transform(oppa::Transform::identity())
+            .build();
+        assert!(
+            !declarations(&ident, 1.0).contains("transform"),
+            "explicit identity declares nothing"
+        );
+        // Transition items follow the carried-animatable rule.
+        let tr: Style = Style::new()
+            .size(10, 10)
+            .bg(oppa::Color(0x11_11_11))
+            .transform(oppa::Transform::translate(8, 0))
+            .transition(oppa::Transition::new(120, oppa::Ease::Out))
+            .build();
+        let decls = transition_decls(&tr, 1.0);
+        assert!(decls.contains("background-color 120ms ease-out"), "{decls}");
+        assert!(decls.contains("transform 120ms ease-out"), "{decls}");
+        let bare: Style = Style::new()
+            .size(10, 10)
+            .transition(oppa::Transition::new(120, oppa::Ease::Out))
+            .build();
+        assert_eq!(
+            transition_decls(&bare, 1.0),
+            "",
+            "nothing carried, nothing declared"
+        );
+    }
+
+    #[test]
+    fn transform_rotate_declares_css() {
+        // Decision 517: rotation spells `rotate()` between translate
+        // and scale (the canonical order — rightmost applies first).
+        let r: Style = Style::new()
+            .size(10, 10)
+            .transform(oppa::Transform::rotate(30))
+            .build();
+        assert!(
+            declarations(&r, 1.0).contains("transform:rotate(30deg);"),
+            "{r:?}"
+        );
+        let full: Style = Style::new()
+            .size(10, 10)
+            .transform(oppa::Transform {
+                dx: oppa::Px::of(4.0),
+                dy: oppa::Px::of(0.0),
+                sx: oppa::Px::of(1.5),
+                sy: oppa::Px::of(1.5),
+                rotate_deg: oppa::Px::of(45.0),
+            })
+            .transition(oppa::Transition::new(120, oppa::Ease::Out))
+            .build();
+        let decls = declarations(&full, 1.0);
+        assert!(
+            decls.contains("transform:translate(4px,0px) rotate(45deg) scale(1.5,1.5);"),
+            "{decls}"
+        );
+        assert!(
+            transition_decls(&full, 1.0).contains("transform 120ms ease-out"),
+            "rotated styles join the transition set"
+        );
+    }
+
+    #[test]
+    fn transition_delay_rides_the_css_delay_spelling() {
+        // Decision 512: whole-track delays declare `transition-delay`
+        // per item (native spelling — the browser holds the entry
+        // value, then runs the full leg).
+        let d: Style = Style::new()
+            .size(10, 10)
+            .bg(oppa::Color(0x11_11_11))
+            .transform(oppa::Transform::translate(8, 0))
+            .transition(oppa::Transition::new(120, oppa::Ease::Out).delayed(60))
+            .build();
+        let decls = transition_decls(&d, 1.0);
+        assert!(
+            decls.contains("background-color 120ms ease-out 60ms"),
+            "{decls}"
+        );
+        assert!(decls.contains("transform 120ms ease-out 60ms"), "{decls}");
+        let plain: Style = Style::new()
+            .size(10, 10)
+            .bg(oppa::Color(0x11_11_11))
+            .transition(oppa::Transition::new(120, oppa::Ease::Out))
+            .build();
+        assert!(
+            !transition_decls(&plain, 1.0).contains("60ms"),
+            "zero delays declare no delay spelling"
+        );
+    }
+
+    #[test]
+    fn spring_tweens_declare_no_css_transition() {
+        // Decision 513: no CSS spelling exists for springs, so a
+        // spring `transition` declares nothing — the per-frame
+        // stepped values (resolve_keyframe) own the motion alone and
+        // never fight a browser transition.
+        let s: Style = Style::new()
+            .size(10, 10)
+            .bg(oppa::Color(0x11_11_11))
+            .transform(oppa::Transform::translate(8, 0))
+            .transition(oppa::Transition::new(200, oppa::Ease::Spring))
+            .build();
+        assert_eq!(transition_decls(&s, 1.0), "");
+        assert_eq!(
+            ease_name(oppa::Ease::Spring),
+            "linear",
+            "mixed-declaration fallback only"
         );
     }
 }

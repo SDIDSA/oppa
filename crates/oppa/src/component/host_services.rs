@@ -605,10 +605,23 @@ impl ComponentHost {
     pub fn toolbar_hit(&self, x: f32, y: f32) -> Option<crate::input::ToolbarAction> {
         let model = crate::reactive::untrack(|| self.toolbar_model().get())?;
         for item in &model.items {
-            let Some(b) = self.committed_box_by_debug(item.debug_name()) else {
+            let Some(id) = self
+                .inner
+                .rec
+                .borrow()
+                .find_by_debug(item.debug_name())
+                .into_iter()
+                .next()
+            else {
                 continue;
             };
-            if x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h {
+            // Decision 511: test in the item's local space (hit
+            // follows the visual under ancestor transforms).
+            let (lx, ly) = self.local_point(id, x, y);
+            let Some(b) = self.committed_box(id) else {
+                continue;
+            };
+            if lx >= b.x && lx < b.x + b.w && ly >= b.y && ly < b.y + b.h {
                 return Some(item.action());
             }
         }
@@ -628,6 +641,10 @@ impl ComponentHost {
         use crate::input::{HandleEdge, HANDLE_HIT_SLOP_PX};
         use crate::render::HANDLE_KNOB_R_PX;
         let (start, end) = self.focused_handles_paint()?;
+        // Decision 511: the grab tests in the field's local space
+        // (handles paint through the builder bake, so the grab must
+        // follow the same visual).
+        let (x, y) = self.local_point(start.field, x, y);
         let score = |h: &crate::render::HandlePaint| {
             let bar_dx = (x - h.x).abs();
             let bar_dy = if y < h.y {

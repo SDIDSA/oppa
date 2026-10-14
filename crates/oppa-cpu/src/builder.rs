@@ -15,18 +15,21 @@
 //! op list per paint, so damage correctness today means "the dirty set is
 //! exactly the rebuilt set").
 
+mod exit;
 mod leaf;
 mod node;
 mod resolve;
 mod shape;
+mod xform;
 
 pub use resolve::{node_styles, style_rule_count};
+pub use xform::{bake_ops, scale_path_data};
 
 use std::collections::HashSet;
 
 use oppa::{
-    CaretPaint, DamageRect, DrawOp, FramePlan, Interner, NodeId, PassMask, Reconciler, Style, Tag,
-    ThemeMode,
+    AffineST, CaretPaint, DamageRect, DrawOp, FramePlan, Interner, NodeId, PaintXf, PassMask,
+    Reconciler, Style, Tag, ThemeMode,
 };
 
 /// Mask bits the builder consumes (LAYOUT stays with M3, SEMANTICS with A11Y).
@@ -59,6 +62,11 @@ pub struct FramePlanBuilder {
     handles: std::cell::Cell<Option<(oppa::HandlePaint, oppa::HandlePaint)>>,
     theme: std::cell::Cell<ThemeMode>,
     theme_tokens: std::cell::Cell<Option<oppa::ThemeTokens>>,
+    /// Deferred-exit snapshots (decision 520 — published per frame
+    /// like the overlays above; empty paints exactly the pre-520
+    /// plan, so every existing caller and oracle row is untouched
+    /// until a removal pins).
+    exits: std::cell::RefCell<Vec<oppa::ExitPin>>,
 }
 
 impl FramePlanBuilder {
@@ -70,6 +78,7 @@ impl FramePlanBuilder {
             handles: std::cell::Cell::new(None),
             theme: std::cell::Cell::new(ThemeMode::Light),
             theme_tokens: std::cell::Cell::new(None),
+            exits: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -140,6 +149,19 @@ impl FramePlanBuilder {
         self.theme_tokens.set(None);
     }
 
+    /// Sets the deferred-exit snapshots (decision 520 — the host's
+    /// live pins, published per frame like the overlays above).
+    /// Takes `&self` so paint hooks set it per frame without
+    /// re-creating the builder.
+    pub fn set_exits(&self, exits: Vec<oppa::ExitPin>) {
+        *self.exits.borrow_mut() = exits;
+    }
+
+    /// The current deferred exits (diagnostics/tests).
+    pub fn exits(&self) -> Vec<oppa::ExitPin> {
+        self.exits.borrow().clone()
+    }
+
     /// The current build palette override (diagnostics/tests).
     pub fn theme_tokens(&self) -> Option<oppa::ThemeTokens> {
         self.theme_tokens.get()
@@ -171,11 +193,12 @@ impl FramePlanBuilder {
 
     /// Incremental build painting TIME-evaluated values (M8, §9.4): same
     /// damage discipline as [`build_incremental`](Self::build_incremental),
-    /// but `bg`/`opacity` resolve through the transition evaluator at
-    /// `now` (live interpolations paint mid-flight; stamped recycles
-    /// paint their jumped targets). The oracle's full arm must use the
-    /// matching [`build_full_evaluated`](Self::build_full_evaluated) at
-    /// the same `now`.
+    /// but `bg`/`opacity`/`transform` resolve through the transition
+    /// evaluator at `now` (live interpolations paint mid-flight;
+    /// stamped recycles paint their jumped targets). The oracle's full
+    /// arm must use the matching
+    /// [`build_full_evaluated`](Self::build_full_evaluated) at the same
+    /// `now`.
     pub fn build_incremental_evaluated(
         &self,
         rec: &mut Reconciler,
@@ -218,9 +241,11 @@ impl FramePlanBuilder {
             full_repaint: full,
             ..FramePlan::default()
         };
-        let Some(root) = rec.root() else {
-            return plan;
-        };
+        // Decision 520: the exit layer runs even for empty trees — a
+        // dismissed overlay leaves no live root behind its fading
+        // ghost, and the ghost still paints (the early return below
+        // covers the live walk only, never the exits).
+        let root = rec.root();
         // Ancestor closure: a node opens the walk iff it is dirty or has a
         // dirty descendant (incremental only).
         let mut open: HashSet<NodeId> = HashSet::new();
@@ -255,7 +280,11 @@ impl FramePlanBuilder {
             portal_phase: false,
             plan: &mut plan,
         };
-        walker.walk(root);
+        // No live root (unmounted tree): the live walk and the portal
+        // phase go quiet — the exit layer below still paints ghosts.
+        if let Some(root) = root {
+            walker.walk(root, AffineST::identity(), PaintXf::identity());
+        }
         // Overlay layers paint last (Round 1.4, decision 255 — the top
         // z-layer): phase 1 skips portal subtrees without accounting
         // them; phase 2 walks outermost portals in tree order (later
@@ -266,7 +295,31 @@ impl FramePlanBuilder {
         walker.portal_phase = true;
         for portal in rec.outermost_portals() {
             if walker.full || walker.open.contains(&portal) {
-                walker.walk(portal);
+                // Decision 511: portal entries reset transform
+                // accumulation (ancestors above a portal never move
+                // its content — the DOM rule, where portal content
+                // lives outside transformed ancestors' elements).
+                walker.walk(portal, AffineST::identity(), PaintXf::identity());
+            }
+        }
+        // Decision 520: deferred exits paint after portals (ghosts
+        // topmost). Raw builds skip the layer (removal-instant
+        // reference semantic); evaluated builds fade through it.
+        // No-op without pins — quiet trees keep byte-identical plans.
+        let tokens = walker.tokens;
+        drop(walker);
+        if let Some((e, now)) = eval {
+            let exits = self.exits.borrow();
+            if !exits.is_empty() {
+                exit::emit_exit_layer(
+                    &mut plan,
+                    rec,
+                    styles,
+                    Some((e, now)),
+                    &exits,
+                    self.dpr,
+                    tokens,
+                );
             }
         }
         plan.stats.ops_emitted = plan.ops.len();
@@ -310,7 +363,7 @@ impl<'a> Walker<'a> {
         self.full || self.open.contains(&id)
     }
 
-    fn walk(&mut self, id: NodeId) {
+    fn walk(&mut self, id: NodeId, acc: AffineST, acc_full: PaintXf) {
         let Some(node) = self.rec.get(id) else { return };
         // Overlay gate (Round 1.4): phase 1 skips portal subtrees whole
         // with no accounting (phase 2 accounts them exactly once, and
@@ -340,23 +393,68 @@ impl<'a> Walker<'a> {
         if self.is_dirty(id) {
             match box_opt {
                 Some(b) => {
+                    // Decisions 521-522: a fenced node paints its
+                    // interpolated box (the fence track while one runs;
+                    // committed boxes stay engine truth — raw builds
+                    // show the target, like removals). Children keep
+                    // their committed end-state boxes under it.
+                    let fence_box = match self.eval {
+                        Some((e, now)) => e.resolve_box(id, now, dpr),
+                        None => None,
+                    };
+                    let fenced = fence_box.is_some();
+                    let b = fence_box.unwrap_or(b);
+                    // Decision 511: this node's paint transform
+                    // (evaluator-live else retained) composes with the
+                    // ancestry — damage covers the transformed AABB,
+                    // ops bake the full accumulated affine. Decision
+                    // 517: the ST bake stays byte-identical AND a full
+                    // affine accumulates beside it; the per-op residual
+                    // (`full ∘ st⁻¹`, identity for ST-only chains)
+                    // rides each op to the backends at paint time.
+                    let own = match self.eval {
+                        Some((e, now)) => e.resolve_transform(id, style.transform, now),
+                        None => style.transform.unwrap_or(oppa::Transform::identity()),
+                    };
+                    let (node_acc, node_full) = if own.is_identity() {
+                        (acc, acc_full)
+                    } else {
+                        own.require_supported();
+                        let cx = b.x + b.w * 0.5;
+                        let cy = b.y + b.h * 0.5;
+                        (
+                            AffineST::compose(acc, own.to_local_affine(cx, cy)),
+                            PaintXf::compose(acc_full, own.to_full_affine(cx, cy)),
+                        )
+                    };
+                    let residual = PaintXf::residual(node_full, node_acc);
+                    let (dx, dy, dw, dh) = if residual.is_identity() {
+                        let (x0, y0) = node_acc.map_point(b.x, b.y);
+                        (x0, y0, node_acc.sx * b.w, node_acc.sy * b.h)
+                    } else {
+                        node_full.map_rect_aabb(b.x, b.y, b.w, b.h)
+                    };
                     self.plan.damage.push(DamageRect {
-                        x: b.x,
-                        y: b.y,
-                        w: b.w,
-                        h: b.h,
+                        x: dx,
+                        y: dy,
+                        w: dw,
+                        h: dh,
                     });
                     // ScrollArea viewports clip their content (M4: emitted
-                    // whenever the viewport node rebuilds).
-                    let clips = tag == Tag::ScrollArea;
+                    // whenever the viewport node rebuilds). Fenced nodes
+                    // with children clip to the interpolated box too
+                    // (decision 522 accordion reveal — leaf fences carry
+                    // no children, so leaves paint exactly as before).
+                    let clips = tag == Tag::ScrollArea || (fenced && !children.is_empty());
                     if clips {
                         self.plan.ops.push(DrawOp::PushClip {
-                            x: b.x,
-                            y: b.y,
-                            w: b.w,
-                            h: b.h,
+                            x: dx,
+                            y: dy,
+                            w: dw,
+                            h: dh,
                         });
                     }
+                    let start = self.plan.ops.len();
                     node::emit_node_ops(
                         self.plan,
                         self.rec,
@@ -372,9 +470,11 @@ impl<'a> Walker<'a> {
                         self.caret,
                         self.handles,
                         self.tokens,
+                        None,
                     );
+                    xform::bake_ops(&mut self.plan.ops[start..], node_acc, residual);
                     for child in &children {
-                        self.walk(*child);
+                        self.walk(*child, node_acc, node_full);
                     }
                     if clips {
                         self.plan.ops.push(DrawOp::Pop);
@@ -383,7 +483,7 @@ impl<'a> Walker<'a> {
                 None => {
                     self.plan.stats.nodes_unboxed += 1;
                     for child in &children {
-                        self.walk(*child);
+                        self.walk(*child, acc, acc_full);
                     }
                 }
             }
@@ -391,7 +491,7 @@ impl<'a> Walker<'a> {
             // Open but clean: emits nothing itself, still walks children
             // (a dirty descendant may hide below).
             for child in &children {
-                self.walk(*child);
+                self.walk(*child, acc, acc_full);
             }
         }
     }

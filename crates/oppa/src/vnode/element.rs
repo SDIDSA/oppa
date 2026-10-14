@@ -25,6 +25,7 @@ impl ElementBuilder {
                 tag,
                 debug: debug.to_string(),
                 key: None,
+                owner: std::cell::Cell::new(None),
                 style: Style::default(),
                 text_hint: None,
                 image: None,

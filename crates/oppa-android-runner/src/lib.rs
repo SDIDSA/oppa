@@ -143,7 +143,8 @@ pub fn run_android<P: oppa::Props>(
     }
     scene.enable_gpu_pinned(oppa_app::RendererKind::GpuAuto, wgpu::PresentMode::Fifo);
     let _ = scene.host().mount("MobileApp", props, render);
-    scene.host().run_until_idle();
+    // Decision 515: bounded (mounts jump — quiesces immediately).
+    scene.host().pump_frames(oppa_app::PUMP_INPUT_FRAMES);
     eprintln!("oppa-boot: mount-idle +{}ms", t_boot.elapsed().as_millis());
     // Density rebase (driver already made pre-window for overlap —
     // same rule, same place in the order).

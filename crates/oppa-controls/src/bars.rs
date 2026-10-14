@@ -135,8 +135,12 @@ fn bar_hit(
 ) -> Option<usize> {
     for i in 0..len {
         for id in oppa::find_retained_by_debug(host, &label(i)) {
+            // Decision 511: test in the cell's local space (hit
+            // follows the visual under ancestor transforms;
+            // identity for untransformed bars).
+            let (lx, ly) = host.local_point(id, x, y);
             if let Some(b) = host.committed_box(id) {
-                if x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h {
+                if lx >= b.x && lx < b.x + b.w && ly >= b.y && ly < b.y + b.h {
                     return Some(i);
                 }
             }

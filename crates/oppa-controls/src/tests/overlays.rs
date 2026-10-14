@@ -376,13 +376,31 @@ fn toast_auto_dismiss_fires_on_clock() {
         },
         toast_render,
     );
+    // Decision 514: the appear-flip arms beside the auto-dismiss
+    // timer — fire it first (due immediately), then settle with
+    // flowing time (the flip's entrance track retires as time
+    // passes — a frozen idle pump would spin on it), so the counts
+    // below read the dismiss timer alone.
+    assert_eq!(host.tick_timers(host.now_ms()), 1, "flip fires");
     settle_clocked(&host, &clock);
     assert_eq!(host.tick_timers(host.now_ms()), 0, "nothing due yet");
     assert!(open.get(), "still visible before the delay");
     clock.advance(4.1);
     assert_eq!(host.tick_timers(host.now_ms()), 1, "delay timer fires");
-    host.run_until_idle();
+    // Decision 520: dismissal now fades (the exit track is live) —
+    // settle with flowing time past the 180ms exit (a frozen idle
+    // pump would spin on it, the entrance-track rule above), then
+    // read the closed state.
+    settle_clocked(&host, &clock);
     assert!(!open.get(), "auto-dismiss closes");
+    assert!(
+        find_retained_by_debug(&host, "toast-card").is_empty(),
+        "toast unmounts on auto-dismiss"
+    );
+    host.with_evaluator(|ev| {
+        assert_eq!(ev.active_count(), 0, "exit retires to zero work");
+    });
+    assert!(!host.has_demand(), "quiet after the exit");
 }
 
 #[test]
@@ -398,9 +416,17 @@ fn toast_sticky_never_arms_timer() {
         },
         toast_render,
     );
+    // Decision 514: sticky arms no auto-dismiss timer — only the
+    // appear-flip, which fires alone here (then settles with
+    // flowing time like above).
+    assert_eq!(host.tick_timers(host.now_ms()), 1, "flip fires");
     settle_clocked(&host, &clock);
     clock.advance(60.0);
-    assert_eq!(host.tick_timers(host.now_ms()), 0, "sticky arms nothing");
+    assert_eq!(
+        host.tick_timers(host.now_ms()),
+        0,
+        "sticky arms nothing more"
+    );
     host.run_until_idle();
     assert!(open.get(), "sticky toast stays until dismissed");
 }

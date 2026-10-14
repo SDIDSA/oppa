@@ -78,9 +78,42 @@ impl DomBackend {
             }
         }
         // Drop shells for retired nodes (commit drives removals; this is
-        // the belt-and-braces for direct-sync callers).
-        self.elements.retain(|id, _| live.contains(id));
+        // the belt-and-braces for direct-sync callers) — kept ghosts
+        // exempt (they paint past removal through the pass below).
+        // Decision 520 exit pass first: settled exits drop, live ones
+        // step their inline values (every change counts touched work
+        // — exit frames must emit patches, never read quiet).
+        self.sync_exits(&mut touched);
+        self.elements
+            .retain(|id, _| live.contains(id) || self.exit_ids.contains(id));
         self.roots = rec.root().into_iter().collect();
+        // Re-home kept ghosts (parents re-derive rec-side every sync
+        // — kept children absent there): parentless ghosts keep a
+        // top-level slot, nested ones restore at their recorded
+        // index (clamped — concurrent live edits never panic). A
+        // retired parent top-levels its ghost instead.
+        for keep in self.exit_kept.clone() {
+            match keep.parent {
+                None => {
+                    if !self.roots.contains(&keep.root) {
+                        self.roots.push(keep.root);
+                    }
+                }
+                Some(p) => match self.elements.get_mut(&p) {
+                    Some(el) => {
+                        if !el.children.contains(&keep.root) {
+                            let pos = keep.index.min(el.children.len());
+                            el.children.insert(pos, keep.root);
+                        }
+                    }
+                    None => {
+                        if !self.roots.contains(&keep.root) {
+                            self.roots.push(keep.root);
+                        }
+                    }
+                },
+            }
+        }
         // Theme contract round: a flipped page chrome is real sync
         // work (the body-style stanza) even when no element
         // re-derived — without this a bare toggle on an unthemed
@@ -94,6 +127,48 @@ impl DomBackend {
             touched,
             elements: self.elements.len(),
         })
+    }
+
+    /// Steps kept ghosts (decision 520): settled exits drop (registry
+    /// delete like the Remove arm), live ones re-declare stepped
+    /// values inline (the keyframe path — ghosts have no CSS mapping)
+    /// plus click-through (ghosts paint, never take input). Every
+    /// change counts touched work (exit frames must emit patches,
+    /// never read quiet).
+    fn sync_exits(&mut self, touched: &mut usize) {
+        if self.exit_kept.is_empty() {
+            return;
+        }
+        let mut dropped = Vec::new();
+        for keep in &self.exit_kept {
+            let mut ids = vec![keep.root];
+            let mut i = 0;
+            while i < ids.len() {
+                let cur = ids[i];
+                i += 1;
+                if let Some(el) = self.elements.get(&cur) {
+                    ids.extend(el.children.iter().copied());
+                }
+            }
+            if ids.iter().all(|id| self.kf_eval.is_settled(*id)) {
+                dropped.push(keep.root);
+                continue;
+            }
+            for id in ids {
+                let kf = exit_inline(self.kf_eval.resolve_keyframe(id, self.kf_now));
+                if let Some(el) = self.elements.get_mut(&id) {
+                    if el.inline_kf != kf {
+                        el.inline_kf = kf;
+                        *touched += 1;
+                    }
+                }
+            }
+        }
+        for root in dropped {
+            // Settle deletion is real patch work (a pure deletion
+            // still emits removes — see `drop_exit`).
+            *touched += self.drop_exit(root);
+        }
     }
 
     fn dfs_ids(&self, rec: &Reconciler) -> Vec<NodeId> {
@@ -270,14 +345,28 @@ impl DomBackend {
         // Static wrappers (transparent layout pass-throughs) carry no
         // geometry — children resolve against the real container.
         let positioned = !is_root && !is_static_wrapper(rec, id);
-        let inline_geom = geom_inline(
-            node.layout.as_ref(),
-            is_root,
-            &kind,
-            self.dpr,
-            origin,
-            positioned,
-        );
+        // Decisions 521-522: layout animation — geometry from the
+        // fence spec sampled on the backend clock (committed
+        // otherwise; content reads below stay committed), fenced
+        // subtrees clip like the builder's rung-2 rule, flip offsets
+        // step inline with the keyframes (never a CSS transition —
+        // stepped values own the motion, so `no_transition` freezes
+        // while flipping).
+        let spec = if self.layout_anim.is_empty() {
+            None
+        } else {
+            self.layout_anim.iter().find(|s| s.id == id)
+        };
+        let now = self.kf_now;
+        let dpr = self.dpr;
+        let fence_box = spec.and_then(|s| s.sample_box(now, dpr));
+        let geom_box: Option<&oppa::LayoutBox> = fence_box.as_ref().or(node.layout.as_ref());
+        let flip: (f32, f32) = spec.map(|s| s.sample_flip(now)).unwrap_or((0.0, 0.0));
+        let flipped = flip != (0.0, 0.0);
+        let mut inline_geom = geom_inline(geom_box, is_root, &kind, self.dpr, origin, positioned);
+        if fence_box.is_some() && !node.children.is_empty() {
+            inline_geom.push_str("overflow:hidden;");
+        }
         let mut attrs = node.semantics.as_ref().map(aria_attrs).unwrap_or_default();
         if node
             .semantics
@@ -360,18 +449,13 @@ impl DomBackend {
         let (handle_bars, handle_knobs, handle_ink) = self.handle_decorations(id, origin);
         // Stepped keyframe values (Phase 36 PR4): the live track's
         // evaluated paint, re-declared inline while it runs (empty
-        // otherwise — unkeyframed markup byte-identical).
-        let inline_kf = match self.kf_eval.resolve_keyframe(id, self.kf_now) {
-            Some((bg, op)) => {
-                let mut s = String::new();
-                if let Some(c) = bg {
-                    s.push_str(&format!("background-color:{};", dom_hex(c)));
-                }
-                s.push_str(&format!("opacity:{};", css_num(op)));
-                s
-            }
-            None => String::new(),
-        };
+        // otherwise — unkeyframed markup byte-identical). Decision
+        // 511 extends the re-declaration to the transform leg (same
+        // rule — tweens keep the CSS `transition:` mapping). Decision
+        // 521 folds the FLIP offset into the stepped transform (same
+        // outermost composition as every backend); flip-only nodes
+        // declare just their offset (bg/opacity cascade untouched).
+        let inline_kf = stepped_inline(self.kf_eval.resolve_keyframe(id, self.kf_now), flip);
         DomElement {
             node: id,
             kind,
@@ -391,8 +475,66 @@ impl DomBackend {
             // `derive` never sets the stamp itself: `sync` flags exactly
             // the touched set of the sync that consumed it (see above),
             // so the flag clears on the next re-derive by comparison.
-            no_transition: false,
+            // Flipped nodes freeze it too (decision 521 — stepped
+            // offsets own the motion; a CSS transition would smooth
+            // each 16ms step into mush).
+            no_transition: flipped,
             inline_kf,
         }
     }
+}
+
+/// Stepped keyframe inline values (the derive rule above, extracted
+/// so the exit pass shares it — never a quieter fork).
+fn stepped_inline(
+    kf: Option<(Option<oppa::Color>, f32, oppa::Transform)>,
+    flip: (f32, f32),
+) -> String {
+    match kf {
+        Some((bg, op, xf)) => {
+            let mut s = String::new();
+            if let Some(c) = bg {
+                s.push_str(&format!("background-color:{};", dom_hex(c)));
+            }
+            s.push_str(&format!("opacity:{};", css_num(op)));
+            let v = crate::css::transform_value(compose_flip(xf, flip));
+            if !v.is_empty() {
+                s.push_str(&format!("transform:{v};"));
+            }
+            s
+        }
+        // Flip-only (decision 521): just the offset — bg/opacity
+        // cascade untouched (unlike keyframes, which restate the
+        // triple they own).
+        None if flip != (0.0, 0.0) => {
+            let v = crate::css::transform_value(compose_flip(oppa::Transform::identity(), flip));
+            if v.is_empty() {
+                String::new()
+            } else {
+                format!("transform:{v};")
+            }
+        }
+        None => String::new(),
+    }
+}
+
+/// Composes a FLIP offset outermost over a transform (decision 521 —
+/// the evaluator's `apply_flip` rule, mirrored here so the stepped
+/// triple stays one composed value).
+fn compose_flip(xf: oppa::Transform, flip: (f32, f32)) -> oppa::Transform {
+    if flip == (0.0, 0.0) {
+        return xf;
+    }
+    oppa::Transform {
+        dx: oppa::Px::of(xf.dx.get() + flip.0),
+        dy: oppa::Px::of(xf.dy.get() + flip.1),
+        ..xf
+    }
+}
+
+/// Stepped exit inline (decision 520): the twin's evaluated paint
+/// re-declared per frame (shared rule above) plus click-through —
+/// ghosts paint, never take input.
+fn exit_inline(kf: Option<(Option<oppa::Color>, f32, oppa::Transform)>) -> String {
+    format!("pointer-events:none;{}", stepped_inline(kf, (0.0, 0.0)))
 }

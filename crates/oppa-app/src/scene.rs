@@ -623,7 +623,8 @@ impl SceneCore {
         flip: impl FnOnce(&mut ComponentHost),
     ) -> Result<usize, String> {
         flip(&mut self.session.host);
-        self.session.host.run_until_idle();
+        // Decision 515: bounded (benchmark flips may start loops).
+        self.session.host.pump_frames(crate::PUMP_INPUT_FRAMES);
         let plan = self
             .session
             .host
@@ -649,7 +650,8 @@ impl SceneCore {
         render: fn(&Ctx, &P) -> VNode,
     ) -> MountHandle<P> {
         let handle = self.session.host.mount(name, props, render);
-        self.session.host.run_until_idle();
+        // Decision 515: bounded (mounts jump — quiesces immediately).
+        self.session.host.pump_frames(crate::PUMP_INPUT_FRAMES);
         handle
     }
 }

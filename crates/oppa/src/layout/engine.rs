@@ -24,6 +24,11 @@ pub struct LayoutEngine {
     /// 2, decision 193). None -> legacy greedy cluster-boundary wrap
     /// (all existing M3 behavior preserved byte-for-byte).
     pub(crate) break_source: Option<Rc<dyn BreakSource>>,
+    /// Layout-animated box changes recorded by `commit_box` this run
+    /// (decisions 521–522): drained per pass into the ledger (below),
+    /// never accumulated — runs without a host drain still bound it
+    /// to one pass worth.
+    pub(crate) moves: Vec<crate::layout::LayoutMove>,
 }
 
 impl LayoutEngine {
@@ -33,6 +38,7 @@ impl LayoutEngine {
             ellipsis_widths: HashMap::new(),
             font_names: HashMap::new(),
             break_source: None,
+            moves: Vec::new(),
         }
     }
 
@@ -90,6 +96,11 @@ pub struct LayoutLedger {
     pub(crate) engine: LayoutEngine,
     pub(crate) generation: Signal<u64>,
     pub(crate) last_stats: LayoutStats,
+    /// Layout-animated box changes from the last run (decisions
+    /// 521–522): moved here per pass (never accumulated), drained by
+    /// the host into track synthesis. Empty for animation-free
+    /// passes — quiet trees keep zero-cost runs.
+    pub(crate) last_moves: Vec<crate::layout::LayoutMove>,
 }
 
 impl LayoutLedger {
@@ -98,6 +109,7 @@ impl LayoutLedger {
             engine: LayoutEngine::new(LayoutTextConfig::default()),
             generation: rt.signal(0u64),
             last_stats: LayoutStats::default(),
+            last_moves: Vec::new(),
         }
     }
 
@@ -169,6 +181,9 @@ impl LayoutLedger {
         let mut out = stats;
         out.generation_bumped = stats.boxes_changed > 0 || stats.boxes_dropped;
         self.last_stats = out;
+        // Decision 521–522: move the pass's animation records where
+        // the host drains them (replacing, never accumulating).
+        self.last_moves = std::mem::take(&mut self.engine.moves);
         out
     }
 }
@@ -230,6 +245,7 @@ fn run_layout(
             dpr,
             viewport_w,
             viewport_h,
+            mounted: HashSet::new(),
         };
         let root_style = ctx.style_of(root);
         root_style_w = root_style.w.map(|p| p.get() * dpr);
@@ -297,6 +313,11 @@ pub(crate) struct LayoutCtx<'a> {
     pub(crate) engine: &'a mut LayoutEngine,
     pub(crate) stats: &'a mut LayoutStats,
     pub(crate) dpr: f32,
+    /// Nodes whose box was first committed this run (decisions
+    /// 521-522): mounts jump, never animate — `reposition` and
+    /// `set_box_h` consult this so placement/growth of fresh mounts
+    /// records nothing. Fresh per run (the struct is per-run).
+    pub(crate) mounted: HashSet<NodeId>,
     /// Viewport width in device px (Round 1.4: portal layers anchor to
     /// it instead of their parent's constraint).
     pub(crate) viewport_w: f32,

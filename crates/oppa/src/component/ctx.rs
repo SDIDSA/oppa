@@ -721,6 +721,9 @@ impl Ctx {
         // M8 (finding F6): stamp the child instance (inner children
         // already stamped theirs — only `None`s are filled).
         crate::vnode::stamp_handler_owner(&vnode, id);
+        // Decision 519: stamp node ownership the same way (the
+        // subtree-unmount sweep reads element stamps).
+        crate::vnode::stamp_node_owner(&vnode, id);
         vnode
     }
 
@@ -827,6 +830,7 @@ impl Ctx {
         outcome
             .inspect(|vnode| {
                 crate::vnode::stamp_handler_owner(vnode, id);
+                crate::vnode::stamp_node_owner(vnode, id);
             })
             .map_err(|err| {
                 if let Some(s) = err.downcast_ref::<&str>() {

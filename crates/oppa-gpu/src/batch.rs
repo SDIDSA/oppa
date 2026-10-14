@@ -109,6 +109,14 @@ fn to_scissor(eff: (f32, f32, f32, f32), sw: u32, sh: u32) -> (u32, u32, u32, u3
     (sx.min(sw), sy.min(sh), sw_box, sh_box)
 }
 
+/// Residual paint affine as instance attributes (decision 517):
+/// identity for ST-only chains (the shader multiplies through, so
+/// unrotated instances land on the exact old pixels).
+fn xf_attrs(op: &DrawOp) -> ([f32; 4], [f32; 2]) {
+    let xf = op.xf();
+    ([xf.a, xf.b, xf.c, xf.d], [xf.tx, xf.ty])
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn collect_batches(
     ops: &[DrawOp],
@@ -169,11 +177,14 @@ pub fn collect_batches(
             } => {
                 let a = alpha * opacity;
                 if a > 0.0 && *w > 0.0 && *h > 0.0 {
+                    let (xf_abcd, xf_t) = xf_attrs(op);
                     let instance = QuadInstance {
                         rect: [*x, *y, *w, *h],
                         color: to_rgba_f32(*color, a),
                         radii: [0.0, 0.0, 0.0, 0.0],
                         params: [0.0, 0.0, 0.0, 0.0],
+                        xf_abcd,
+                        xf_t,
                     };
                     push_quad(collector, scissor, instance);
                     collector.executed_ops += 1;
@@ -193,11 +204,14 @@ pub fn collect_batches(
                 let a = alpha * opacity;
                 if a > 0.0 && *w > 0.0 && *h > 0.0 {
                     let r_box = radii.unwrap_or([*radius, *radius, *radius, *radius]);
+                    let (xf_abcd, xf_t) = xf_attrs(op);
                     let instance = QuadInstance {
                         rect: [*x, *y, *w, *h],
                         color: to_rgba_f32(*color, a),
                         radii: r_box,
                         params: [0.0, 0.0, 0.0, 0.0],
+                        xf_abcd,
+                        xf_t,
                     };
                     push_quad(collector, scissor, instance);
                     collector.executed_ops += 1;
@@ -213,11 +227,14 @@ pub fn collect_batches(
             } => {
                 let a = alpha * opacity;
                 if a > 0.0 && *r > 0.0 {
+                    let (xf_abcd, xf_t) = xf_attrs(op);
                     let instance = QuadInstance {
                         rect: [cx - r, cy - r, 2.0 * r, 2.0 * r],
                         color: to_rgba_f32(*color, a),
                         radii: [0.0, 0.0, 0.0, 0.0],
                         params: [1.0, 0.0, 0.0, 0.0],
+                        xf_abcd,
+                        xf_t,
                     };
                     push_quad(collector, scissor, instance);
                     collector.executed_ops += 1;
@@ -236,15 +253,19 @@ pub fn collect_batches(
             } => {
                 if alpha > 0.0 && *w > 0.0 && *h > 0.0 {
                     if *blur_radius <= 0.0 {
+                        let (xf_abcd, xf_t) = xf_attrs(op);
                         let instance = QuadInstance {
                             rect: [x + dx, y + dy, *w, *h],
                             color: to_rgba_f32(*color, alpha),
                             radii: [0.0, 0.0, 0.0, 0.0],
                             params: [0.0, 0.0, 0.0, 0.0],
+                            xf_abcd,
+                            xf_t,
                         };
                         push_quad(collector, scissor, instance);
                     } else {
                         let margin = (3.0 * blur_radius).ceil();
+                        let (xf_abcd, xf_t) = xf_attrs(op);
                         let instance = QuadInstance {
                             rect: [
                                 x + dx - margin,
@@ -255,6 +276,8 @@ pub fn collect_batches(
                             color: to_rgba_f32(*color, alpha),
                             radii: [0.0, 0.0, 0.0, 0.0],
                             params: [2.0, *blur_radius, *dx, *dy],
+                            xf_abcd,
+                            xf_t,
                         };
                         push_quad(collector, scissor, instance);
                     }
@@ -293,6 +316,7 @@ pub fn collect_batches(
                         let cells = &glyphs[lo..hi];
                         match faces.face_for(run.font_id) {
                             Some(face) => {
+                                let (xf_abcd, xf_t) = xf_attrs(op);
                                 for g in cells {
                                     if let Some(cached) = atlas.get_or_insert(
                                         queue,
@@ -307,6 +331,8 @@ pub fn collect_batches(
                                             rect: [gx, gy, cached.size[0], cached.size[1]],
                                             uv: cached.uv,
                                             color: to_rgba_f32(*ink, a),
+                                            xf_abcd,
+                                            xf_t,
                                         };
                                         push_glyph(collector, scissor, instance);
                                     }
@@ -316,11 +342,14 @@ pub fn collect_batches(
                                 // Fallback: legacy advance-cell bars
                                 for g in cells {
                                     if g.advance > 0.0 {
+                                        let (xf_abcd, xf_t) = xf_attrs(op);
                                         let instance = QuadInstance {
                                             rect: [x + g.x, *y, g.advance, *line_height],
                                             color: to_rgba_f32(*ink, a),
                                             radii: [0.0, 0.0, 0.0, 0.0],
                                             params: [0.0, 0.0, 0.0, 0.0],
+                                            xf_abcd,
+                                            xf_t,
                                         };
                                         push_quad(collector, scissor, instance);
                                     }
@@ -346,9 +375,13 @@ pub fn collect_batches(
                     let stroke_spec = stroke.map(|s| (to_rgba_f32(s.color, a), s.width));
 
                     let start_idx = collector.path_indices.len() as u32;
+                    // Paths rotate on the CPU (decision 517): the
+                    // tessellated vertices carry the residual, so the
+                    // path pipeline needs no layout change.
                     let painted = tessellate_svg_path(
                         data,
                         (*x, *y),
+                        op.xf(),
                         fill_col,
                         stroke_spec,
                         &mut collector.path_vertices,
@@ -376,10 +409,13 @@ pub fn collect_batches(
                             "RImg {image:?}: image texture not registered — refused, never silent"
                         ));
                     }
+                    let (xf_abcd, xf_t) = xf_attrs(op);
                     let instance = TexturedInstance {
                         rect: [*x, *y, *w, *h],
                         uv: [0.0, 0.0, 1.0, 1.0],
                         color: [1.0, 1.0, 1.0, alpha],
+                        xf_abcd,
+                        xf_t,
                     };
                     push_image(collector, scissor, *image, instance);
                     collector.executed_ops += 1;

@@ -45,6 +45,18 @@ impl Runtime {
         self.state.borrow().handler_owners.get(&id).copied()
     }
 
+    /// Drops handler-ownership rows for dead instances (decision 519 —
+    /// the subtree-unmount sweep: routing must never resolve through
+    /// an evicted instance's stale rows). The handler closures stay
+    /// registered (hot-swap identity is id-keyed, never owner-keyed);
+    /// only the owner attribution is pruned.
+    pub(crate) fn prune_handler_owners(&self, dead: &std::collections::HashSet<u64>) {
+        self.state
+            .borrow_mut()
+            .handler_owners
+            .retain(|_, owner| !dead.contains(owner));
+    }
+
     /// Sets the currently-running component instance for handler-owner
     /// tagging (the host sets this around each run; not user code).
     pub fn set_input_owner(&self, owner: Option<u64>) {

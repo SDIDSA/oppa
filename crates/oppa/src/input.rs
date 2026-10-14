@@ -48,8 +48,10 @@
 //!   machinery rides them in v1.
 
 use crate::arena::NodeId;
+use crate::interner::Interner;
 use crate::reconciler::Reconciler;
 use crate::shell::EventKind;
+use crate::style::{PaintXf, Style, Transform};
 use crate::vnode::Tag;
 
 pub mod actions;
@@ -568,22 +570,90 @@ fn contains(b: &crate::layout::LayoutBox, x: f32, y: f32) -> bool {
 /// Returns the deepest node containing `(x, y)`; same-depth ties go to
 /// the later sibling; nodes without a committed box are skipped. Misses
 /// return [`None`] — never a silent root fallback.
-pub fn hit_test(rec: &Reconciler, x: f32, y: f32) -> Option<NodeId> {
+///
+/// Decision 511: the walk is transform-aware — each node's paint
+/// transform (evaluator-live through `live`, else the retained style)
+/// maps the root-space point into node-local space before the box
+/// test, composing down the ancestry (hit follows the visual on every
+/// backend — web included, since DOM pointer events re-hit-test from
+/// coordinates). Each outermost portal entry starts from identity
+/// (portals reset accumulation, the builder rule — ancestors above a
+/// portal never move its content). `live` returning `None` reads the
+/// retained style (settled trees). Decision 517 extends the
+/// accumulation to the full affine (rotation included — the inverse
+/// maps visual points back into layout space exactly). `effbox`
+/// substitutes the fence-interpolated box while one runs (decisions
+/// 521-522 — hit follows the lagging visual, never the committed
+/// target); `None` reads the committed box.
+pub fn hit_test(
+    rec: &Reconciler,
+    styles: &Interner<Style>,
+    x: f32,
+    y: f32,
+    live: &dyn Fn(NodeId) -> Option<Transform>,
+    effbox: &dyn Fn(NodeId) -> Option<crate::layout::LayoutBox>,
+) -> Option<NodeId> {
     let root = rec.root()?;
     for portal in rec.outermost_portals().iter().rev() {
-        if let Some(deep) = hit_subtree(rec, *portal, x, y) {
+        if let Some(deep) = hit_subtree(
+            rec,
+            styles,
+            *portal,
+            x,
+            y,
+            PaintXf::identity(),
+            live,
+            effbox,
+        ) {
             return Some(deep);
         }
     }
-    hit_subtree(rec, root, x, y)
+    hit_subtree(rec, styles, root, x, y, PaintXf::identity(), live, effbox)
 }
 
-fn hit_subtree(rec: &Reconciler, id: NodeId, x: f32, y: f32) -> Option<NodeId> {
+#[allow(clippy::too_many_arguments)] // live pair threads with the walk state; a params struct buys nothing
+fn hit_subtree(
+    rec: &Reconciler,
+    styles: &Interner<Style>,
+    id: NodeId,
+    x: f32,
+    y: f32,
+    acc: PaintXf,
+    live: &dyn Fn(NodeId) -> Option<Transform>,
+    effbox: &dyn Fn(NodeId) -> Option<crate::layout::LayoutBox>,
+) -> Option<NodeId> {
     let node = rec.get(id)?;
+    // This node's paint transform (live track wins, else retained):
+    // compose with the ancestry and test the box in local space.
+    // The box is the fence-interpolated one while a fence runs
+    // (decisions 521-522 — same visual the painter serves, resolved
+    // once per node for both the accumulation and the claim below).
+    // Borrowed either way (the sampled box carries no lines — hit
+    // needs geometry only — so unfenced chains clone nothing).
+    let retained = styles.get(node.style).and_then(|s| s.transform);
+    let owned = live(id).or(retained);
+    let eff = effbox(id);
+    let layout = eff.as_ref().or(node.layout.as_ref());
+    let acc = match (owned, &layout) {
+        (Some(t), Some(b)) => {
+            t.require_supported();
+            let local = t.to_full_affine(b.x + b.w * 0.5, b.y + b.h * 0.5);
+            PaintXf::compose(acc, local)
+        }
+        // Boxless nodes never claim (the `match` below) but their
+        // children still hit — a transform without a box has no
+        // center to compose around, so the ancestry passes through.
+        _ => acc,
+    };
+    let (lx, ly) = if acc.is_identity() {
+        (x, y)
+    } else {
+        acc.unmap_point(x, y)
+    };
     // Later siblings win ties: keep the LAST child hit, not the first.
     let mut hit: Option<NodeId> = None;
     for child in &node.children {
-        if let Some(deep) = hit_subtree(rec, *child, x, y) {
+        if let Some(deep) = hit_subtree(rec, styles, *child, x, y, acc, live, effbox) {
             hit = Some(deep);
         }
     }
@@ -600,8 +670,11 @@ fn hit_subtree(rec: &Reconciler, id: NodeId, x: f32, y: f32) -> Option<NodeId> {
     if node.tag == Tag::Portal && node.handlers.is_empty() {
         return None;
     }
-    match &node.layout {
-        Some(b) if contains(b, x, y) => Some(id),
+    // The claim tests the resolved box above (decisions 521-522 —
+    // recomputing here would double-sample the interpolator; the
+    // portal rule above still reads retained state only).
+    match &layout {
+        Some(b) if contains(b, lx, ly) => Some(id),
         _ => None,
     }
 }

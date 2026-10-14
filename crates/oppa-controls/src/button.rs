@@ -240,6 +240,9 @@ pub fn Button(ctx: &Ctx, props: &ButtonProps) -> VNode {
     // Pressed flag rides this instance (each button tints alone;
     // disabled never flags by router construction).
     let pressed = props.enabled && ctx.pressed().get();
+    // Hover wash (decision 514): enabled buttons read lighter while
+    // hovered (never the pressed depth — distinct affordances).
+    let hovered = props.enabled && ctx.hovered().get();
     let themed_bg = if props.enabled {
         t.primary
     } else {
@@ -252,6 +255,8 @@ pub fn Button(ctx: &Ctx, props: &ButtonProps) -> VNode {
         } else if props.fill.is_none() && bg == t.primary {
             bg = t.primary_pressed;
         }
+    } else if hovered {
+        bg = crate::motion::hover_fill(bg);
     }
     // Round 8.3: enabled buttons show the hand (disabled stays the
     // platform arrow — inert controls never promise clicks).
@@ -260,7 +265,12 @@ pub fn Button(ctx: &Ctx, props: &ButtonProps) -> VNode {
     } else {
         Style::new().size(props.width, props.height)
     };
-    button_style = button_style.radius(props.radius.unwrap_or(6.0)).bg(bg);
+    button_style = button_style
+        .radius(props.radius.unwrap_or(6.0))
+        .bg(bg)
+        // Decision 514: press/hover swaps tween (one feel, no app
+        // code — static scenes declare but never run it).
+        .transition(Transition::micro());
     if props.enabled {
         button_style = button_style.cursor(CursorIcon::Pointer);
     }

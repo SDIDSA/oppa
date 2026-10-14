@@ -465,3 +465,62 @@ fn resize_refits_both_surfaces_in_lockstep() {
     assert_eq!(loop_.rgba8().expect("pixels").len(), 400 * 300 * 4);
     assert!(loop_.gpu_retained_op_count().unwrap_or(0) > 0);
 }
+
+/// Decision 516: repaint paints TIME-evaluated values (live tweens
+/// mid-flight) — the retained build showed only targets, so every
+/// desktop tween jumped start→end in one present (the motion-lab
+/// report). Would fail pre-fix (mid-flight pixel reads the target,
+/// never gray). Near-black target (pure `0x000000` is value-identical
+/// to `TRANSPARENT` and snaps/skips by the pre-existing M6/505
+/// transparency rule — never use it as a tween endpoint).
+#[test]
+fn repaint_paints_midflight_values() {
+    use oppa::{Ease, Transition};
+    #[derive(Clone)]
+    struct FadeProps {
+        dark: oppa::Signal<bool>,
+    }
+    impl Props for FadeProps {}
+    fn fade_app(_ctx: &Ctx, p: &FadeProps) -> VNode {
+        Div("fade-root")
+            .style(
+                Style::new()
+                    .size(200, 150)
+                    .bg(if p.dark.get() {
+                        Color(0x01_01_01)
+                    } else {
+                        Color(0xFF_FF_FF)
+                    })
+                    .transition(Transition::new(120, Ease::Linear)),
+            )
+            .build()
+    }
+    let clock = Rc::new(oppa::MockClock::new());
+    let mut loop_ = DesktopLoop::with_clock(200, 150, Box::new(FakeText), "Test", clock.clone())
+        .expect("headless loop builds");
+    let dark = loop_.host().runtime().signal(false);
+    loop_.mount("Fade", FadeProps { dark: dark.clone() }, fade_app);
+    loop_.host().run_until_idle();
+    loop_.repaint().expect("entry paints");
+    let px = |loop_: &DesktopLoop| {
+        let rgba = loop_.rgba8().expect("pixels");
+        let o = (75 * 200 + 100) * 4;
+        (rgba[o], rgba[o + 1], rgba[o + 2])
+    };
+    assert_eq!(px(&loop_), (255, 255, 255), "entry white");
+    // Flip to black: a 120ms linear tween starts.
+    dark.set(true);
+    clock.advance(1.0 / 60.0);
+    loop_.host().run_once();
+    clock.advance(0.06);
+    loop_.repaint().expect("mid-flight paints");
+    let mid = px(&loop_);
+    assert!(
+        (0x60..0xA0).contains(&mid.0) && mid.0 == mid.1 && mid.1 == mid.2,
+        "mid-flight pixel reads gray, got {mid:?}"
+    );
+    // Past the end: exact near-black, settled quiet.
+    clock.advance(0.2);
+    loop_.repaint().expect("settled paints");
+    assert_eq!(px(&loop_), (1, 1, 1), "target near-black exact");
+}

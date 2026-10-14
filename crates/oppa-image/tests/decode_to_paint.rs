@@ -4,7 +4,7 @@
 //! native, deposit with insert_image on the UI thread); this test
 //! proves the sync spine the pattern rides.
 
-use oppa::{DrawOp, FramePlan, ImageId, NodeId, PlanStats, RendererBackend};
+use oppa::{DrawOp, FramePlan, ImageId, NodeId, PaintXf, PlanStats, RendererBackend};
 
 fn rimg_plan(image: ImageId) -> FramePlan {
     FramePlan {
@@ -17,6 +17,7 @@ fn rimg_plan(image: ImageId) -> FramePlan {
             w: 2.0,
             h: 2.0,
             image,
+            xf: PaintXf::identity(),
         }],
         damage: vec![],
         stats: PlanStats::default(),

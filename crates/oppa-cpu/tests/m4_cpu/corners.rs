@@ -63,3 +63,103 @@ fn per_corner_radii_paint_round_and_sharp_vertices() {
     assert_eq!(px(99, 39), gray(), "sharp BR stays square");
     assert_eq!(px(50, 20), gray(), "center fills");
 }
+
+// ---------------------------------------------------------------------------
+// Decision 518: translucent rounded fills blend once (no pane-grid).
+// The bands+discs pieces overlap each other, so translucent fills
+// through the legacy path double-blend every overlap (the springs
+// artifact — invisible at opacity 1, which is why no oracle caught
+// it). Hand-built single-op plans, unit-direct.
+// ---------------------------------------------------------------------------
+
+struct PxRig {
+    backend: CpuBackend,
+    surface: oppa::SurfaceId,
+}
+
+fn paint_rrect(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    radii: Option<[f32; 4]>,
+    opacity: f32,
+) -> PxRig {
+    let plan = FramePlan {
+        viewport_w: VW,
+        viewport_h: VH,
+        ops: vec![DrawOp::RRect {
+            node: NodeId::new(1, 0),
+            x,
+            y,
+            w,
+            h,
+            radius,
+            radii,
+            color: Color(0x22_66_CC),
+            opacity,
+            xf: PaintXf::identity(),
+        }],
+        damage: vec![],
+        stats: Default::default(),
+        full_repaint: true,
+    };
+    let mut backend = CpuBackend::new();
+    let surface = backend
+        .create_surface(oppa::SurfaceDesc {
+            width_px: VW as u32,
+            height_px: VH as u32,
+            background: Color(0xFF_FF_FF),
+        })
+        .expect("surface");
+    backend.paint(surface, &plan).expect("paint");
+    PxRig { backend, surface }
+}
+
+/// Uniform translucent rounded rect: center, edge-mid, and
+/// top-mid read the SAME single-blend value (double-blended
+/// overlaps would differ by tens), inside the analytic band.
+#[test]
+fn translucent_rrect_blends_uniformly() {
+    let rig = paint_rrect(10.0, 10.0, 40.0, 20.0, 6.0, None, 0.5);
+    let px = |x: u32, y: u32| rig.backend.pixel_rgba(rig.surface, x, y).expect("pixel");
+    let (center, edge, top) = (px(30, 20), px(12, 20), px(30, 12));
+    assert_eq!(edge, center, "edge band matches center (no double-blend)");
+    assert_eq!(top, center, "top band matches center (no double-blend)");
+    let (r, g, b, a) = center;
+    assert_eq!(a, 255, "composites opaque over white");
+    assert!(
+        (143..=147).contains(&r) && (177..=182).contains(&g) && (228..=232).contains(&b),
+        "single-blend 0.5 blue over white, got ({r}, {g}, {b})"
+    );
+}
+
+/// Per-corner translucent rounded rect: the same uniformity across
+/// a round corner interior, a sharp corner, and the center.
+#[test]
+fn translucent_corners_rrect_blends_uniformly() {
+    let rig = paint_rrect(
+        10.0,
+        10.0,
+        40.0,
+        20.0,
+        0.0,
+        Some([10.0, 0.0, 10.0, 0.0]),
+        0.5,
+    );
+    let px = |x: u32, y: u32| rig.backend.pixel_rgba(rig.surface, x, y).expect("pixel");
+    let (center, round, sharp) = (px(30, 20), px(14, 14), px(46, 14));
+    assert_eq!(round, center, "round corner matches center");
+    assert_eq!(sharp, center, "sharp corner matches center");
+}
+
+/// Opaque control: the legacy path still paints the exact color
+/// (the 518 branch keeps opaque fills byte-identical).
+#[test]
+fn opaque_rrect_still_paints_exact() {
+    let rig = paint_rrect(10.0, 10.0, 40.0, 20.0, 6.0, None, 1.0);
+    let px = |x: u32, y: u32| rig.backend.pixel_rgba(rig.surface, x, y).expect("pixel");
+    assert_eq!(px(30, 20), (0x22, 0x66, 0xCC, 255));
+    assert_eq!(px(12, 20), (0x22, 0x66, 0xCC, 255));
+}

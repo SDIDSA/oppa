@@ -79,6 +79,10 @@ impl ToastProps {
 /// the Modal precedent, zero gap in parent flex layouts.
 pub fn Toast(ctx: &Ctx, props: &ToastProps) -> VNode {
     let t = ctx.theme().tokens();
+    // Decision 514: appear-fade visibility first (the guarded reset
+    // must run on the closed path, or the next show would mount
+    // already shown).
+    let shown = crate::motion::enter_shown(ctx, &props.open);
     if !props.open.get() {
         return Portal("toast-closed")
             .style(Style::new().size(0, 0))
@@ -107,7 +111,20 @@ pub fn Toast(ctx: &Ctx, props: &ToastProps) -> VNode {
                 .border(1, t.border)
                 .pad_x(16)
                 .pad_y(12)
-                .gap(12),
+                .gap(12)
+                // Decision 514: fades + rises on show (appear-first —
+                // exits snap, see SPEC).
+                .opacity(Some(if shown.get() { 1.0 } else { 0.0 }))
+                .transform(if shown.get() {
+                    oppa::Transform::identity()
+                } else {
+                    oppa::Transform::translate(0, crate::motion::ENTER_RISE_PX)
+                })
+                .transition(oppa::Transition::enter())
+                // Decision 520: dismissal fades out (the anchor below
+                // carries the same declaration — the removed root pins;
+                // this rides frozen under that envelope while nested).
+                .exit(oppa::Transition::exit()),
         )
         .semantics(Semantics::status().label(&props.message))
         .children([
@@ -130,7 +147,19 @@ pub fn Toast(ctx: &Ctx, props: &ToastProps) -> VNode {
             .fill_height()
             .justify_content(JustifyContent::End)
             .align_items(AlignItems::Center)
-            .pad_bottom(24),
+            .pad_bottom(24)
+            // Decision 520: the dismiss removal roots here (portal
+            // children diff to empty) — this pins the whole overlay;
+            // the card above rides frozen under the one envelope.
+            .exit(oppa::Transition::exit()),
     );
-    Portal("toast-portal").child(anchor.child(card))
+    Portal("toast-portal")
+        .style(
+            Style::new()
+                // Decision 520: dismissal fade safety (the anchor
+                // above pins as the removed root; this rides only if
+                // the structure inverts).
+                .exit(oppa::Transition::exit()),
+        )
+        .child(anchor.child(card))
 }

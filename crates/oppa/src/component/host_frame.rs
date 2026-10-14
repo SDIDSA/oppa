@@ -232,9 +232,48 @@ impl ComponentHost {
         f(&mut self.inner.evaluator.borrow_mut())
     }
 
+    /// One-shot transition-completion observer (decision 512): `f`
+    /// fires from the TIME phase once `node` carries no live track —
+    /// a settled Once tween/keyframe, a cancelled or stamped track,
+    /// or an unmounted (pruned) one. Loops pend until cancelled
+    /// (they never settle — observing one only pays off after a
+    /// cancel/stamp). Already-settled nodes fire on the next pump
+    /// (uniform async contract — never synchronous). One-shot:
+    /// consumed on fire, so chains re-observe per link. Callbacks run
+    /// in TIME-phase runtime context — setting a signal there chains
+    /// the next step through the normal pump. Observation starts at
+    /// registration (retirements before that are history — read
+    /// `is_settled` through [`ComponentHost::with_evaluator`] first
+    /// when history matters). Untracked.
+    pub fn observe_settled(&self, node: NodeId, f: impl FnOnce() + 'static) {
+        self.inner
+            .settle_observers
+            .borrow_mut()
+            .push((node, Box::new(f)));
+        self.inner.rt.request_frame();
+        self.ensure_settle_drain();
+    }
+
     pub fn run_until_idle(&self) -> usize {
         self.fire_due_longpresses();
         self.inner.rt.run_until_idle()
+    }
+
+    /// Pumps at most `max_frames` frames, stopping early at
+    /// quiescence — returns frames run (decision 515). Runners use
+    /// this wherever loop tracks may live: bare `run_until_idle`
+    /// spins forever under a loop (loops never retire), freezing
+    /// the UI thread — a cap keeps event pumps responsive while
+    /// Once-only worlds quiesce early, identically to today.
+    /// Frozen-clock tests keep `run_once` stepping (a cap cannot
+    /// retire time-bound tracks without flowing time).
+    pub fn pump_frames(&self, max_frames: usize) -> usize {
+        for done in 0..max_frames {
+            if !self.run_once() {
+                return done;
+            }
+        }
+        max_frames
     }
 
     /// Runs one frame if there is demand (M8: TIME-stepped tests advance

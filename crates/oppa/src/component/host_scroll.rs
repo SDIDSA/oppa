@@ -119,7 +119,7 @@ impl ComponentHost {
         if let Some(sig) = self.inner.scroll_feeds.borrow().get(&target).cloned() {
             sig.update(|v| v + dy);
         } else if dy != 0.0 {
-            if let Some((sig, max_y)) = self.owner_scroll_signal(target) {
+            if let Some((sig, max_y)) = Self::owner_scroll_signal(&self.inner, target) {
                 sig.update(|v| (v + dy).clamp(0.0, max_y));
             }
         }
@@ -134,7 +134,7 @@ impl ComponentHost {
                     .map(|b| (b.content_w - b.w).max(0.0))
                     .unwrap_or(0.0);
                 sig.update(|v| (v + dx).clamp(0.0, max_x));
-            } else if let Some((sig, max_x)) = self.owner_scroll_x_signal(target) {
+            } else if let Some((sig, max_x)) = Self::owner_scroll_x_signal(&self.inner, target) {
                 // Phase 36 PR2b (decision 354): the Round 24.2
                 // self-wire transposed — unbound `dx` feeds the
                 // target's handler-owner instance `scroll_x` (created
@@ -156,22 +156,20 @@ impl ComponentHost {
     /// owner is gone, the owner never created an offset, or the target
     /// has no committed box yet (quiet — the M5 dispatch-only rule,
     /// not a wiring bug).
-    fn owner_scroll_signal(&self, target: NodeId) -> Option<(Signal<f32>, f32)> {
+    /// Takes `inner` (not `self`) so layout-phase code shares it
+    /// without a host handle.
+    pub(super) fn owner_scroll_signal(
+        inner: &HostInner,
+        target: NodeId,
+    ) -> Option<(Signal<f32>, f32)> {
         let hid = {
-            let rec = self.inner.rec.borrow();
+            let rec = inner.rec.borrow();
             input::handler_of(&rec, target, EventKind::Scroll)?
         };
-        let instance = self.inner.rt.handler_owner(hid)?;
-        let signal = {
-            self.inner
-                .instances
-                .borrow()
-                .get(&instance)?
-                .scroll
-                .clone()?
-        };
+        let instance = inner.rt.handler_owner(hid)?;
+        let signal = { inner.instances.borrow().get(&instance)?.scroll.clone()? };
         let max_y = {
-            self.inner
+            inner
                 .rec
                 .borrow()
                 .get(target)?
@@ -183,30 +181,27 @@ impl ComponentHost {
     }
 
     /// Resolves a scroll target's self-wired horizontal feed (Phase 36
-    /// PR2b, decision 354): the [`ComponentHost::owner_scroll_signal`]
+    /// PR2b, decision 354): the [`owner_scroll_signal`]
     /// twin transposed — the target's `Scroll` handler names its
     /// declaring component instance, and that instance's `scroll_x`
     /// offset is the feed when the body created one with
     /// `ctx.scroll_x()` / `ctx.scroll_2d()`. Clamped to the target's
     /// committed `[0, content_w - w]` (`content_w` overflow — narrow
     /// content pins at rest). `None` under the same quiet conditions
-    /// as the vertical twin (the M5 dispatch-only rule).
-    fn owner_scroll_x_signal(&self, target: NodeId) -> Option<(Signal<f32>, f32)> {
+    /// as the vertical twin (the M5 dispatch-only rule). Takes
+    /// `inner` (not `self`) like the twin.
+    pub(super) fn owner_scroll_x_signal(
+        inner: &HostInner,
+        target: NodeId,
+    ) -> Option<(Signal<f32>, f32)> {
         let hid = {
-            let rec = self.inner.rec.borrow();
+            let rec = inner.rec.borrow();
             input::handler_of(&rec, target, EventKind::Scroll)?
         };
-        let instance = self.inner.rt.handler_owner(hid)?;
-        let signal = {
-            self.inner
-                .instances
-                .borrow()
-                .get(&instance)?
-                .scroll_x
-                .clone()?
-        };
+        let instance = inner.rt.handler_owner(hid)?;
+        let signal = { inner.instances.borrow().get(&instance)?.scroll_x.clone()? };
         let max_x = {
-            self.inner
+            inner
                 .rec
                 .borrow()
                 .get(target)?

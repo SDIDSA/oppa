@@ -1,13 +1,25 @@
 //! Node dispatch: [`FramePlan`] ops for one dirty retained node (M4 damage discipline).
 
 use oppa::{
-    CaretPaint, DrawOp, FramePlan, HandlePaint, Interner, LayoutBox, NodeId, PlacedGlyph,
+    CaretPaint, DrawOp, FramePlan, HandlePaint, Interner, LayoutBox, NodeId, PaintXf, PlacedGlyph,
     Reconciler, SelectionPaint, Style, Tag, CARET_WIDTH_PX, HANDLE_KNOB_R_PX, HANDLE_WIDTH_PX,
 };
 
-use super::leaf::{emit_canvas_ops, emit_path_op};
+use super::leaf::{emit_canvas_ops, emit_canvas_ops_with, emit_path_op, emit_path_op_with};
 use super::resolve::{opacity_of, resolve_edge_bands, resolve_ink, resolve_radii};
 use super::shape::{emit_edge_bands, emit_gradient, emit_radial, emit_shadow, emit_shape};
+
+/// Pinned-paint overrides for the exit layer (decision 520): ink
+/// resolved down the snapshot (arena ancestry retired — the live
+/// walk's ancestor lookup cannot run) plus the payloads the
+/// retained arms read from `rec`. `None` takes the retained arm
+/// exactly (every live-tree caller passes `None` — quiet trees keep
+/// byte-identical plans).
+pub(super) struct ExitPaint<'a> {
+    pub ink: oppa::Color,
+    pub path: Option<&'a oppa::PathSpec>,
+    pub canvas: Option<&'a oppa::CanvasSpec>,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_node_ops(
@@ -25,6 +37,7 @@ pub(super) fn emit_node_ops(
     caret: Option<CaretPaint>,
     handles: Option<(HandlePaint, HandlePaint)>,
     tokens: oppa::ThemeTokens,
+    exit: Option<ExitPaint>,
 ) {
     // M8 evaluated values: live interpolations paint mid-flight, stamped
     // recycles paint their jumped targets, everything else paints the
@@ -65,6 +78,7 @@ pub(super) fn emit_node_ops(
             w: b.w,
             h: b.h,
             image: image.unwrap_or(oppa::ImageId(0)),
+            xf: PaintXf::identity(),
         });
         return;
     }
@@ -74,7 +88,15 @@ pub(super) fn emit_node_ops(
     // diverge on it. The path op carries the committed box origin +
     // size with the retained payload.
     if tag == Tag::Path {
-        emit_path_op(plan, rec, id, b, style_ref, opacity);
+        match &exit {
+            Some(x) => {
+                let Some(spec) = x.path else {
+                    panic!("plan: Tag::Path node {id:?} without a path payload — Path nodes carry PathSpec (hand-built Path elements must set it)");
+                };
+                emit_path_op_with(plan, id, b, style_ref, spec, opacity);
+            }
+            None => emit_path_op(plan, rec, id, b, style_ref, opacity),
+        }
         return;
     }
     // Retained canvas (Phase 36 PR4, decision 358): style paint
@@ -83,7 +105,15 @@ pub(super) fn emit_node_ops(
     // laid text lines paint through the shared text arm below (the
     // node carries no text payload, so nothing double-paints).
     if tag == Tag::Canvas {
-        emit_canvas_ops(plan, rec, id, b, style_ref, opacity);
+        match &exit {
+            Some(x) => {
+                let Some(spec) = x.canvas else {
+                    panic!("plan: Tag::Canvas node {id:?} without a canvas payload — Canvas nodes carry CanvasSpec (hand-built Canvas elements must set it)");
+                };
+                emit_canvas_ops_with(plan, id, b, style_ref, spec, opacity);
+            }
+            None => emit_canvas_ops(plan, rec, id, b, style_ref, opacity),
+        }
     }
     if let Some(shadow) = &style_ref.shadow {
         emit_shadow(plan, id, b, shadow, dpr);
@@ -240,6 +270,7 @@ pub(super) fn emit_node_ops(
                     r: b.w.min(b.h) * 0.5,
                     color: bg,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             } else if let Some(radii) = resolve_radii(style_ref, b.w, b.h, dpr) {
                 // Round 11.1: per-corner radii ride `RRect.radii`
@@ -255,6 +286,7 @@ pub(super) fn emit_node_ops(
                     radii: Some(radii),
                     color: bg,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             } else if let Some(r) = style_ref.radius {
                 let radius = r.get() * dpr;
@@ -269,6 +301,7 @@ pub(super) fn emit_node_ops(
                         radii: None,
                         color: bg,
                         opacity,
+                        xf: PaintXf::identity(),
                     });
                 } else {
                     plan.ops.push(DrawOp::Rect {
@@ -279,6 +312,7 @@ pub(super) fn emit_node_ops(
                         h: b.h,
                         color: bg,
                         opacity,
+                        xf: PaintXf::identity(),
                     });
                 }
             } else {
@@ -290,6 +324,7 @@ pub(super) fn emit_node_ops(
                     h: b.h,
                     color: bg,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             }
         }
@@ -323,6 +358,7 @@ pub(super) fn emit_node_ops(
                             h: y1 - y0,
                             color: oppa::SELECTION_FILL,
                             opacity,
+                            xf: PaintXf::identity(),
                         });
                     }
                 }
@@ -379,10 +415,16 @@ pub(super) fn emit_node_ops(
                     em_size: line.em_size,
                     glyphs: std::mem::take(glyphs),
                     fonts: std::mem::take(fonts),
-                    ink: ink_run
-                        .take()
-                        .unwrap_or_else(|| resolve_ink(rec, styles, id, style, &tokens)),
+                    ink: ink_run.take().unwrap_or_else(|| {
+                        // Decision 520: ghosts resolve ink down the
+                        // snapshot (arena ancestry retired) — carried
+                        // by the exit walk, never looked up.
+                        exit.as_ref()
+                            .map(|x| x.ink)
+                            .unwrap_or_else(|| resolve_ink(rec, styles, id, style, &tokens))
+                    }),
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             };
             for run in &line.runs {
@@ -444,6 +486,7 @@ pub(super) fn emit_node_ops(
                 h: c.h,
                 color: c.color,
                 opacity,
+                xf: PaintXf::identity(),
             });
         }
     }
@@ -465,6 +508,7 @@ pub(super) fn emit_node_ops(
                     h: h.h,
                     color: h.color,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
                 plan.ops.push(DrawOp::Circle {
                     node: id,
@@ -473,6 +517,7 @@ pub(super) fn emit_node_ops(
                     r: HANDLE_KNOB_R_PX,
                     color: h.color,
                     opacity,
+                    xf: PaintXf::identity(),
                 });
             }
         }

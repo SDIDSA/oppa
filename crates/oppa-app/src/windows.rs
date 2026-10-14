@@ -631,7 +631,14 @@ pub fn run_windows<P: Props>(
         // itself — the arm below only presents it — so a blink frame
         // never double-paints).
         if !had_cmds && timed_out {
-            let frames = state.borrow().loop_.host().run_until_idle();
+            // Decision 515: bounded (live loops must never freeze
+            // the message pump — they continue next tick; Once-only
+            // worlds quiesce early, identically to before).
+            let frames = state
+                .borrow()
+                .loop_
+                .host()
+                .pump_frames(crate::PUMP_TICK_FRAMES);
             let flung = state.borrow().loop_.host().tick_flings();
             // Round 21.1 (decision 328): due component timers fire
             // here — `tick_timers` settles + repaints itself when

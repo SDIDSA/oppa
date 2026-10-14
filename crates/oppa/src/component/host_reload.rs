@@ -98,16 +98,70 @@ impl ComponentHost {
         self.evict_instance(instance)
     }
 
-    /// Evicts a component instance whose symbol (or props layout) did not
-    /// survive the swap (restart class, §5.1): drops its record and
-    /// retires its effect so no post-swap run can touch missing props or
-    /// stale hot code. Returns false if the instance was already gone.
-    pub fn evict_instance(&self, instance: u64) -> bool {
+    /// Evicts one instance without recursing (decision 520 — the
+    /// sweep shape): the record, its effect, and its cleanups retire
+    /// with timer/handler hygiene for exactly this id. Live children
+    /// keep their records, rows, and timers (their nodes survived —
+    /// only the dead parent link goes); frozen until recycled or
+    /// removed, then collected as candidates themselves. Returns
+    /// false if the instance was already gone.
+    pub fn evict_single(&self, instance: u64) -> bool {
         let effect = self.inner.effects.borrow_mut().remove(&instance);
         if let Some(effect) = &effect {
             self.inner.rt.retire_effect(effect);
         }
         if !self.inner.instances.borrow().contains_key(&instance) && effect.is_none() {
+            return false;
+        }
+        self.run_instance_cleanups(instance);
+        self.inner.instances.borrow_mut().remove(&instance);
+        // Scrub child references (roots have no parent; harmless anyway).
+        for rec in self.inner.instances.borrow_mut().values_mut() {
+            rec.children.retain(|_, child| *child != instance);
+        }
+        // Single-id hygiene (the whole-subtree rule's unit step —
+        // callbacks and router rows must never resolve through the
+        // evicted instance).
+        self.inner
+            .timers
+            .borrow_mut()
+            .retain(|t| t.owner != instance);
+        let doomed: std::collections::HashSet<u64> = [instance].into_iter().collect();
+        self.inner.rt.prune_handler_owners(&doomed);
+        true
+    }
+
+    /// Evicts a component instance whose symbol (or props layout) did not
+    /// survive the swap (restart class, §5.1): drops its record and
+    /// retires its effect so no post-swap run can touch missing props or
+    /// stale hot code. Returns false if the instance was already gone.
+    ///
+    /// Decision 520 extension (the whole-subtree rule): eviction covers
+    /// the transitive closure — child records dropped by the recursive
+    /// cleanup below used to escape the timer/handler sweep (stale
+    /// handler rows pointed at dead instances and their timers kept
+    /// firing — found live by the studio e2e). Leftover timers cancel
+    /// and handler-ownership rows prune for every evicted id, on all
+    /// eviction paths (sweeps, root unmount, reload — one ordering).
+    pub fn evict_instance(&self, instance: u64) -> bool {
+        // Snapshot the transitive closure before dropping anything
+        // (records must exist to walk the children maps).
+        let mut closure = Vec::new();
+        {
+            let instances = self.inner.instances.borrow();
+            let mut stack = vec![instance];
+            while let Some(id) = stack.pop() {
+                if let Some(rec) = instances.get(&id) {
+                    closure.push(id);
+                    stack.extend(rec.children.values().copied());
+                }
+            }
+        }
+        let effect = self.inner.effects.borrow_mut().remove(&instance);
+        if let Some(effect) = &effect {
+            self.inner.rt.retire_effect(effect);
+        }
+        if closure.is_empty() && effect.is_none() {
             return false;
         }
         self.cleanup_instance(instance);
@@ -116,6 +170,15 @@ impl ComponentHost {
         for rec in self.inner.instances.borrow_mut().values_mut() {
             rec.children.retain(|_, child| *child != instance);
         }
+        // Whole-subtree hygiene for the closure above (records the
+        // recursion already dropped included — timer callbacks and
+        // router rows must never resolve through evicted instances).
+        let doomed: std::collections::HashSet<u64> = closure.into_iter().collect();
+        self.inner
+            .timers
+            .borrow_mut()
+            .retain(|t| !doomed.contains(&t.owner));
+        self.inner.rt.prune_handler_owners(&doomed);
         true
     }
 

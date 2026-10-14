@@ -46,6 +46,39 @@ impl Default for LayoutTextConfig {
 // text_runs }` lives on the retained node)
 // ---------------------------------------------------------------------------
 
+/// One layout-animated box change recorded by `commit_box` (decisions
+/// 521–522): an opted-in node's old and new committed boxes with its
+/// animation spec. The host relativizes (FLIP), filters (scroll
+/// suppression), and synthesizes tracks from these — the layout
+/// crate never interpolates, it only observes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutMove {
+    /// The moved node (retired ids never record — removal drops boxes
+    /// through a different path).
+    pub id: NodeId,
+    /// Previously committed box (always `Some` — mounts jump, they
+    /// never animate from nothing).
+    pub old: LayoutBox,
+    /// Newly committed box (already written when recorded).
+    pub new: LayoutBox,
+    /// The node's `Style.layout_anim` timing (one spec drives both
+    /// the FLIP and the fence on this node).
+    pub spec: crate::style::Transition,
+    /// Position-only (`Flip`) or size-involving (`Fence`), decided at
+    /// record time from old vs new (mixed move+resize goes to the
+    /// fence whole, never split).
+    pub kind: LayoutMoveKind,
+}
+
+/// Layout-move kinds (decisions 521–522): FLIP animates pure-position
+/// deltas through the transform machinery; the fence interpolates
+/// boxes with size changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutMoveKind {
+    Flip,
+    Fence,
+}
+
 /// One positioned glyph: renderer-ready, visual left-to-right order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LaidGlyph {
